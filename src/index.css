@@ -1,0 +1,125 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #0F0F10 !important;
+    color: #E8E8EA !important;
+  }
+
+  /* Thin custom scrollbars */
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 2px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+  }
+
+  /* Custom Focus Ring globally */
+  *:focus-visible {
+    outline: none !important;
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.5) !important;
+    outline-offset: 2px !important;
+  }
+}
+
+/* Glassmorphism Sidebar */
+.glass-sidebar {
+  background: rgba(26, 26, 28, 0.85); /* surface color with 85% opacity */
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Bento Card Separation */
+.bento-card {
+  background: #141416; /* 2-3% lighter than base #0F0F10 */
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+}
+
+/* Row Hover Micro-interaction */
+.grid-row-transition {
+  transition: background-color 120ms ease;
+}
+.grid-row-transition:hover {
+  background-color: rgba(255, 255, 255, 0.04) !important;
+}
+.grid-row-selected {
+  background-color: rgba(99, 102, 241, 0.15) !important;
+  border-left: 2px solid #6366F1 !important;
+}
+
+/* Primary Key Badge */
+.pk-badge {
+  background-color: rgba(99, 102, 241, 0.2);
+  color: #6366F1;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 4px;
+  text-transform: uppercase;
+}
+
+/* Skeleton Shimmer Loading State */
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.03) 25%,
+    rgba(255, 255, 255, 0.07) 50%,
+    rgba(255, 255, 255, 0.03) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s infinite linear;
+}
+
+/* Code Editor Custom Styles */
+.code-editor {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* CodeMirror 6 Dark Theme overrides */
+.cm-editor {
+  background-color: #0F0F10 !important;
+  color: #E8E8EA !important;
+  height: 100% !important;
+}
+.cm-scroller {
+  background-color: #0F0F10 !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  font-size: 13px !important;
+}
+.cm-gutters {
+  background-color: #1A1A1C !important;
+  color: #6B6B70 !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.06) !important;
+}
+.cm-cursor {
+  border-left-color: #6366F1 !important;
+}
+.cm-selectionBackground {
+  background-color: rgba(99, 102, 241, 0.2) !important;
+}
+.cm-activeLine, .cm-activeLineGutter {
+  background-color: rgba(255, 255, 255, 0.03) !important;
+}

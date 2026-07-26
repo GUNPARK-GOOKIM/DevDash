@@ -1,0 +1,27 @@
+# Cargo package metadata manifest file for DevDash Tauri backend
+[package] # Declare package configuration section
+name = "devdash_backend" # Package identifier name
+version = "0.1.0" # Initial semver release version
+edition = "2021" # Use modern Rust 2021 edition standards
+description = "Fast, minimal Rust backend engine for DevDash database GUI" # Brief description of backend crate
+
+# Package binary targets setup
+[[bin]] # Target configuration for executable binary
+name = "devdash_backend" # Binary name output
+path = "src/main.rs" # Path to main entry point file
+
+# Dependencies required for compiling DevDash backend
+[dependencies] # Production dependencies section
+tauri = { version = "2.0", features = [] } # Tauri 2.0 desktop framework core crate
+serde = { version = "1.0", features = ["derive"] } # Serde object serialization and deserialization macros
+serde_json = "1.0" # Serde JSON format parsing and encoding support
+tokio = { version = "1.0", features = ["full"] } # Tokio asynchronous runtime for async I/O and tasks
+sqlx = { version = "0.8", features = ["any", "runtime-tokio", "postgres", "mysql", "sqlite", "chrono", "uuid"] } # Multi-driver async SQL database client library
+keyring = "3.0" # Native OS Keychain and Secret Manager credential isolation store
+uuid = { version = "1.0", features = ["v4", "serde"] } # Universal Unique Identifier generation library
+chrono = { version = "0.4", features = ["serde"] } # Date and time representation library with serde support
+dashmap = "6.0" # Concurrent thread-safe hash map for multi-pool connection state
+
+# Build configuration dependencies
+[build-dependencies] # Build dependencies section
+tauri-build = { version = "2.0#Tauribuildhelperscriptdependencyforcodegeneration", features = [] }
