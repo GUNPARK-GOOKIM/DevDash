@@ -8,11 +8,11 @@
 
 ## 📸 Interface Screenshots
 
-![TablePlus Data Grid & Cell Inspector](file:///C:/Users/Lenovo/.gemini/antigravity-ide/brain/6644c887-c945-4b37-a944-0cedd25817a7/table_fixed_state_1785065307301.png)
+![TablePlus Data Grid & Cell Inspector](docs/images/table_grid.png)
 
-![14-Dialect Database Selector Dropdown](file:///C:/Users/Lenovo/.gemini/antigravity-ide/brain/6644c887-c945-4b37-a944-0cedd25817a7/dialect_dropdown_open_1785064439879.png)
+![14-Dialect Database Selector Dropdown](docs/images/dialect_selector.png)
 
-![CodeMirror 6 SQL Editor with Beautifier](file:///C:/Users/Lenovo/.gemini/antigravity-ide/brain/6644c887-c945-4b37-a944-0cedd25817a7/sql_formatted_mysql_1785064491007.png)
+![CodeMirror 6 SQL Editor with Beautifier](docs/images/sql_editor.png)
 
 ---
 

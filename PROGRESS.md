@@ -104,7 +104,7 @@ Detailed log of the visual overhaul implemented:
 - **TablePlus Dialect Selector Dropdown**: Replaced 2-button PostgreSQL/MySQL toggle with a custom TablePlus dropdown selector grouped by Relational, Cloud, and NoSQL categories. (PASS)
 - **SQL Beautifier (Format SQL)**: Integrated a 1-click SQL formatter button (`Cmd+I`) that auto-indents and formats SQL queries with capitalized keywords. (PASS)
 
-![14-Dialect Selector & SQL Beautifier](file:///C:/Users/Lenovo/.gemini/antigravity-ide/brain/6644c887-c945-4b37-a944-0cedd25817a7/dialect_dropdown_open_1785064439879.png)
+![14-Dialect Selector & SQL Beautifier](docs/images/dialect_selector.png)
 
 ---
 
@@ -117,4 +117,4 @@ Detailed log of the visual overhaul implemented:
 - **SQL Snippets & Templates Library**: Added a Snippets Dropdown in `SqlEditor.tsx` featuring reusable templates for JOIN queries, batch inserts, DDL definitions, indexes, and upsert statements. (PASS)
 - **Mock Data Generator**: Added 1-click "Seed Mock Data" button to table sub-bar in `App.tsx` for populating test rows in table schemas. (PASS)
 
-![DevDash Table Grid & Cell Inspector](file:///C:/Users/Lenovo/.gemini/antigravity-ide/brain/6644c887-c945-4b37-a944-0cedd25817a7/table_fixed_state_1785065307301.png)
+![DevDash Table Grid & Cell Inspector](docs/images/table_grid.png)
