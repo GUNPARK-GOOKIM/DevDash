@@ -146,5 +146,10 @@ Detailed log of the visual overhaul implemented:
 - **UI-6. INLINE JSON POPUP**: Created `InlineJsonPopup.tsx` — floating panel with syntax-highlighted collapsible JSON tree (keys purple, strings green, numbers amber, booleans blue, null red), copy button, closes on Escape/click-outside. (PASS)
 - **UI-7. RIGHT-CLICK CONTEXT MENU**: Created `ContextMenu.tsx` — Copy cell/row as JSON/CSV/INSERT, Filter by value, Open in JSON viewer, Set NULL, Delete row. Disabled states for inapplicable options. (PASS)
 - **UI-8. AI PROVIDER SETTINGS ENGINE**: Created `SettingsModal.tsx` — supports Ollama/Local LLM (100% free & offline), Anthropic Claude, OpenAI, and Custom OpenAI API endpoints (DeepSeek, Groq, localAI). Allows setting base URL, model name, and API key stored in OS keychain. Toggle to turn AI feature on/off. (PASS)
-- **UI-9. LIGHT / DARK THEME SWITCHER**: Implemented `data-theme="light"` CSS variables in `index.css` and added top-bar quick toggle button + settings theme selector. Dynamically switches backgrounds, surface cards, text colors, and borders between dark and light modes. (PASS)
+- **UI-9. TABLEPLUS-EQUIVALENT PREFERENCES MODAL**: Completely removed light mode toggle and added comprehensive TablePlus-matched preferences in `SettingsModal.tsx`:
+  - **General**: Default grid page row limit (300 to 10,000), font family selection (JetBrains Mono / Fira Code / Consolas), font size slider (11px-18px), tab title row counts toggle, auto-reconnect on drop.
+  - **Database & SQL**: Auto-capitalize SQL keywords (SELECT, FROM, WHERE), statement execution timeout in seconds, default Safe Mode for prod connections, confirm `UPDATE`/`DELETE` without `WHERE`.
+  - **Security & Drivers**: Keyring OS credential protection status, SSH tunnel timeout, strict TLS/SSL certificate verification.
+  - **Shortcuts**: Customizable keyboard shortcuts table with live recording/editing and Reset Defaults button. (PASS)
+
 
