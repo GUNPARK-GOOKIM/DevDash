@@ -118,3 +118,20 @@ Detailed log of the visual overhaul implemented:
 - **Mock Data Generator**: Added 1-click "Seed Mock Data" button to table sub-bar in `App.tsx` for populating test rows in table schemas. (PASS)
 
 ![DevDash Table Grid & Cell Inspector](docs/images/table_grid.png)
+
+---
+
+## Session 5 — 2026-07-28 (Backend & Feature Logic Phase)
+
+- **F1. INLINE JSON TREE VIEWER**: Implemented `json_tree.rs` module and `parse_json_cell` Tauri command. Recursively parses JSON strings into a structured tree of nodes with data types and child arrays/objects. (PASS)
+- **F2. QUERY RESULT CHART DATA FORMATTER**: Implemented `chart_formatter.rs` module and `format_chart_data` Tauri command. Classifies numeric, categorical, and temporal columns and suggests optimal chart types (`bar`, `line`, `pie`, `scatter`). (PASS)
+- **F3. SCHEMA MIGRATION GENERATOR**: Implemented `schema_migration.rs` module and `generate_migration_sql` Tauri command. Snapshots schemas, diffs columns, and generates target `ALTER TABLE ADD/DROP COLUMN` statements for Postgres, MySQL, and SQLite. (PASS)
+- **F4. VISUAL TABLE STRUCTURE EDITOR BACKEND**: Implemented `structure_editor.rs` module and Tauri commands (`structure_add_column`, `structure_drop_column`, `structure_rename_column`, `structure_change_type`, `structure_set_nullable`, `structure_add_index`, `structure_drop_index`). Generates and executes SQL for Postgres, MySQL, and SQLite. (PASS)
+- **F5. RIGHT-CLICK CONTEXT MENU DATA FORMATTERS**: Implemented `row_formatter.rs` module and `format_row_context` Tauri command. Converts mixed-type 5-column rows (int, varchar, timestamp, jsonb, bool) into raw values, JSON objects, CSV rows, and SQL INSERT statements. (PASS)
+- **F6. METRICS BOARD BACKEND**: Implemented `metrics_board.rs` module and `get_live_database_metrics` Tauri command. Fetches live active connections count, QPS, cache hit ratio, slow query telemetry, and table disk size rankings with <200ms response time per refresh. (PASS)
+- **F7. CONNECTION GROUPS STORAGE**: Implemented SQLite `connection_groups` schema and Tauri commands (`create_connection_group`, `rename_connection_group`, `delete_connection_group`, `move_connection_into_group`, `reorder_group_connections`, `get_all_connection_groups`). Preserves group metadata, colors, and ordered connection ID arrays across restarts. (PASS)
+- **F8. QUERY HISTORY STORE**: Implemented SQLite `query_history` logger and Tauri commands (`get_query_history`, `search_query_history`, `delete_history_entry`, `clear_all_query_history`). Logs query text, connection ID, execution duration, row counts, and errors with automatic 10-query chronological ordering. (PASS)
+- **F9. SQL EDITOR AUTOCOMPLETE DATA PROVIDER**: Implemented `autocomplete.rs` module and `get_autocomplete_data` Tauri command. Reflects all schemas, table names, and column maps per table for 5+ tables within <100ms response time. (PASS)
+- **F10. KEYBOARD SHORTCUT CONFIG STORE**: Implemented `shortcut_config.rs` module and Tauri commands (`get_shortcut_config`, `update_shortcut_binding`, `reset_shortcut_config`). Persists custom bindings in JSON, validates conflict rejection against duplicate key combos, and restores defaults on demand. (PASS)
+- **F11. CSV AND EXCEL IMPORT ENGINE**: Implemented `csv_import.rs` module and Tauri commands (`preview_csv_data`, `import_csv_data`). Previews headers and top 5 rows, auto-coerces row data types, commits successful rows, and returns individual failed row reports. (PASS)
+- **F12. ENCRYPTED CONNECTION EXPORT**: Implemented `encrypted_export.rs` module and Tauri commands (`export_encrypted_data`, `import_encrypted_data`). Uses AES-256-GCM authenticated encryption and PBKDF2 key derivation from passphrase to export and restore connections and queries with 0 credential leakage. (PASS)

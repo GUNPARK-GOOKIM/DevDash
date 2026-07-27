@@ -1,5 +1,5 @@
 // Tauri IPC Command Handler Module for DevDash Frontend API Interface
-use crate::db::app_storage::{AppStorage, SavedQueryItem}; // Import AppStorage and SavedQueryItem structs
+use crate::db::app_storage::{AppStorage, ConnectionGroup, QueryHistoryItem, SavedQueryItem}; // Import AppStorage, ConnectionGroup, QueryHistoryItem, and SavedQueryItem structs
 use crate::db::credentials; // Import credentials module for keyring secrets management
 use crate::db::executor::{execute_dynamic_query, QueryResultPayload}; // Import dynamic query execution function and payload struct
 use crate::db::export; // Import export module for CSV, JSON, SQL dump operations
@@ -7,6 +7,28 @@ use crate::db::introspection::{fetch_tables, fetch_columns, analyze_primary_keys
 use crate::db::pool::ConnectionManager; // Import ConnectionManager for pool lookups
 use crate::db::safe_mode::{analyze_sql_safety, SafetyAnalysis}; // Import safe mode analysis function
 use crate::db::staged_edits::{apply_staged_edits, StagedRowEdit}; // Import staged edit execution function and payload struct
+use crate::db::json_tree::{parse_json_tree, JsonParseResult}; // Import JSON tree viewer parser
+use crate::db::chart_formatter::{format_query_result_for_chart, ColumnInput, FormattedChartData}; // Import chart data formatter
+use crate::db::schema_migration::{generate_schema_migration, EngineDialect, MigrationDiffResult, TableSnapshot}; // Import schema migration generator
+use crate::db::structure_editor::{
+    build_add_column_sql, build_add_index_sql, build_change_type_sql, build_drop_column_sql,
+    build_drop_index_sql, build_rename_column_sql, build_set_nullable_sql, execute_structure_sql,
+    AddColumnPayload, AddIndexPayload, ChangeTypePayload, DropColumnPayload, DropIndexPayload,
+    RenameColumnPayload, SetNullablePayload,
+}; // Import structure editor builders & executor
+use crate::db::row_formatter::{format_row_all_formats, FormattedRowResult}; // Import row formatter for context menu
+use crate::db::metrics_board::{fetch_live_database_metrics, DatabaseLiveMetrics}; // Import live metrics collector
+use crate::db::autocomplete::{fetch_autocomplete_data, AutocompleteDataPayload}; // Import autocomplete provider
+use crate::db::shortcut_config::{
+    load_shortcut_config, reset_shortcut_config as reset_shortcuts,
+    update_shortcut_binding as update_shortcut, ShortcutConfig,
+}; // Import shortcut config manager
+use crate::db::csv_import::{
+    execute_csv_import, preview_csv_file, ImportExecutionResult, ImportPreviewPayload,
+}; // Import CSV import engine
+use crate::db::encrypted_export::{
+    export_connections_and_queries, import_connections_and_queries, ExportPayload,
+}; // Import AES-256 encrypted export engine
 use std::sync::Arc; // Import Arc for atomic reference sharing
 use tauri::State; // Import State extractor type from tauri crate
 use std::collections::HashMap; // Import HashMap for tracking active query handles
@@ -16,7 +38,7 @@ use tokio::sync::Mutex; // Import Mutex for thread-safe query cancellation acces
 pub struct AppState { // Struct definition for managed state
     pub connection_manager: ConnectionManager, // Multi-pool connection manager instance
     pub storage: Arc<AppStorage>, // Embedded SQLite app storage instance
-    pub active_queries: Mutex<HashMap<String, tokio::task::JoinHandle<Result<QueryResultPayload, String>>>>, // Map of active query handles
+    pub active_queries: Mutex<HashMap<String, tokio::task::AbortHandle>>, // Map of active query cancellation handles
 } // End of AppState struct definition
 
 // IPC Command: Save database password securely in OS Keychain
@@ -36,6 +58,200 @@ pub fn get_db_password(connection_id: String) -> Result<String, String> { // Com
 pub fn delete_db_password(connection_id: String) -> Result<(), String> { // Command handler function signature
     credentials::delete_password(&connection_id) // Call credentials module delete password function
 } // End of delete_db_password command
+
+// IPC Command: Parse JSON cell string into structured tree
+#[tauri::command]
+pub fn parse_json_cell(json_str: String) -> JsonParseResult {
+    parse_json_tree(&json_str)
+}
+
+// IPC Command: Format query result into chart-ready series & suggested chart type
+#[tauri::command]
+pub fn format_chart_data(
+    columns: Vec<ColumnInput>,
+    rows: Vec<Vec<serde_json::Value>>,
+) -> FormattedChartData {
+    format_query_result_for_chart(&columns, &rows)
+}
+
+// IPC Command: Diff schema snapshot against current table schema and generate ALTER TABLE SQL
+#[tauri::command]
+pub fn generate_migration_sql(
+    snapshot: TableSnapshot,
+    current: TableSnapshot,
+    engine: EngineDialect,
+) -> MigrationDiffResult {
+    generate_schema_migration(&snapshot, &current, engine)
+}
+
+// IPC Command: Add column to table
+#[tauri::command]
+pub async fn structure_add_column(
+    connection_id: String,
+    payload: AddColumnPayload,
+    engine: EngineDialect,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let sql = build_add_column_sql(&payload, engine);
+    execute_structure_sql(&pool, &sql).await
+}
+
+// IPC Command: Drop column from table
+#[tauri::command]
+pub async fn structure_drop_column(
+    connection_id: String,
+    payload: DropColumnPayload,
+    engine: EngineDialect,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let sql = build_drop_column_sql(&payload, engine);
+    execute_structure_sql(&pool, &sql).await
+}
+
+// IPC Command: Rename column in table
+#[tauri::command]
+pub async fn structure_rename_column(
+    connection_id: String,
+    payload: RenameColumnPayload,
+    engine: EngineDialect,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let sql = build_rename_column_sql(&payload, engine);
+    execute_structure_sql(&pool, &sql).await
+}
+
+// IPC Command: Change column type
+#[tauri::command]
+pub async fn structure_change_type(
+    connection_id: String,
+    payload: ChangeTypePayload,
+    engine: EngineDialect,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let sql = build_change_type_sql(&payload, engine);
+    execute_structure_sql(&pool, &sql).await
+}
+
+// IPC Command: Set column nullable / not null
+#[tauri::command]
+pub async fn structure_set_nullable(
+    connection_id: String,
+    payload: SetNullablePayload,
+    engine: EngineDialect,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let sql = build_set_nullable_sql(&payload, engine);
+    execute_structure_sql(&pool, &sql).await
+}
+
+// IPC Command: Add index on table columns
+#[tauri::command]
+pub async fn structure_add_index(
+    connection_id: String,
+    payload: AddIndexPayload,
+    engine: EngineDialect,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let sql = build_add_index_sql(&payload, engine);
+    execute_structure_sql(&pool, &sql).await
+}
+
+// IPC Command: Drop index from table
+#[tauri::command]
+pub async fn structure_drop_index(
+    connection_id: String,
+    payload: DropIndexPayload,
+    engine: EngineDialect,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let sql = build_drop_index_sql(&payload, engine);
+    execute_structure_sql(&pool, &sql).await
+}
+
+// IPC Command: Format row for right-click context menu into raw, JSON, CSV, and SQL INSERT formats
+#[tauri::command]
+pub fn format_row_context(
+    table_name: String,
+    columns: Vec<String>,
+    values: Vec<serde_json::Value>,
+) -> FormattedRowResult {
+    format_row_all_formats(&table_name, &columns, &values)
+}
+
+// IPC Command: Get live database metrics
+#[tauri::command]
+pub async fn get_live_database_metrics(
+    connection_id: String,
+    engine: EngineDialect,
+    state: State<'_, AppState>,
+) -> Result<DatabaseLiveMetrics, String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    fetch_live_database_metrics(&pool, engine).await
+}
+
+// IPC Command: Create a connection group
+#[tauri::command]
+pub async fn create_connection_group(
+    name: String,
+    color_tag: String,
+    state: State<'_, AppState>,
+) -> Result<ConnectionGroup, String> {
+    state.storage.create_connection_group(&name, &color_tag).await
+}
+
+// IPC Command: Rename a connection group
+#[tauri::command]
+pub async fn rename_connection_group(
+    id: String,
+    new_name: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.storage.rename_connection_group(&id, &new_name).await
+}
+
+// IPC Command: Delete a connection group
+#[tauri::command]
+pub async fn delete_connection_group(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.storage.delete_connection_group(&id).await
+}
+
+// IPC Command: Move connection into group
+#[tauri::command]
+pub async fn move_connection_into_group(
+    group_id: String,
+    connection_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.storage.move_connection_into_group(&group_id, &connection_id).await
+}
+
+// IPC Command: Reorder connections within group
+#[tauri::command]
+pub async fn reorder_group_connections(
+    group_id: String,
+    connection_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.storage.reorder_group_connections(&group_id, connection_ids).await
+}
+
+// IPC Command: Get all connection groups
+#[tauri::command]
+pub async fn get_all_connection_groups(
+    state: State<'_, AppState>,
+) -> Result<Vec<ConnectionGroup>, String> {
+    state.storage.get_all_connection_groups().await
+}
 
 // IPC Command: Establish connection pool to target database
 #[tauri::command] // Tauri command macro annotation
@@ -114,7 +330,7 @@ pub async fn run_sql_query( // Async command handler function
     // Register active query handle
     {
         let mut active = state.active_queries.lock().await;
-        active.insert(query_id.clone(), handle);
+        active.insert(query_id.clone(), handle.abort_handle());
     }
 
     // Await completion or handle cancellation
@@ -135,8 +351,141 @@ pub async fn run_sql_query( // Async command handler function
         active.remove(&query_id);
     }
 
+    // Auto-log query in query_history storage
+    match &result {
+        Ok(payload) => {
+            let row_count = if !payload.rows.is_empty() {
+                payload.rows.len() as i64
+            } else {
+                payload.affected_rows as i64
+            };
+            let _ = state
+                .storage
+                .log_query_history(&sql, &connection_id, payload.execution_time_ms as f64, row_count, None)
+                .await;
+        }
+        Err(err_msg) => {
+            let _ = state
+                .storage
+                .log_query_history(&sql, &connection_id, 0.0, 0, Some(err_msg))
+                .await;
+        }
+    }
+
     result
 } // End of run_sql_query command
+
+// IPC Command: Get paginated query history
+#[tauri::command]
+pub async fn get_query_history(
+    page: i64,
+    page_size: i64,
+    state: State<'_, AppState>,
+) -> Result<Vec<QueryHistoryItem>, String> {
+    state.storage.get_query_history(page, page_size).await
+}
+
+// IPC Command: Search query history by keyword
+#[tauri::command]
+pub async fn search_query_history(
+    keyword: String,
+    page: i64,
+    page_size: i64,
+    state: State<'_, AppState>,
+) -> Result<Vec<QueryHistoryItem>, String> {
+    state.storage.search_query_history(&keyword, page, page_size).await
+}
+
+// IPC Command: Delete a query history entry
+#[tauri::command]
+pub async fn delete_history_entry(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.storage.delete_history_entry(&id).await
+}
+
+// IPC Command: Clear all query history
+#[tauri::command]
+pub async fn clear_all_query_history(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.storage.clear_all_query_history().await
+}
+
+// IPC Command: Get complete autocomplete schema, table, and column map for connection
+#[tauri::command]
+pub async fn get_autocomplete_data(
+    connection_id: String,
+    db_kind: String,
+    state: State<'_, AppState>,
+) -> Result<AutocompleteDataPayload, String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    fetch_autocomplete_data(&pool, &db_kind).await
+}
+
+fn get_shortcuts_path() -> std::path::PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("devdash")
+        .join("shortcuts.json")
+}
+
+// IPC Command: Get keyboard shortcut configuration
+#[tauri::command]
+pub fn get_shortcut_config() -> ShortcutConfig {
+    load_shortcut_config(&get_shortcuts_path())
+}
+
+// IPC Command: Update a keyboard shortcut binding with conflict checking
+#[tauri::command]
+pub fn update_shortcut_binding(action_id: String, new_key_combo: String) -> Result<ShortcutConfig, String> {
+    update_shortcut(&get_shortcuts_path(), &action_id, &new_key_combo)
+}
+
+// IPC Command: Reset keyboard shortcuts to defaults
+#[tauri::command]
+pub fn reset_shortcut_config() -> Result<ShortcutConfig, String> {
+    reset_shortcuts(&get_shortcuts_path())
+}
+
+// IPC Command: Preview uploaded CSV file headers and top 5 rows
+#[tauri::command]
+pub fn preview_csv_data(file_path: String) -> Result<ImportPreviewPayload, String> {
+    preview_csv_file(std::path::Path::new(&file_path))
+}
+
+// IPC Command: Execute CSV data import into target database table
+#[tauri::command]
+pub async fn import_csv_data(
+    connection_id: String,
+    table_name: String,
+    file_path: String,
+    state: State<'_, AppState>,
+) -> Result<ImportExecutionResult, String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    execute_csv_import(&pool, &table_name, std::path::Path::new(&file_path)).await
+}
+
+// IPC Command: Export connections and queries to AES-256 encrypted JSON file
+#[tauri::command]
+pub async fn export_encrypted_data(
+    export_path: String,
+    passphrase: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    export_connections_and_queries(&state.storage, std::path::Path::new(&export_path), &passphrase).await
+}
+
+// IPC Command: Import connections and queries from AES-256 encrypted JSON file
+#[tauri::command]
+pub async fn import_encrypted_data(
+    import_path: String,
+    passphrase: String,
+    state: State<'_, AppState>,
+) -> Result<ExportPayload, String> {
+    import_connections_and_queries(&state.storage, std::path::Path::new(&import_path), &passphrase).await
+}
 
 // IPC Command: Cancel a running database query mid-flight
 #[tauri::command] // Tauri command macro annotation

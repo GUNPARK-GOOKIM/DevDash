@@ -41,7 +41,37 @@ pub fn run() { // Entry point library run function for Tauri application
             commands::export_table_data, // Register export_table_data IPC command
             commands::save_project_query, // Register save_project_query IPC command
             commands::get_queries_for_project, // Register get_queries_for_project IPC command
-            commands::delete_saved_query // Register delete_saved_query IPC command
+            commands::delete_saved_query, // Register delete_saved_query IPC command
+            commands::parse_json_cell, // Register parse_json_cell IPC command
+            commands::format_chart_data, // Register format_chart_data IPC command
+            commands::generate_migration_sql, // Register generate_migration_sql IPC command
+            commands::structure_add_column, // Register structure_add_column IPC command
+            commands::structure_drop_column, // Register structure_drop_column IPC command
+            commands::structure_rename_column, // Register structure_rename_column IPC command
+            commands::structure_change_type, // Register structure_change_type IPC command
+            commands::structure_set_nullable, // Register structure_set_nullable IPC command
+            commands::structure_add_index, // Register structure_add_index IPC command
+            commands::structure_drop_index, // Register structure_drop_index IPC command
+            commands::format_row_context, // Register format_row_context IPC command
+            commands::get_live_database_metrics, // Register get_live_database_metrics IPC command
+            commands::create_connection_group, // Register create_connection_group IPC command
+            commands::rename_connection_group, // Register rename_connection_group IPC command
+            commands::delete_connection_group, // Register delete_connection_group IPC command
+            commands::move_connection_into_group, // Register move_connection_into_group IPC command
+            commands::reorder_group_connections, // Register reorder_group_connections IPC command
+            commands::get_all_connection_groups, // Register get_all_connection_groups IPC command
+            commands::get_query_history, // Register get_query_history IPC command
+            commands::search_query_history, // Register search_query_history IPC command
+            commands::delete_history_entry, // Register delete_history_entry IPC command
+            commands::clear_all_query_history, // Register clear_all_query_history IPC command
+            commands::get_autocomplete_data, // Register get_autocomplete_data IPC command
+            commands::get_shortcut_config, // Register get_shortcut_config IPC command
+            commands::update_shortcut_binding, // Register update_shortcut_binding IPC command
+            commands::reset_shortcut_config, // Register reset_shortcut_config IPC command
+            commands::preview_csv_data, // Register preview_csv_data IPC command
+            commands::import_csv_data, // Register import_csv_data IPC command
+            commands::export_encrypted_data, // Register export_encrypted_data IPC command
+            commands::import_encrypted_data // Register import_encrypted_data IPC command
         ]) // End of invoke_handler registration
         .run(tauri::generate_context!()) // Run Tauri application context
         .expect("error while running devdash tauri application"); // Handle application runtime errors

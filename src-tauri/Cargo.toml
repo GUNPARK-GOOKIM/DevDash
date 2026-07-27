@@ -21,7 +21,14 @@ keyring = "3.0" # Native OS Keychain and Secret Manager credential isolation sto
 uuid = { version = "1.0", features = ["v4", "serde"] } # Universal Unique Identifier generation library
 chrono = { version = "0.4", features = ["serde"] } # Date and time representation library with serde support
 dashmap = "6.0" # Concurrent thread-safe hash map for multi-pool connection state
+dirs = "6.0" # User config directory locator
+csv = "1.3" # Fast CSV parsing and encoding crate
+base64 = "0.22" # Base64 encoding/decoding crate
+aes-gcm = "0.10" # AES-256-GCM authenticated encryption for secure connection exports
+pbkdf2 = "0.12" # Key derivation for passphrase encryption
+hmac = "0.12" # HMAC support for PBKDF2
+sha2 = "0.10" # SHA-256 hashing for PBKDF2
 
 # Build configuration dependencies
 [build-dependencies] # Build dependencies section
-tauri-build = { version = "2.0#Tauribuildhelperscriptdependencyforcodegeneration", features = [] }
+tauri-build = { version = "2.0", features = [] }
