@@ -12,7 +12,9 @@ export type DbKind =
   | 'mongodb' 
   | 'cassandra' 
   | 'clickhouse' 
-  | 'duckdb';
+  | 'duckdb'
+  | 'bigquery'
+  | 'turso';
 
 export interface ConnectionConfig {
   id: string;
@@ -25,12 +27,19 @@ export interface ConnectionConfig {
   project_path?: string;
   is_connected?: boolean;
   is_read_only?: boolean;
+  group_id?: string;
   ssh_config?: {
     enabled: boolean;
     host: string;
     port: number;
     user: string;
     key_path?: string;
+  };
+  tls_config?: {
+    require_ssl: boolean;
+    ca_cert_path?: string;
+    client_cert_path?: string;
+    client_key_path?: string;
   };
 }
 
@@ -44,6 +53,11 @@ export interface ColumnItem {
   data_type: string;
   is_nullable: boolean;
   is_primary_key: boolean;
+  is_foreign_key?: boolean;
+  fk_references?: { table: string; column: string };
+  default_value?: string;
+  is_unique?: boolean;
+  is_indexed?: boolean;
 }
 
 export interface PkInfo {
@@ -53,11 +67,27 @@ export interface PkInfo {
   read_only_reason?: string;
 }
 
+export interface StagedChange {
+  id: string;
+  tableName: string;
+  changeType: 'update' | 'insert' | 'delete';
+  identifier: string;
+  diff: string;
+  oldValues?: Record<string, any>;
+  newValues?: Record<string, any>;
+  rowId: string | number;
+  columnName?: string;
+  checked: boolean;
+  sql?: string;
+}
+
+// Legacy alias
 export interface StagedCellEdit {
   rowId: string | number;
   columnName: string;
   oldValue: any;
   newValue: any;
+  tableName?: string;
 }
 
 export interface SavedQuery {
@@ -68,10 +98,32 @@ export interface SavedQuery {
   created_at: string;
 }
 
+export interface QueryHistoryEntry {
+  id: string;
+  sql: string;
+  connectionName: string;
+  engine: string;
+  timestamp: string;
+  executionTimeMs: number;
+  rowCount: number;
+  status: 'success' | 'error';
+  errorMessage?: string;
+}
+
+export type TabType = 'browser' | 'query' | 'staging' | 'console' | 'structure' | 'erd' | 'health';
+
 export interface WorkspaceTab {
   id: string;
   title: string;
-  type: 'table' | 'query' | 'structure';
+  type: TabType;
   tableName?: string;
   sql?: string;
+}
+
+export interface ConnectionGroup {
+  id: string;
+  name: string;
+  color: string;
+  connectionIds: string[];
+  collapsed: boolean;
 }
