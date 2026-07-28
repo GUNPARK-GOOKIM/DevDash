@@ -1,9 +1,11 @@
 import React, { useState, useRef, useCallback } from 'react';
+import { motion, useMotionValue, useTransform, useSpring, AnimatePresence, Variants } from 'framer-motion';
 import { ConnectionConfig, DbKind } from '../types';
 import {
   Plus, Search, Database, Upload, Star, Clock, Trash2,
   Server, ChevronRight, Zap, ArrowRight, FolderOpen,
   Edit3, Copy, ExternalLink, MoreHorizontal, Settings,
+  Users, Layers, Sparkles, Shield, AlertTriangle
 } from 'lucide-react';
 
 interface WelcomePageProps {
@@ -17,28 +19,123 @@ interface WelcomePageProps {
   recentConnectionIds: string[];
 }
 
-// DB type metadata: icon color, label, default port
-const DB_META: Record<DbKind, { color: string; label: string; icon: string; port: number }> = {
-  postgres:    { color: '#336791', label: 'PostgreSQL',   icon: '🐘', port: 5432 },
-  mysql:       { color: '#4479A1', label: 'MySQL',        icon: '🐬', port: 3306 },
-  mariadb:     { color: '#003545', label: 'MariaDB',      icon: '🦭', port: 3306 },
-  sqlite:      { color: '#003B57', label: 'SQLite',       icon: '📦', port: 0 },
-  mssql:       { color: '#CC2927', label: 'SQL Server',   icon: '🏢', port: 1433 },
-  cockroachdb: { color: '#6933FF', label: 'CockroachDB',  icon: '🪳', port: 26257 },
-  redshift:    { color: '#8C4FFF', label: 'Redshift',     icon: '🔴', port: 5439 },
-  oracle:      { color: '#F80000', label: 'Oracle',       icon: '🔮', port: 1521 },
-  snowflake:   { color: '#29B5E8', label: 'Snowflake',    icon: '❄️', port: 443 },
-  redis:       { color: '#DC382D', label: 'Redis',        icon: '⚡', port: 6379 },
-  mongodb:     { color: '#47A248', label: 'MongoDB',      icon: '🍃', port: 27017 },
-  cassandra:   { color: '#1287B1', label: 'Cassandra',    icon: '👁', port: 9042 },
-  clickhouse:  { color: '#FFCC01', label: 'ClickHouse',   icon: '🏠', port: 8123 },
-  duckdb:      { color: '#FFF000', label: 'DuckDB',       icon: '🦆', port: 0 },
-  bigquery:    { color: '#4285F4', label: 'BigQuery',     icon: '📊', port: 0 },
-  turso:       { color: '#4FF8D2', label: 'Turso',        icon: '🚀', port: 0 },
+// DB type metadata: icon color, label, icon emoji, default port, category
+const DB_META: Record<DbKind, { color: string; label: string; icon: string; port: number; category: 'relational' | 'nosql' | 'caching' | 'timeseries' }> = {
+  postgres:    { color: '#336791', label: 'PostgreSQL',   icon: '🐘', port: 5432,  category: 'relational' },
+  mysql:       { color: '#00758F', label: 'MySQL',        icon: '🐬', port: 3306,  category: 'relational' },
+  mariadb:     { color: '#003545', label: 'MariaDB',      icon: '🦭', port: 3306,  category: 'relational' },
+  sqlite:      { color: '#003B57', label: 'SQLite',       icon: '📦', port: 0,     category: 'relational' },
+  mssql:       { color: '#CC2927', label: 'SQL Server',   icon: '🏢', port: 1433,  category: 'relational' },
+  cockroachdb: { color: '#6933FF', label: 'CockroachDB',  icon: '🪳', port: 26257, category: 'relational' },
+  redshift:    { color: '#8C4FFF', label: 'Redshift',     icon: '🔴', port: 5439,  category: 'relational' },
+  oracle:      { color: '#F80000', label: 'Oracle',       icon: '🔮', port: 1521,  category: 'relational' },
+  snowflake:   { color: '#29B5E8', label: 'Snowflake',    icon: '❄️', port: 443,   category: 'relational' },
+  redis:       { color: '#DC382D', label: 'Redis',        icon: '⚡', port: 6379,  category: 'caching' },
+  mongodb:     { color: '#47A248', label: 'MongoDB',      icon: '🍃', port: 27017, category: 'nosql' },
+  cassandra:   { color: '#1287B1', label: 'Cassandra',    icon: '👁', port: 9042,  category: 'nosql' },
+  clickhouse:  { color: '#FFCC01', label: 'ClickHouse',   icon: '🏠', port: 8123,  category: 'timeseries' },
+  duckdb:      { color: '#FFF000', label: 'DuckDB',       icon: '🦆', port: 0,     category: 'relational' },
+  bigquery:    { color: '#4285F4', label: 'BigQuery',     icon: '📊', port: 0,     category: 'relational' },
+  turso:       { color: '#4FF8D2', label: 'Turso',        icon: '🚀', port: 0,     category: 'relational' },
 };
 
 // Featured quick-connect DB types shown as cards
 const FEATURED_DBS: DbKind[] = ['postgres', 'mysql', 'sqlite', 'mongodb', 'redis', 'mssql', 'mariadb', 'duckdb'];
+
+// Filter Categories
+const CATEGORIES = [
+  { id: 'all', label: '[ All ]' },
+  { id: 'relational', label: '[ Relational (SQL) ]' },
+  { id: 'nosql', label: '[ Document (NoSQL) ]' },
+  { id: 'caching', label: '[ Caching ]' },
+  { id: 'timeseries', label: '[ Time Series ]' },
+];
+
+// Interactive Spotlight + 3D Tilt Card Component
+const SpotlightTiltCard: React.FC<{
+  dbType: DbKind;
+  meta: typeof DB_META[DbKind];
+  onConnect: () => void;
+}> = ({ dbType, meta, onConnect }) => {
+  const x = useMotionValue(0);
+  const y = useMotionValue(0);
+
+  const rotateX = useSpring(useTransform(y, [-0.5, 0.5], [8, -8]), { damping: 25, stiffness: 200 });
+  const rotateY = useSpring(useTransform(x, [-0.5, 0.5], [-8, 8]), { damping: 25, stiffness: 200 });
+
+  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
+  const [isHovered, setIsHovered] = useState(false);
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    x.set((mouseX / rect.width) - 0.5);
+    y.set((mouseY / rect.height) - 0.5);
+    setMousePosition({ x: mouseX, y: mouseY });
+  };
+
+  const handleMouseLeave = () => {
+    x.set(0);
+    y.set(0);
+    setIsHovered(false);
+  };
+
+  return (
+    <motion.div
+      style={{
+        perspective: 1000,
+        rotateX,
+        rotateY,
+        transformStyle: 'preserve-3d',
+      }}
+      onMouseMove={handleMouseMove}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={handleMouseLeave}
+      onClick={onConnect}
+      whileHover={{ scale: 1.02 }}
+      whileTap={{ scale: 0.98 }}
+      className="relative group cursor-pointer rounded-2xl bg-surface2/40 border border-border/50 p-4 transition-colors duration-300 overflow-hidden shadow-lg"
+    >
+      {/* Soft brand border glow on hover */}
+      <div
+        className="absolute inset-0 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
+        style={{
+          boxShadow: `inset 0 0 0 1px ${meta.color}90, 0 0 24px ${meta.color}35`,
+        }}
+      />
+
+      {/* Mouse Spotlight Radial Gradient */}
+      {isHovered && (
+        <div
+          className="absolute pointer-events-none inset-0 transition-opacity duration-300"
+          style={{
+            background: `radial-gradient(240px circle at ${mousePosition.x}px ${mousePosition.y}px, ${meta.color}30, transparent 80%)`,
+          }}
+        />
+      )}
+
+      {/* Card Content */}
+      <div className="relative z-10 flex items-center space-x-3.5">
+        <div
+          className="w-11 h-11 rounded-xl flex items-center justify-center text-xl shrink-0 transition-transform group-hover:scale-110 shadow-md"
+          style={{ background: `${meta.color}22`, border: `1px solid ${meta.color}44` }}
+        >
+          {meta.icon}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-text group-hover:text-white transition-colors truncate">
+            {meta.label}
+          </div>
+          <div className="text-[11px] text-textMuted/80 font-mono mt-0.5">
+            {meta.port > 0 ? `Port ${meta.port}` : 'Local'}
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+};
 
 export const WelcomePage: React.FC<WelcomePageProps> = ({
   connections,
@@ -51,371 +148,330 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
   recentConnectionIds,
 }) => {
   const [search, setSearch] = useState('');
-  const [hoveredConn, setHoveredConn] = useState<string | null>(null);
-  const [contextMenuConn, setContextMenuConn] = useState<string | null>(null);
-  const [dragOver, setDragOver] = useState(false);
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [activeCategory, setActiveCategory] = useState('all');
+  const [deleteConfirm, setDeleteConfirm] = useState<ConnectionConfig | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Filter connections by search
-  const filtered = connections.filter(c =>
+  const filteredConnections = connections.filter(c =>
     !search || c.name.toLowerCase().includes(search.toLowerCase()) ||
     c.db_type.toLowerCase().includes(search.toLowerCase()) ||
     c.host.toLowerCase().includes(search.toLowerCase()) ||
     c.database.toLowerCase().includes(search.toLowerCase())
   );
 
-  // Recent connections (last 5)
-  const recentConns = recentConnectionIds
-    .map(id => connections.find(c => c.id === id))
-    .filter(Boolean)
-    .slice(0, 5) as ConnectionConfig[];
+  // Filter DB cards by active category
+  const filteredDbCards = FEATURED_DBS.filter(db => {
+    if (activeCategory === 'all') return true;
+    return DB_META[db]?.category === activeCategory;
+  });
 
-  // Starred / favorite connections
-  const starredConns = connections.filter(c => (c as any).starred);
+  // Stagger container variants
+  const containerVariants: Variants = {
+    hidden: { opacity: 0 },
+    visible: {
+      opacity: 1,
+      transition: {
+        staggerChildren: 0.04,
+      },
+    },
+  };
 
-  // File drop handler
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    const file = e.dataTransfer.files[0];
-    if (file && (file.name.endsWith('.json') || file.name.endsWith('.devdash'))) {
-      onImportConnections(file);
-    }
-  }, [onImportConnections]);
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) onImportConnections(file);
+  const itemVariants: Variants = {
+    hidden: { opacity: 0, y: 14 },
+    visible: { opacity: 1, y: 0, transition: { duration: 0.35, ease: [0.25, 0.1, 0.25, 1.0] } },
   };
 
   return (
-    <div
-      className="flex-1 flex flex-col h-screen w-full relative overflow-hidden"
-      style={{ background: 'var(--color-base, #0F0F10)' }}
-      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={handleDrop}
-    >
-      {/* Drag overlay */}
-      {dragOver && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-accent/10 backdrop-blur-sm border-2 border-dashed border-accent rounded-xl m-4 transition-all">
-          <div className="text-center">
-            <Upload className="w-12 h-12 text-accent mx-auto mb-3 animate-bounce" />
-            <p className="text-accent text-lg font-semibold">Drop connection file to import</p>
-            <p className="text-textMuted text-sm mt-1">.json or .devdash files supported</p>
-          </div>
-        </div>
-      )}
-
-      {/* Background gradient orbs */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute -top-32 -right-32 w-96 h-96 rounded-full opacity-[0.03]"
-          style={{ background: 'radial-gradient(circle, #6366F1 0%, transparent 70%)' }} />
-        <div className="absolute -bottom-48 -left-24 w-[500px] h-[500px] rounded-full opacity-[0.025]"
-          style={{ background: 'radial-gradient(circle, #8B5CF6 0%, transparent 70%)' }} />
-        <div className="absolute top-1/3 right-1/4 w-64 h-64 rounded-full opacity-[0.02]"
-          style={{ background: 'radial-gradient(circle, #06B6D4 0%, transparent 70%)' }} />
-      </div>
-
-      {/* Top bar */}
-      <header className="h-12 px-6 flex items-center justify-between shrink-0 relative z-10 border-b border-border/30">
-        <div className="flex items-center space-x-3">
-          <img src="/logo.png" alt="DevDash" className="h-7 w-auto object-contain rounded" />
-          <span className="text-[15px] font-bold tracking-tight text-text">DevDash</span>
-          <span className="text-[10px] font-medium text-textMuted bg-surface2/50 px-2 py-0.5 rounded-full">v1.0</span>
+    <div className="flex flex-col h-screen w-full bg-[#0B0B0C] text-text font-sans overflow-hidden select-none">
+      {/* Top Navigation Bar */}
+      <header className="h-11 px-4 flex items-center justify-between shrink-0 bg-[#0F0F11]/90 border-b border-border/40 backdrop-blur-md z-30">
+        <div className="flex items-center space-x-2.5">
+          <img src="/logo.png" alt="DevDash" className="w-6 h-6 object-contain rounded-full shadow-sm" />
+          <span className="font-bold text-[14px] tracking-tight text-white font-sans">DevDash</span>
+          <span className="text-[10px] font-semibold text-textMuted/70 bg-surface2/60 px-1.5 py-0.5 rounded border border-border/30 font-mono">v1.8</span>
         </div>
         <button
           onClick={onOpenSettings}
-          className="text-textMuted hover:text-text transition-colors p-2 rounded-lg hover:bg-surface2/50"
-          title="Settings"
+          className="text-textMuted hover:text-white transition-colors p-1.5 rounded-lg hover:bg-surface2/60"
+          title="Preferences & Settings (Cmd+,)"
         >
           <Settings className="w-4 h-4" />
         </button>
       </header>
 
-      {/* Main content — scrollable */}
-      <div className="flex-1 overflow-y-auto px-6 py-8 relative z-10">
-        <div className="max-w-4xl mx-auto">
-
-          {/* Hero Section */}
-          <div className="text-center mb-10">
-            <img src="/logo.png" alt="DevDash Logo" className="h-24 w-auto mx-auto mb-5 object-contain filter drop-shadow-xl" />
-            <h1 className="text-[28px] font-bold text-text tracking-tight mb-2">
-              Welcome to DevDash
-            </h1>
-            <p className="text-textMuted text-sm max-w-md mx-auto leading-relaxed">
-              Connect to your databases, manage schemas, and write queries — all in one place.
-              <br />Get started by connecting to an existing database or creating a new connection.
-            </p>
+      {/* Main Container — Sidebar + Central Workspace */}
+      <motion.div
+        variants={containerVariants}
+        initial="hidden"
+        animate="visible"
+        className="flex flex-1 h-[calc(100vh-44px)] overflow-hidden"
+      >
+        {/* === LEFT SIDEBAR === */}
+        <motion.aside
+          variants={itemVariants}
+          className="w-72 bg-[#111113]/95 border-r border-border/40 flex flex-col h-full z-20 shrink-0 backdrop-blur-xl"
+        >
+          {/* Search Bar with Border Beam focus glow */}
+          <div className="p-3 border-b border-border/30 shrink-0">
+            <div className={`relative flex items-center rounded-xl transition-all duration-300 ${
+              isSearchFocused
+                ? 'border-indigo-500/80 shadow-[0_0_16px_rgba(99,102,241,0.35)] bg-surface'
+                : 'border-neutral-800 bg-surface2/30 hover:border-neutral-700'
+            } border px-3 py-1.5`}>
+              <Search className="w-3.5 h-3.5 text-textMuted mr-2 shrink-0" />
+              <input
+                type="text"
+                placeholder="Search Connections..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onFocus={() => setIsSearchFocused(true)}
+                onBlur={() => setIsSearchFocused(false)}
+                className="w-full bg-transparent text-xs text-text placeholder-textMuted/60 outline-none"
+              />
+              <span className="text-[10px] text-textMuted/60 bg-neutral-900 border border-neutral-800 rounded px-1.5 py-0.5 font-mono shrink-0 ml-1">
+                ⌘K
+              </span>
+            </div>
           </div>
 
-          {/* Quick Actions Row */}
-          <div className="flex items-center justify-center gap-3 mb-10">
-            <button
-              onClick={onNewConnection}
-              className="group flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-accent text-white font-semibold text-sm hover:bg-accent/90 transition-all shadow-lg shadow-accent/25 hover:shadow-accent/40 hover:scale-[1.02] active:scale-[0.98]"
+          {/* Navigation Links */}
+          <div className="p-2 space-y-0.5 border-b border-border/30 shrink-0 text-xs">
+            <motion.button
+              whileHover={{ x: 4 }}
+              transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+              className="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl bg-accent/15 text-accent font-medium"
             >
-              <Plus className="w-4 h-4" />
-              <span>New Connection</span>
-            </button>
+              <Database className="w-4 h-4 shrink-0" />
+              <span>My Connections</span>
+            </motion.button>
 
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              className="group flex items-center space-x-2 px-4 py-2.5 rounded-xl bg-surface2/80 text-text font-medium text-sm hover:bg-surface2 transition-all border border-border/50 hover:border-border"
+            <motion.button
+              whileHover={{ x: 4 }}
+              transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+              className="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-textMuted hover:text-text hover:bg-surface2/40 transition-colors"
             >
-              <Upload className="w-4 h-4 text-textMuted group-hover:text-accent transition-colors" />
-              <span>Import</span>
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".json,.devdash"
-              className="hidden"
-              onChange={handleFileSelect}
-            />
+              <Users className="w-4 h-4 shrink-0" />
+              <span>Shared Projects</span>
+            </motion.button>
+
+            <motion.button
+              whileHover={{ x: 4 }}
+              transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+              className="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-textMuted hover:text-text hover:bg-surface2/40 transition-colors"
+            >
+              <Clock className="w-4 h-4 shrink-0" />
+              <span>Recent Queries</span>
+            </motion.button>
           </div>
 
-          {/* Quick Connect Cards — DB types */}
-          <div className="mb-10">
-            <h2 className="text-[11px] font-semibold text-textMuted uppercase tracking-widest mb-3 px-1">
-              Quick Connect
-            </h2>
-            <div className="grid grid-cols-4 gap-2.5">
-              {FEATURED_DBS.map(dbType => {
-                const meta = DB_META[dbType];
+          {/* Saved Connections List */}
+          <div className="flex-1 overflow-y-auto p-2 min-h-0">
+            <div className="px-3 py-2 text-[10px] font-semibold text-textMuted uppercase tracking-wider font-mono">
+              Saved Connections ({filteredConnections.length})
+            </div>
+
+            <div className="space-y-1">
+              {filteredConnections.map((conn) => {
+                const meta = DB_META[conn.db_type] || DB_META.postgres;
                 return (
-                  <button
-                    key={dbType}
-                    onClick={onNewConnection}
-                    className="group relative flex items-center space-x-3 px-4 py-3.5 rounded-xl bg-surface/80 border border-border/50 hover:border-border hover:bg-surface2/60 transition-all cursor-pointer hover:scale-[1.01] active:scale-[0.99]"
+                  <motion.div
+                    key={conn.id}
+                    whileHover={{ x: 4 }}
+                    transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+                    onClick={() => onConnect(conn)}
+                    className="group relative flex items-center justify-between px-3 py-2.5 rounded-xl bg-surface/30 hover:bg-surface2/50 border border-transparent hover:border-border/40 cursor-pointer transition-colors"
                   >
-                    <div
-                      className="w-9 h-9 rounded-lg flex items-center justify-center text-lg shrink-0 transition-transform group-hover:scale-110"
-                      style={{ background: `${meta.color}20` }}
-                    >
-                      {meta.icon}
-                    </div>
-                    <div className="text-left min-w-0">
-                      <div className="text-[13px] font-semibold text-text truncate">{meta.label}</div>
-                      <div className="text-[10px] text-textMuted">
-                        {meta.port > 0 ? `Port ${meta.port}` : 'Local'}
+                    <div className="flex items-center space-x-2.5 min-w-0 flex-1">
+                      <div
+                        className="w-8 h-8 rounded-lg flex items-center justify-center text-sm shrink-0"
+                        style={{ background: `${meta.color}20` }}
+                      >
+                        {meta.icon}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center space-x-1.5">
+                          <span className="text-xs font-semibold text-text truncate group-hover:text-white">
+                            {conn.name}
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-textMuted truncate font-mono mt-0.5">
+                          {meta.label} • {conn.host}:{conn.port}
+                        </div>
                       </div>
                     </div>
-                    <ArrowRight className="w-3.5 h-3.5 text-textMuted/0 group-hover:text-textMuted/60 absolute right-3 top-1/2 -translate-y-1/2 transition-all group-hover:translate-x-0.5" />
-                  </button>
+
+                    {/* Live Connection Pulse Ring */}
+                    <div className="flex items-center space-x-1.5 ml-2">
+                      <div className="relative flex h-2.5 w-2.5 items-center justify-center shrink-0">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500 shadow-[0_0_8px_#10B981]" />
+                      </div>
+
+                      {/* Delete icon */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeleteConfirm(conn);
+                        }}
+                        className="p-1 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-error/20 text-textMuted hover:text-error transition-all"
+                        title="Delete connection"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </motion.div>
                 );
               })}
             </div>
           </div>
 
-          {/* Saved Connections Section */}
-          {connections.length > 0 && (
-            <div className="mb-8">
-              <div className="flex items-center justify-between mb-3 px-1">
-                <h2 className="text-[11px] font-semibold text-textMuted uppercase tracking-widest flex items-center space-x-2">
-                  <Server className="w-3.5 h-3.5" />
-                  <span>Saved Connections ({connections.length})</span>
-                </h2>
-                {/* Search */}
-                <div className="relative">
-                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-textMuted" />
-                  <input
-                    type="text"
-                    placeholder="Filter connections..."
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    className="w-52 h-7 pl-8 pr-3 text-xs bg-surface2/60 border border-border/50 rounded-lg text-text placeholder:text-textMuted/50 focus:outline-none focus:border-accent/40 transition-colors"
-                  />
-                </div>
-              </div>
+          {/* New Connection Button at Bottom of Sidebar */}
+          <div className="p-3 border-t border-border/30 shrink-0">
+            <button
+              onClick={onNewConnection}
+              className="w-full flex items-center justify-center space-x-2 px-4 py-2.5 rounded-xl bg-accent text-white font-semibold text-xs hover:bg-accent/90 transition-all shadow-lg shadow-accent/20"
+            >
+              <Plus className="w-4 h-4" />
+              <span>New Connection</span>
+            </button>
+          </div>
+        </motion.aside>
 
-              {/* Connection list */}
-              <div className="space-y-1.5">
-                {filtered.length === 0 && search && (
-                  <div className="text-center py-8 text-textMuted text-sm">
-                    No connections matching "<span className="text-text font-medium">{search}</span>"
-                  </div>
-                )}
-                {filtered.map(conn => {
-                  const meta = DB_META[conn.db_type] || DB_META.postgres;
-                  const isHovered = hoveredConn === conn.id;
-                  const isRecent = recentConnectionIds.includes(conn.id);
-                  return (
-                    <div
-                      key={conn.id}
-                      className="group relative flex items-center px-4 py-3 rounded-xl bg-surface/60 border border-border/30 hover:border-border/60 hover:bg-surface2/40 transition-all cursor-pointer"
-                      onMouseEnter={() => setHoveredConn(conn.id)}
-                      onMouseLeave={() => { setHoveredConn(null); setContextMenuConn(null); }}
-                      onClick={() => onConnect(conn)}
-                    >
-                      {/* DB icon */}
-                      <div
-                        className="w-9 h-9 rounded-lg flex items-center justify-center text-base shrink-0 mr-3.5"
-                        style={{ background: `${meta.color}18` }}
-                      >
-                        {meta.icon}
-                      </div>
+        {/* === CENTRAL WORKSPACE === */}
+        <main className="flex-1 flex flex-col h-full overflow-y-auto relative bg-[#09090A]">
+          {/* Central Hero Ambient Background Light Source */}
+          <div className="absolute top-12 left-1/2 -translate-x-1/2 w-[600px] h-[350px] bg-gradient-to-b from-indigo-500/15 via-purple-500/8 to-transparent blur-3xl pointer-events-none rounded-full" />
 
-                      {/* Connection info */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center space-x-2">
-                          <span className="text-[13px] font-semibold text-text truncate">{conn.name}</span>
-                          {isRecent && (
-                            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-accent/15 text-accent font-medium">Recent</span>
-                          )}
-                        </div>
-                        <div className="flex items-center space-x-1.5 text-[11px] text-textMuted mt-0.5">
-                          <span>{meta.label}</span>
-                          <span className="text-textMuted/30">•</span>
-                          <span className="truncate">{conn.host}{conn.port > 0 ? `:${conn.port}` : ''}</span>
-                          <span className="text-textMuted/30">•</span>
-                          <span className="font-medium text-text/60">{conn.database}</span>
-                        </div>
-                      </div>
+          {/* Central Content */}
+          <div className="max-w-4xl w-full mx-auto px-8 py-12 relative z-10 flex flex-col items-center">
 
-                      {/* Status dot */}
-                      <div className="flex items-center space-x-2 ml-2">
-                        {conn.is_read_only && (
-                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-warning/15 text-warning font-medium">Read Only</span>
-                        )}
-                        <div className={`w-2 h-2 rounded-full shrink-0 ${conn.is_connected ? 'bg-success shadow-sm shadow-success/50' : 'bg-textMuted/30'}`} />
-                      </div>
-
-                      {/* Hover actions */}
-                      <div className={`flex items-center space-x-1 ml-2 transition-opacity ${isHovered ? 'opacity-100' : 'opacity-0'}`}>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onConnect(conn);
-                          }}
-                          className="px-2.5 py-1 text-[11px] font-semibold text-white bg-accent rounded-lg hover:bg-accent/80 transition-colors"
-                        >
-                          Connect
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setContextMenuConn(contextMenuConn === conn.id ? null : conn.id);
-                          }}
-                          className="p-1 rounded-lg hover:bg-surface2 text-textMuted hover:text-text transition-colors"
-                        >
-                          <MoreHorizontal className="w-4 h-4" />
-                        </button>
-                      </div>
-
-                      {/* Context dropdown */}
-                      {contextMenuConn === conn.id && (
-                        <div
-                          className="absolute right-4 top-full mt-1 w-44 bg-surface border border-border rounded-xl shadow-2xl shadow-black/40 py-1.5 z-50"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <button
-                            onClick={() => { onDuplicateConnection(conn); setContextMenuConn(null); }}
-                            className="w-full flex items-center space-x-2.5 px-3 py-2 text-xs text-text hover:bg-surface2 transition-colors"
-                          >
-                            <Copy className="w-3.5 h-3.5 text-textMuted" />
-                            <span>Duplicate</span>
-                          </button>
-                          <button
-                            onClick={() => { onDeleteConnection(conn.id); setContextMenuConn(null); }}
-                            className="w-full flex items-center space-x-2.5 px-3 py-2 text-xs text-error hover:bg-error/10 transition-colors"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            <span>Delete</span>
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* Empty state when no connections at all */}
-          {connections.length === 0 && (
-            <div className="text-center py-16">
-              <div className="w-16 h-16 rounded-2xl bg-surface2/60 flex items-center justify-center mx-auto mb-5 border border-border/50">
-                <Database className="w-8 h-8 text-textMuted/50" />
-              </div>
-              <h3 className="text-lg font-semibold text-text mb-2">No connections yet</h3>
-              <p className="text-textMuted text-sm max-w-sm mx-auto mb-6">
-                Create your first database connection to get started.
-                You can also drag and drop a connection file here.
+            {/* Central Hero Header */}
+            <motion.div variants={itemVariants} className="text-center mb-10">
+              <motion.img
+                src="/logo.png"
+                alt="DevDash Logo"
+                className="w-24 h-24 mx-auto mb-4 object-contain filter drop-shadow-2xl"
+                whileHover={{ scale: 1.05, rotate: 2 }}
+                transition={{ type: 'spring', stiffness: 300 }}
+              />
+              <h1 className="text-3xl font-bold text-white tracking-tight mb-2 font-sans">
+                DevDash Workspace
+              </h1>
+              <p className="text-textMuted text-sm max-w-md mx-auto leading-relaxed">
+                Connect and manage your data ecosystem.
               </p>
-              <button
-                onClick={onNewConnection}
-                className="inline-flex items-center space-x-2 px-6 py-3 rounded-xl bg-accent text-white font-semibold text-sm hover:bg-accent/90 transition-all shadow-lg shadow-accent/25"
-              >
-                <Plus className="w-4 h-4" />
-                <span>Create First Connection</span>
-              </button>
-            </div>
-          )}
+            </motion.div>
 
-          {/* Recent Connections */}
-          {recentConns.length > 0 && (
-            <div className="mb-8">
-              <h2 className="text-[11px] font-semibold text-textMuted uppercase tracking-widest mb-3 px-1 flex items-center space-x-2">
-                <Clock className="w-3.5 h-3.5" />
-                <span>Recently Used</span>
-              </h2>
-              <div className="flex flex-wrap gap-2">
-                {recentConns.map(conn => {
-                  const meta = DB_META[conn.db_type] || DB_META.postgres;
+            {/* Category Filter Bar (Framer Motion Animated Active Indicator) */}
+            <motion.div variants={itemVariants} className="mb-10">
+              <div className="flex items-center space-x-1 p-1.5 rounded-2xl bg-surface2/30 border border-border/40 backdrop-blur-md">
+                {CATEGORIES.map((cat) => {
+                  const isActive = activeCategory === cat.id;
                   return (
                     <button
-                      key={`recent-${conn.id}`}
-                      onClick={() => onConnect(conn)}
-                      className="group flex items-center space-x-2 px-3.5 py-2 rounded-xl bg-surface/60 border border-border/30 hover:border-accent/30 hover:bg-accent/5 transition-all"
+                      key={cat.id}
+                      onClick={() => setActiveCategory(cat.id)}
+                      className={`relative px-4 py-1.5 rounded-xl text-xs font-mono transition-colors z-10 ${
+                        isActive ? 'text-white font-semibold' : 'text-textMuted hover:text-text'
+                      }`}
                     >
-                      <span className="text-base">{meta.icon}</span>
-                      <span className="text-[12px] font-medium text-text group-hover:text-accent transition-colors">{conn.name}</span>
-                      <ChevronRight className="w-3 h-3 text-textMuted/40 group-hover:text-accent/60 transition-colors" />
+                      {isActive && (
+                        <motion.div
+                          layoutId="activeCategoryPill"
+                          className="absolute inset-0 rounded-xl bg-surface2/80 border border-border/80 shadow-inner shadow-white/5 backdrop-blur-md"
+                          transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+                        />
+                      )}
+                      <span className="relative z-10">{cat.label}</span>
                     </button>
                   );
                 })}
               </div>
-            </div>
-          )}
+            </motion.div>
 
-          {/* Footer tips */}
-          <div className="mt-12 pt-6 border-t border-border/20">
-            <div className="grid grid-cols-3 gap-4 text-center">
-              <div className="p-4 rounded-xl bg-surface/40 border border-border/20">
-                <div className="text-lg mb-2">🔒</div>
-                <p className="text-[11px] text-textMuted leading-relaxed">
-                  <span className="text-text font-semibold block mb-0.5">Encrypted Storage</span>
-                  Credentials stored locally with AES-256 encryption
-                </p>
-              </div>
-              <div className="p-4 rounded-xl bg-surface/40 border border-border/20">
-                <div className="text-lg mb-2">⚡</div>
-                <p className="text-[11px] text-textMuted leading-relaxed">
-                  <span className="text-text font-semibold block mb-0.5">Zero Latency</span>
-                  Native Rust backend — sub-2ms query execution
-                </p>
-              </div>
-              <div className="p-4 rounded-xl bg-surface/40 border border-border/20">
-                <div className="text-lg mb-2">🤖</div>
-                <p className="text-[11px] text-textMuted leading-relaxed">
-                  <span className="text-text font-semibold block mb-0.5">AI Powered</span>
-                  Natural language to SQL with local or cloud LLMs
-                </p>
-              </div>
-            </div>
+            {/* Quick Connect Cards Grid (Spotlight + 3D Tilt) */}
+            <motion.div
+              variants={itemVariants}
+              className="w-full grid grid-cols-4 gap-3.5 mb-10"
+            >
+              {filteredDbCards.map((dbType) => {
+                const meta = DB_META[dbType];
+                return (
+                  <SpotlightTiltCard
+                    key={dbType}
+                    dbType={dbType}
+                    meta={meta}
+                    onConnect={onNewConnection}
+                  />
+                );
+              })}
+            </motion.div>
+
+            {/* Import file drop trigger */}
+            <motion.div variants={itemVariants} className="w-full text-center pt-4 border-t border-border/20">
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="inline-flex items-center space-x-2 text-xs text-textMuted hover:text-accent transition-colors"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>Import connection config file (.json or .devdash)</span>
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".json,.devdash"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) onImportConnections(file);
+                }}
+              />
+            </motion.div>
+
           </div>
+        </main>
+      </motion.div>
 
-          {/* Keyboard shortcut hint */}
-          <div className="text-center mt-8 pb-6">
-            <p className="text-[11px] text-textMuted/50">
-              Press <kbd className="px-1.5 py-0.5 rounded bg-surface2/60 text-textMuted text-[10px] font-mono border border-border/30">Ctrl+N</kbd> to create a new connection
-              {' · '}
-              <kbd className="px-1.5 py-0.5 rounded bg-surface2/60 text-textMuted text-[10px] font-mono border border-border/30">Ctrl+,</kbd> for settings
-            </p>
+      {/* Delete Confirmation Modal */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-md">
+          <div className="bg-surface border border-border rounded-2xl shadow-2xl w-[400px] overflow-hidden p-6">
+            <div className="flex items-start space-x-4 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-error/15 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-error" />
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-text mb-1">Delete Connection</h3>
+                <p className="text-xs text-textMuted leading-relaxed">
+                  Are you sure you want to remove <strong className="text-text">{deleteConfirm.name}</strong>?
+                  This will delete the saved connection configuration.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end space-x-2.5 pt-2 border-t border-border/40">
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="px-4 py-2 rounded-xl text-xs font-medium text-text bg-surface2 hover:bg-surface2/80 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  onDeleteConnection(deleteConfirm.id);
+                  setDeleteConfirm(null);
+                }}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-error hover:bg-error/90 transition-colors shadow-lg shadow-error/20"
+              >
+                Delete Connection
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { motion } from 'framer-motion';
 import { ConnectionConfig, TableItem } from '../types';
 import { Database, Table, Plus, Search, Server, FolderGit2, CheckCircle2, Home, LogOut, Trash2, AlertTriangle, X } from 'lucide-react';
 
@@ -63,7 +64,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* TablePlus style compact header with DevDash Logo */}
       <div className="h-11 px-3 flex items-center justify-between bg-transparent border-b border-border shrink-0">
         <div className="flex items-center space-x-2">
-          <img src="/logo.png" alt="DevDash" className="h-5 w-auto object-contain rounded" />
+          <img src="/logo.png" alt="DevDash" className="w-6 h-6 object-contain rounded-full" />
           <span className="font-bold text-[14px] text-text tracking-tight font-sans">DEVDASH</span>
         </div>
         <button
@@ -103,9 +104,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
             }
 
             return (
-              <div
+              <motion.div
                 key={String(conn.id)}
-                className={`group w-full flex items-center justify-between px-2 py-1 rounded text-[13px] transition-all font-sans cursor-pointer ${
+                whileHover={{ x: 4 }}
+                transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+                className={`group w-full flex items-center justify-between px-2 py-1.5 rounded text-[13px] transition-all font-sans cursor-pointer ${
                   isSelected
                     ? 'bg-accent/15 text-accent font-medium'
                     : 'text-text hover:bg-surface2 hover:text-text'
@@ -114,8 +117,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 onClick={() => handleConnClick(conn)}
               >
                 <div className="flex items-center space-x-2 truncate">
-                  {/* 3px status dot */}
-                  <span className={`w-[3px] h-[3px] rounded-full ${dotColor} shrink-0`} />
+                  {/* Status dot with live pulse ring when selected */}
+                  {isSelected ? (
+                    <div className="relative flex h-2.5 w-2.5 items-center justify-center shrink-0">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500 shadow-[0_0_8px_#10B981]" />
+                    </div>
+                  ) : (
+                    <span className={`w-[5px] h-[5px] rounded-full ${dotColor} shrink-0`} />
+                  )}
                   <Server className="w-3.5 h-3.5 text-accent shrink-0" />
                   <span className="truncate text-[13px]">{conn.name}</span>
                 </div>
@@ -134,7 +144,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     </button>
                   )}
                 </div>
-              </div>
+              </motion.div>
             );
           })}
         </div>
