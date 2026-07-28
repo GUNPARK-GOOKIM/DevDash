@@ -120,9 +120,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
       {/* Top bar */}
       <header className="h-12 px-6 flex items-center justify-between shrink-0 relative z-10 border-b border-border/30">
         <div className="flex items-center space-x-3">
-          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-accent to-purple-500 flex items-center justify-center shadow-lg shadow-accent/20">
-            <Database className="w-4 h-4 text-white" />
-          </div>
+          <img src="/logo.png" alt="DevDash" className="h-7 w-auto object-contain rounded" />
           <span className="text-[15px] font-bold tracking-tight text-text">DevDash</span>
           <span className="text-[10px] font-medium text-textMuted bg-surface2/50 px-2 py-0.5 rounded-full">v1.0</span>
         </div>
@@ -141,12 +139,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
 
           {/* Hero Section */}
           <div className="text-center mb-10">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent via-purple-500 to-cyan-400 flex items-center justify-center mx-auto mb-5 shadow-2xl shadow-accent/30 relative">
-              <Database className="w-8 h-8 text-white" />
-              <div className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-success flex items-center justify-center">
-                <Zap className="w-3 h-3 text-white" />
-              </div>
-            </div>
+            <img src="/logo.png" alt="DevDash Logo" className="h-24 w-auto mx-auto mb-5 object-contain filter drop-shadow-xl" />
             <h1 className="text-[28px] font-bold text-text tracking-tight mb-2">
               Welcome to DevDash
             </h1>
