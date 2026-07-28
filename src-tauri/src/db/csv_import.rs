@@ -76,12 +76,10 @@ pub async fn execute_csv_import(
         .collect::<Vec<_>>()
         .join(", ");
 
-    let placeholders = (1..=headers.len())
+    let _placeholders = (1..=headers.len())
         .map(|idx| format!("${}", idx))
         .collect::<Vec<_>>()
         .join(", ");
-
-    let sql = format!("INSERT INTO \"{}\" ({}) VALUES ({});", table_name, cols_clause, placeholders);
 
     let mut inserted_count = 0;
     let mut failed_rows = Vec::new();

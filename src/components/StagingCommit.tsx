@@ -92,14 +92,14 @@ export const StagingCommit: React.FC<StagingCommitProps> = ({
                       {change.checked ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
                     </button>
                   </td>
-                  <td className="px-3 py-2 text-accent font-medium">{change.tableName}</td>
+                  <td className="px-3 py-2 text-cyan-400 font-medium">{change.tableName}</td>
                   <td className="px-3 py-2">
                     <span className="flex items-center space-x-1.5">
                       {changeTypeIcon(change.changeType)}
-                      <span className="text-textMuted capitalize">{change.columnName || change.changeType}</span>
+                      <span className="text-text/80 capitalize">{change.columnName || change.changeType}</span>
                     </span>
                   </td>
-                  <td className="px-3 py-2 text-text font-mono">{change.identifier}</td>
+                  <td className="px-3 py-2 text-amber-400 font-mono font-semibold">{change.identifier}</td>
                   <td className="px-3 py-2">
                     <DiffDisplay diff={change.diff} />
                   </td>
@@ -154,9 +154,9 @@ const DiffDisplay: React.FC<{ diff: string }> = ({ diff }) => {
         return (
           <span key={i} className="inline-flex items-center space-x-1">
             {field && <span className="text-textMuted">{field}</span>}
-            <span className="text-error">{oldVal}</span>
-            <span className="text-textMuted">→</span>
-            <span className="text-success">{after}</span>
+            <span className="text-rose-400 font-medium">{oldVal}</span>
+            <span className="text-text/40">→</span>
+            <span className="text-emerald-400 font-medium">{after}</span>
             {i < parts.length - 1 && <span className="text-textMuted">,</span>}
           </span>
         );

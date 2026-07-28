@@ -4,6 +4,7 @@ import { TableGrid } from './components/TableGrid';
 import { SqlEditor } from './components/SqlEditor';
 import { SavedQueries } from './components/SavedQueries';
 import { ConnectionModal } from './components/ConnectionModal';
+import { WelcomePage } from './components/WelcomePage';
 import { SafeModeModal } from './components/SafeModeModal';
 import { FilterBar } from './components/FilterBar';
 import { StructureView } from './components/StructureView';
@@ -96,80 +97,162 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
-  // === CONNECTIONS ===
-  const [connections, setConnections] = useState<ConnectionConfig[]>([
-    { id: 'conn-1', name: 'production_db_app_main', db_type: 'postgres', host: 'localhost', port: 5432, user: 'postgres', database: 'prod_db', project_path: currentProjectPath, is_connected: true },
-    { id: 'conn-2', name: 'local_test_db', db_type: 'mysql', host: 'localhost', port: 3306, user: 'root', database: 'test_db', project_path: currentProjectPath, is_connected: false },
-    { id: 'conn-3', name: 'staging_cache', db_type: 'redis', host: 'localhost', port: 6379, user: '', database: '0', project_path: currentProjectPath, is_connected: false },
-  ]);
-  const [activeConnection, setActiveConnection] = useState<ConnectionConfig | null>(connections[0]);
+  // === WELCOME PAGE STATE ===
+  const [showWelcome, setShowWelcome] = useState<boolean>(() => {
+    const saved = localStorage.getItem('devdash_show_welcome');
+    // Show welcome by default; only skip if user was previously connected
+    return saved !== 'false';
+  });
 
-  // === TABLES ===
-  const [tables] = useState<TableItem[]>([
-    { name: 'users', table_type: 'BASE TABLE' },
-    { name: 'transactions', table_type: 'BASE TABLE' },
-    { name: 'orders', table_type: 'BASE TABLE' },
-    { name: 'orders_shipped', table_type: 'BASE TABLE' },
-    { name: 'logs_system', table_type: 'BASE TABLE' },
-    { name: 'products', table_type: 'BASE TABLE' },
-  ]);
+  // === CONNECTIONS (PERSISTED) ===
+  const [connections, setConnections] = useState<ConnectionConfig[]>(() => {
+    const saved = localStorage.getItem('devdash_connections');
+    if (saved) {
+      try { return JSON.parse(saved); } catch {}
+    }
+    return [];
+  });
+  const [activeConnection, setActiveConnection] = useState<ConnectionConfig | null>(null);
 
-  // === COLUMNS (for products table as shown in screenshots) ===
-  const [columns, setColumns] = useState<ColumnItem[]>([
-    { name: 'id', data_type: 'INT', is_nullable: false, is_primary_key: true },
-    { name: 'product_id', data_type: 'VARCHAR', is_nullable: false, is_primary_key: false },
-    { name: 'product_name', data_type: 'VARCHAR', is_nullable: false, is_primary_key: false },
-    { name: 'price', data_type: 'DECIMAL', is_nullable: false, is_primary_key: false },
-    { name: 'stock_quantity', data_type: 'INT', is_nullable: true, is_primary_key: false },
-    { name: 'could', data_type: 'VARCHAR', is_nullable: true, is_primary_key: false },
-    { name: 'could2', data_type: 'VARCHAR', is_nullable: true, is_primary_key: false },
-    { name: 'updated_at', data_type: 'TIMESTAMP', is_nullable: true, is_primary_key: false },
-  ]);
+  // Recent connection IDs (persisted)
+  const [recentConnectionIds, setRecentConnectionIds] = useState<string[]>(() => {
+    const saved = localStorage.getItem('devdash_recent_connections');
+    if (saved) {
+      try { return JSON.parse(saved); } catch {}
+    }
+    return [];
+  });
 
-  // === ROWS (matching screenshot products data) ===
-  const [rows, setRows] = useState<any[]>([
-    { id: 1, product_id: 'u101', product_name: 'Apple liks RB', price: '$28.00', stock_quantity: 30, could: '-', could2: '-', updated_at: '2024-0...' },
-    { id: 2, product_id: 'u102', product_name: 'Electronics', price: '$25.00', stock_quantity: 15, could: '-', could2: '-', updated_at: '2024-0...' },
-    { id: 3, product_id: 'u103', product_name: 'Corny Categories', price: '$25.00', stock_quantity: 10, could: '-', could2: '-', updated_at: '2024-0...' },
-    { id: 4, product_id: 'u104', product_name: 'Sony Reflex', price: '$75.00', stock_quantity: 100, could: '-', could2: '-', updated_at: '2024-0...' },
-    { id: 5, product_id: 'u106', product_name: 'products', price: '$25.00', stock_quantity: null, could: '-', could2: '-', updated_at: '2024-0...', product_config: { category: 'Electronics', brand: 'Sony', stock: '48' } },
-    { id: 6, product_id: 'u106', product_name: 'Rutaphanic Bags', price: '$29.00', stock_quantity: null, could: '-', could2: '-', updated_at: '2024-0...' },
-    { id: 7, product_id: 'u107', product_name: 'Brand: Sony', price: '$29.00', stock_quantity: null, could: '-', could2: '-', updated_at: '2024-0...' },
-    { id: 8, product_id: 'u106', product_name: 'Apple Purker', price: '$19.00', stock_quantity: null, could: '-', could2: '-', updated_at: '2024-0...' },
-    { id: 9, product_id: 'u104', product_name: 'Stock_Quantity', price: '$35.00', stock_quantity: null, could: '-', could2: '-', updated_at: '2024-0...' },
-    { id: 10, product_id: 'u101', product_name: 'Apple liks RB', price: '$25.00', stock_quantity: null, could: '-', could2: '-', updated_at: '2024-0...' },
-    { id: 11, product_id: 'u102', product_name: 'Electronics', price: '$25.00', stock_quantity: 10, could: 'win: shipped:it...', could2: '-', updated_at: '2024-0...' },
-    { id: 12, product_id: 'u103', product_name: 'Corny Reflex', price: '$75.00', stock_quantity: 10, could: 'win: shipped: t...', could2: '-', updated_at: '2024-0...' },
-    { id: 13, product_id: 'u105', product_name: 'produsts', price: '$25.00', stock_quantity: 10, could: 'win: shipped: t', could2: '-', updated_at: '2024-0...' },
-    { id: 14, product_id: 'u106', product_name: 'products', price: '$25.00', stock_quantity: null, could: 'ecovin: shipped"...', could2: '-', updated_at: '2024-0...' },
-    { id: 15, product_id: 'u107', product_name: 'Rutaphanic Bags', price: '$29.00', stock_quantity: null, could: 'alkandactions@t...', could2: '-', updated_at: '2024-0...' },
-    { id: 16, product_id: 'u108', product_name: 'Brand: Sony', price: '$39.00', stock_quantity: null, could: 'esovirn:shipped: t...', could2: '-', updated_at: '2024-0...' },
-  ]);
+  useEffect(() => {
+    localStorage.setItem('devdash_connections', JSON.stringify(connections));
+  }, [connections]);
+
+  useEffect(() => {
+    localStorage.setItem('devdash_recent_connections', JSON.stringify(recentConnectionIds));
+  }, [recentConnectionIds]);
+
+  useEffect(() => {
+    localStorage.setItem('devdash_show_welcome', String(showWelcome));
+  }, [showWelcome]);
+
+  // Welcome page handlers
+  const handleWelcomeConnect = useCallback((conn: ConnectionConfig) => {
+    setActiveConnection(conn);
+    setShowWelcome(false);
+    // Track recent connections (most recent first, max 10)
+    setRecentConnectionIds(prev => {
+      const filtered = prev.filter(id => id !== conn.id);
+      return [conn.id, ...filtered].slice(0, 10);
+    });
+  }, []);
+
+  const handleDeleteConnection = useCallback((id: string) => {
+    setConnections(prev => prev.filter(c => c.id !== id));
+    setRecentConnectionIds(prev => prev.filter(cid => cid !== id));
+    if (activeConnection?.id === id) {
+      setActiveConnection(null);
+      setShowWelcome(true);
+    }
+  }, [activeConnection]);
+
+  const handleDuplicateConnection = useCallback((conn: ConnectionConfig) => {
+    const duplicate: ConnectionConfig = {
+      ...conn,
+      id: `conn-${Date.now()}`,
+      name: `${conn.name} (copy)`,
+      is_connected: false,
+    };
+    setConnections(prev => [...prev, duplicate]);
+  }, []);
+
+  const handleImportConnections = useCallback((file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = JSON.parse(e.target?.result as string);
+        const imported = Array.isArray(data) ? data : [data];
+        const newConns: ConnectionConfig[] = imported.map((c: any, i: number) => ({
+          id: `conn-import-${Date.now()}-${i}`,
+          name: c.name || `Imported Connection ${i + 1}`,
+          db_type: c.db_type || 'postgres',
+          host: c.host || 'localhost',
+          port: c.port || 5432,
+          user: c.user || '',
+          database: c.database || '',
+          is_connected: false,
+        }));
+        setConnections(prev => [...prev, ...newConns]);
+      } catch {
+        console.error('Failed to parse connection file');
+      }
+    };
+    reader.readAsText(file);
+  }, []);
+
+  // Ctrl+N shortcut to open new connection from welcome page
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'n' && showWelcome) {
+        e.preventDefault();
+        setIsConnModalOpen(true);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [showWelcome]);
+
+  // === TABLES (populated from actual DB connection) ===
+  const [tables] = useState<TableItem[]>([]);
+
+  // === COLUMNS (populated from selected table) ===
+  const [columns, setColumns] = useState<ColumnItem[]>([]);
+
+  // === ROWS (populated from query results) ===
+  const [rows, setRows] = useState<any[]>([]);
 
   const [pkInfo] = useState<PkInfo>({ has_single_pk: true, pk_column_name: 'id', is_read_only: false });
 
-  // === TABS (matching screenshot tab bar) ===
-  const [tabs, setTabs] = useState<WorkspaceTab[]>([
-    { id: 'tab-browser', title: 'Browser (Products)', type: 'browser', tableName: 'products' },
-    { id: 'tab-query', title: 'Query Editor', type: 'query', sql: "-- Querying Product Stock Levels\nSELECT product_id, product_name, price, stock_quantity\n  FROM products\n  WHERE stock_quantity < 60;" },
-    { id: 'tab-staging', title: 'Staging & Commit', type: 'staging' },
-    { id: 'tab-console', title: 'Query Console 1', type: 'console', sql: '' },
-    { id: 'tab-structure', title: 'Table Structure', type: 'structure', tableName: 'products' },
-  ]);
-  const [activeTabId, setActiveTabId] = useState<string>('tab-browser');
+  // === WORKSPACE TABS (PERSISTED) ===
+  const [tabs, setTabs] = useState<WorkspaceTab[]>(() => {
+    const saved = localStorage.getItem('devdash_workspace_tabs');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch {}
+    }
+    return [
+      { id: 'tab-query', title: 'Query Editor', type: 'query', sql: '-- Write your SQL query here\n' },
+      { id: 'tab-staging', title: 'Staging & Commit', type: 'staging' },
+    ];
+  });
 
-  // === STAGED CHANGES (matching screenshot staging view) ===
-  const [stagedChanges, setStagedChanges] = useState<StagedChange[]>([
-    { id: 'sc-1', tableName: 'products', changeType: 'update', identifier: 'product_id', diff: 'price: $25 → $24.99, stock: 48 → 72', rowId: 1, columnName: 'product_id', checked: true },
-    { id: 'sc-2', tableName: 'products', changeType: 'update', identifier: 'product_id', diff: 'price: $25 → $24.99, stock: 48 → 72', rowId: 2, columnName: 'product_id', checked: true },
-    { id: 'sc-3', tableName: 'products', changeType: 'update', identifier: 'product_id', diff: 'price: $25 → $24.99, stock: 48 → 72', rowId: 3, columnName: 'product_id', checked: true },
-    { id: 'sc-4', tableName: 'products', changeType: 'update', identifier: 'name', diff: 'price: $25 → $24.99, stock: 48 → 72', rowId: 4, columnName: 'name', checked: true },
-    { id: 'sc-5', tableName: 'products', changeType: 'update', identifier: 'price', diff: 'price: $25 → $24.99, stock: 48 → 72', rowId: 5, columnName: 'price', checked: true },
-    { id: 'sc-6', tableName: 'products', changeType: 'update', identifier: 'price', diff: 'price: $25 → $24.99, stock: 48 → 72', rowId: 6, columnName: 'price', checked: true },
-    { id: 'sc-7', tableName: 'users', changeType: 'update', identifier: 'product_id', diff: 'price: $60 → $60', rowId: 7, columnName: 'product_id', checked: true },
-    { id: 'sc-8', tableName: 'users', changeType: 'update', identifier: 'user_name', diff: 'price: $10 → $16.99, stock: 48 → 100.0035', rowId: 8, columnName: 'user_name', checked: true },
-    { id: 'sc-9', tableName: 'users', changeType: 'update', identifier: 'user_name', diff: 'price: $10 → 60', rowId: 9, columnName: 'user_name', checked: true },
-  ]);
+  const [activeTabId, setActiveTabId] = useState<string>(() => {
+    const saved = localStorage.getItem('devdash_active_tab_id');
+    if (saved && tabs.some(t => t.id === saved)) return saved;
+    return tabs[0]?.id || 'tab-browser';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('devdash_workspace_tabs', JSON.stringify(tabs));
+  }, [tabs]);
+
+  useEffect(() => {
+    localStorage.setItem('devdash_active_tab_id', activeTabId);
+  }, [activeTabId]);
+
+  // === STAGED CHANGES (PERSISTED) ===
+  const [stagedChanges, setStagedChanges] = useState<StagedChange[]>(() => {
+    const saved = localStorage.getItem('devdash_staged_changes');
+    if (saved) {
+      try { return JSON.parse(saved); } catch {}
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('devdash_staged_changes', JSON.stringify(stagedChanges));
+  }, [stagedChanges]);
 
   // === SAFE MODE ===
   const [safeModeEnabled, setSafeModeEnabled] = useState(true);
@@ -194,10 +277,7 @@ export const App: React.FC = () => {
   const [showHistoryPanel, setShowHistoryPanel] = useState(false);
 
   // === SAVED QUERIES ===
-  const [savedQueries, setSavedQueries] = useState<SavedQuery[]>([
-    { id: 'sq-1', name: 'Fetch Stock Levels', sql_content: "SELECT * FROM products WHERE stock_quantity < 60;", project_path: currentProjectPath, created_at: '2026-07-25T11:00:00Z' },
-    { id: 'sq-2', name: 'Recent Orders', sql_content: 'SELECT * FROM orders ORDER BY created_at DESC LIMIT 100;', project_path: currentProjectPath, created_at: '2026-07-25T11:30:00Z' },
-  ]);
+  const [savedQueries, setSavedQueries] = useState<SavedQuery[]>([]);
 
   // === FILTER ===
   const [filterWhere, setFilterWhere] = useState('');
@@ -410,6 +490,41 @@ export const App: React.FC = () => {
     }
   };
 
+  // === WELCOME PAGE ===
+  if (showWelcome) {
+    return (
+      <div className="flex h-screen w-screen font-sans relative select-none bg-base text-text">
+        <WelcomePage
+          connections={connections}
+          onConnect={handleWelcomeConnect}
+          onNewConnection={() => setIsConnModalOpen(true)}
+          onDeleteConnection={handleDeleteConnection}
+          onDuplicateConnection={handleDuplicateConnection}
+          onImportConnections={handleImportConnections}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          recentConnectionIds={recentConnectionIds}
+        />
+
+        {/* Connection Modal available from Welcome page */}
+        <ConnectionModal isOpen={isConnModalOpen} onClose={() => setIsConnModalOpen(false)} onSave={(connData) => {
+          const newConn: ConnectionConfig = { ...connData, id: `conn-${Date.now()}`, is_connected: true };
+          setConnections(prev => [...prev, newConn]);
+          handleWelcomeConnect(newConn);
+        }} />
+
+        {/* Settings Modal available from Welcome page */}
+        <SettingsModal
+          isOpen={isSettingsOpen}
+          onClose={() => setIsSettingsOpen(false)}
+          aiConfig={aiConfig}
+          onAiConfigChange={handleAiConfigChange}
+          generalSettings={generalSettings}
+          onGeneralSettingsChange={handleGeneralSettingsChange}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen w-screen font-sans relative select-none bg-base text-text">
       {/* === LEFT SIDEBAR === */}
@@ -420,6 +535,7 @@ export const App: React.FC = () => {
         onSelectConnection={(conn) => setActiveConnection(conn)}
         onSelectTable={handleOpenTableTab}
         onOpenNewConnectionModal={() => setIsConnModalOpen(true)}
+        onDisconnect={() => { setActiveConnection(null); setShowWelcome(true); }}
         currentProjectPath={currentProjectPath}
       />
 

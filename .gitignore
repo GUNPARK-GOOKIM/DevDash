@@ -1,20 +1,33 @@
-# Dependencies (installed via npm install, not committed)
+# Dependencies
 node_modules/
 
 # Build output
 dist/
+dist-isolation/
 
 # Rust build artifacts
 src-tauri/target/
 
+# Temporary Vault & Scratch Directories
+devdash_vault/
+.tempmediaStorage/
+*.tmp
+*.log
+*.enc
+
 # OS junk
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# IDE
+# IDE & Tooling
 .vscode/
 .idea/
+*.swp
+*.swo
 
-# Env files
+# Env & Local credentials
 .env
 .env.local
+.env.*.local
+shortcuts.json

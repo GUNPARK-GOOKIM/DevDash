@@ -61,6 +61,15 @@ export const AiAgentBar: React.FC<AiAgentBarProps> = ({
     setError(null);
     setPreviewSql(null);
 
+    // Check if provider is properly configured
+    if (aiConfig.provider === 'ollama') {
+      // Ollama needs no key but must be running locally
+    } else if (!aiConfig.apiKey) {
+      setError(`No API key configured for ${aiConfig.provider.toUpperCase()}. Go to Settings (Ctrl+,) → AI Provider to add your key.`);
+      setLoading(false);
+      return;
+    }
+
     const schemaContext = schema.tables
       .map(t => `Table: ${t.name} (${t.columns.join(', ')})`)
       .join('\n');
@@ -71,7 +80,6 @@ export const AiAgentBar: React.FC<AiAgentBarProps> = ({
       let content = '';
 
       if (aiConfig.provider === 'ollama') {
-        // Direct Ollama API call (100% local, no key needed)
         const res = await fetch(`${aiConfig.baseUrl || 'http://localhost:11434'}/api/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -84,9 +92,10 @@ export const AiAgentBar: React.FC<AiAgentBarProps> = ({
         if (res.ok) {
           const data = await res.json();
           content = data.response?.trim() || '';
+        } else {
+          throw new Error(`Ollama returned ${res.status}`);
         }
       } else if (aiConfig.provider === 'openai' || aiConfig.provider === 'custom') {
-        // Standard OpenAI-compatible API
         const res = await fetch(`${aiConfig.baseUrl || 'https://api.openai.com/v1'}/chat/completions`, {
           method: 'POST',
           headers: {
@@ -101,9 +110,10 @@ export const AiAgentBar: React.FC<AiAgentBarProps> = ({
         if (res.ok) {
           const data = await res.json();
           content = data.choices?.[0]?.message?.content?.trim() || '';
+        } else {
+          throw new Error(`${aiConfig.provider} returned ${res.status}`);
         }
       } else if (aiConfig.provider === 'claude') {
-        // Anthropic Claude API
         const res = await fetch(`${aiConfig.baseUrl || 'https://api.anthropic.com/v1'}/messages`, {
           method: 'POST',
           headers: {
@@ -121,12 +131,15 @@ export const AiAgentBar: React.FC<AiAgentBarProps> = ({
         if (res.ok) {
           const data = await res.json();
           content = data.content?.[0]?.text?.trim() || '';
+        } else {
+          throw new Error(`Claude returned ${res.status}`);
         }
       }
 
       if (!content) {
-        // Local fallback parser
-        content = localFallbackGenerate(query, schema, dbType, activeTable);
+        setError(`No response from ${aiConfig.provider.toUpperCase()}. Make sure the service is running and configured correctly in Settings.`);
+        setLoading(false);
+        return;
       }
 
       // Clean up markdown formatting if present
@@ -138,14 +151,13 @@ export const AiAgentBar: React.FC<AiAgentBarProps> = ({
         setPreviewSql(content);
         setIsWrite(isWriteOperation(content));
       }
-    } catch {
-      // Fallback if network or local server unavailable
-      const fallback = localFallbackGenerate(query, schema, dbType, activeTable);
-      if (fallback.startsWith('ERROR:')) {
-        setError(fallback.slice(7));
+    } catch (err: any) {
+      // Show a helpful error instead of silently generating fake SQL
+      const providerName = aiConfig.provider.toUpperCase();
+      if (aiConfig.provider === 'ollama') {
+        setError(`Cannot connect to Ollama at ${aiConfig.baseUrl || 'http://localhost:11434'}. Make sure Ollama is installed and running locally. Download at ollama.com`);
       } else {
-        setPreviewSql(fallback);
-        setIsWrite(isWriteOperation(fallback));
+        setError(`Failed to connect to ${providerName}: ${err?.message || 'Network error'}. Check your API key and settings (Ctrl+,).`);
       }
     }
     setLoading(false);
@@ -204,9 +216,15 @@ export const AiAgentBar: React.FC<AiAgentBarProps> = ({
             <div className="p-4 space-y-2">
               <div className="flex items-center space-x-2 text-warning text-xs">
                 <AlertTriangle className="w-4 h-4" />
-                <span className="font-medium">Cannot generate safe SQL</span>
+                <span className="font-medium">AI Provider Error</span>
               </div>
-              <p className="text-xs text-textMuted">{error}</p>
+              <p className="text-xs text-textMuted leading-relaxed">{error}</p>
+              <button
+                onClick={() => { setError(null); setExpanded(false); }}
+                className="text-[11px] text-accent hover:text-accent/80 font-medium"
+              >
+                Dismiss
+              </button>
             </div>
           )}
 
@@ -256,43 +274,3 @@ function isWriteOperation(sql: string): boolean {
          upper.startsWith('CREATE');
 }
 
-function localFallbackGenerate(
-  query: string,
-  schema: { tables: { name: string; columns: string[] }[] },
-  dbType: string,
-  activeTable?: string,
-): string {
-  const q = query.toLowerCase();
-  let targetTable = activeTable || schema.tables[0]?.name || 'unknown';
-  for (const t of schema.tables) {
-    if (q.includes(t.name.toLowerCase())) {
-      targetTable = t.name;
-      break;
-    }
-  }
-
-  const tableSchema = schema.tables.find(t => t.name === targetTable);
-  if (!tableSchema) return `ERROR: Could not find table matching your request.`;
-
-  if (q.includes('recent') || q.includes('latest') || q.includes('last')) {
-    const limitMatch = q.match(/(\d+)/);
-    const limit = limitMatch ? parseInt(limitMatch[1]) : 10;
-    const timeCol = tableSchema.columns.find(c => c.includes('created') || c.includes('date') || c.includes('time')) || tableSchema.columns[0];
-    return `SELECT * FROM ${targetTable} ORDER BY ${timeCol} DESC LIMIT ${limit};`;
-  }
-
-  if (q.includes('count')) {
-    return `SELECT COUNT(*) FROM ${targetTable};`;
-  }
-
-  if (q.includes('below') || q.includes('less than') || q.includes('under')) {
-    const numMatch = q.match(/(\d+)/);
-    const num = numMatch ? numMatch[1] : '10';
-    const numericCol = tableSchema.columns.find(c => c.includes('stock') || c.includes('quantity') || c.includes('price') || c.includes('amount'));
-    if (numericCol) {
-      return `SELECT * FROM ${targetTable} WHERE ${numericCol} < ${num};`;
-    }
-  }
-
-  return `SELECT * FROM ${targetTable} LIMIT 50;`;
-}

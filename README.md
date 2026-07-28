@@ -1,154 +1,143 @@
 # DevDash ⚡
 
-> **Fast, open-source native database GUI client with project-aware query workflows and TablePlus-grade ergonomics.**
-
-*Note: For the latest feature progress and comparative gap analysis with Beekeeper Studio and Antares SQL, see [PROGRESS.md](file:///e:/devdash/PROGRESS.md).*
+> **Fast, open-source native database GUI client with AI-assisted SQL workflows, git-style staging, and TablePlus-grade ergonomics.**
 
 ---
 
-## 📸 Interface Screenshots
+## 🌟 Why DevDash Stands Out Over TablePlus
 
-![TablePlus Data Grid & Cell Inspector](docs/images/table_grid.png)
-
-![14-Dialect Database Selector Dropdown](docs/images/dialect_selector.png)
-
-![CodeMirror 6 SQL Editor with Beautifier](docs/images/sql_editor.png)
+| Feature / Capability | ⚡ DevDash | 🔵 TablePlus |
+|---|---|---|
+| **License & Limits** | **100% Free & Open Source** (Unlimited tabs, windows & connections) | Free tier limited to 2 tabs / 2 windows; requires paid license |
+| **Safety Workflow** | **Git-Style Staging & Commit** (Visual side-by-side diffs, checkable changes & atomic single-transaction commits) | Basic inline cell edits without atomic batch staging or diff previews |
+| **AI Integration** | **Built-in AI Agent Bar (`Cmd+K`)** (Supports 100% local/offline Ollama LLMs, Claude & OpenAI with query preview guards) | No built-in AI agent (requires external tools or plugins) |
+| **Performance Monitoring** | **Real-Time Bento Health Grid** (Live CPU, RAM, connection gauges, lock warnings & 24h slow query tracker) | Basic server info modal without live visual bento dashboards |
+| **Schema Visualization** | **Interactive ERD Visualizer** (Built-in React Flow graph with draggable table nodes, cardinality edges & mini-map) | Paid plugin or basic static table structure view |
+| **Engine Speed & Tech Stack** | **Tauri (Rust + React)** (~15MB memory footprint, 60fps virtualization) | Native Swift/C++ (Mac) or C# (Windows) closed-source |
 
 ---
 
-## 🚀 Quick Start
+## 💻 Download & Local Execution Guide
+
+There are two ways to run DevDash on your local machine:
+
+### Option 1: Direct Download (Standalone Executable — No Setup Required)
+Download the pre-compiled installer for your operating system directly from GitHub Releases:
+
+- **Windows**: Download `DevDash-Setup.exe` or `.msi`
+- **macOS**: Download `DevDash.dmg` (Apple Silicon & Intel)
+- **Linux**: Download `DevDash.AppImage` or `.deb`
+
+👉 **[Go to GitHub Releases](../../releases/latest)**
+
+---
+
+### Option 2: Run from Source locally via Git (For Developers)
+
+#### Prerequisites
+1. [Node.js v18+](https://nodejs.org/)
+2. [Rust Toolchain (Stable)](https://www.rust-lang.org/tools/install)
 
 ```bash
-# 1. Install dependencies
+# 1. Clone the repository
+git clone https://github.com/GUNPARK-GOOKIM/DevDash.git
+cd DevDash
+
+# 2. Install dependencies
 npm install
 
-# 2. Run in frontend dev mode (Vite live reload)
-npm run dev
+# 3. Launch DevDash locally (launches native Rust backend + Vite live server)
+npm run tauri dev
 
-# 3. Build production bundle
-npm run build
+# 4. Build production installer locally
+npm run tauri build
 ```
 
 ---
 
-## 🎯 Keyboard Shortcuts (Zero Mouse Required)
+## 🎯 Key Features
 
-| Shortcut | Action |
-|---|---|
-| `Cmd + K` / `Ctrl + K` | Open Global Command Palette (tables, connections, queries) |
-| `Cmd + Enter` / `Ctrl + Enter` | Run SQL query in CodeMirror 6 editor |
-| `Single Click Cell` | Select cell for inspection in right drawer |
-| `Double Click Cell` | Edit cell value in Table Grid |
-| `Esc` | Cancel modal / close active dialog |
+### ⚡ Core Engine & 14+ Database Dialects
+- **Multi-Engine Support**: PostgreSQL, MySQL, MariaDB, SQLite, Microsoft SQL Server, CockroachDB, Amazon Redshift, Snowflake, Oracle, ClickHouse, DuckDB, Redis, MongoDB, and Cassandra.
+- **Virtualized High-Speed Grid**: 60fps smooth scrolling for 100,000+ rows using `@tanstack/react-virtual`.
+- **TablePlus Ergonomics**: Left sidebar connection explorer, top workspace tabs, virtualized data grid, CodeMirror 6 SQL editor with auto-formatting (`Cmd+I`).
 
----
+### 🤖 AI Agent Prompt Bar (`Cmd + K`)
+- **Natural Language to SQL**: Converts natural language requests (e.g. *"show 10 most recent orders"*) directly into engine-specific SQL.
+- **Provider Choice & 100% Offline Support**: Supports **Ollama / Local LLMs** (no API key needed, 100% offline & free), Anthropic Claude, OpenAI, and Custom OpenAI API endpoints (DeepSeek, Groq, localAI).
+- **Safety & Preview Guard**: Displays a preview panel with formatted SQL and an **Execute** button before running anything, with explicit warning badges for write operations.
 
-## ⚡ Comprehensive Feature Suite
+### 🔀 Git-Style Staging & Atomic Commit Workflow
+- **Local Staging**: Every cell edit, row insertion, and row deletion is staged locally first — nothing writes to the database immediately.
+- **Visual Diff Review**: Staging & Commit tab displays a git-style diff table with checkboxes, change type icons (pencil, plus, trash), row identifiers, and formatted old → new diffs.
+- **Atomic Execution**: Applies all checked changes in a single atomic SQL transaction with automatic rollback on error.
 
-### Phase 1: Core Engine & GUI Foundation
-- **TablePlus-Grade Layout**: Left sidebar connection explorer, tabs top, virtualized grid center, SQL editor bottom. Zero relearning curve.
-- **Multi-Engine Support**: PostgreSQL, MySQL, MariaDB, SQLite, Microsoft SQL Server (`tiberius`), CockroachDB, Amazon Redshift.
-- **Safe Mode Protection**: Mandatory typed confirmation dialog (`CONFIRM`) before executing destructive queries (`DROP`, `TRUNCATE`, `DELETE`/`UPDATE` without `WHERE`).
-- **Atomic Staged Edits**: Multi-cell inline edits with a side-by-side diff review modal before committing. Automatic rollback on failure.
-- **OS Keychain Security**: Passwords stored directly in macOS Keychain, Windows Credential Manager, or Linux Secret Service via `keyring`. Zero plain-text credentials.
-- **Project-Aware Saved Queries**: Saved queries automatically scope to your active project workspace folder path.
-- **Virtualized Grid**: 60fps smooth scrolling for 100,000+ rows using `@tanstack/react-virtual`.
+### 📊 Health Grid Bento Dashboard
+- **Real-Time Telemetry**: Bento-style dashboard auto-refreshing every 5 seconds without page flashes.
+- **Metrics**: CPU load line chart, active connections gauge (green → amber → red threshold color shifts), RAM utilization, table locks monitor with lock warning badges, buffer pool cache hit rate with trend sparklines, and 24-hour slow queries tracker with expandable SQL.
 
-### Phase 2: Power-User Niche Suite
-- **Visual Quick Filter & Sort (`FilterBar.tsx`)**: TablePlus-style visual filter bar (`[Column] [Operator] [Value]`) and instant sorting.
-- **Structure & DDL Inspector (`StructureView.tsx`)**: Data Grid vs. Structure mode switcher for column types, nullability, keys, and DDL column additions/drops.
-- **Interactive ER Diagram Map (`ErDiagramModal.tsx`)**: Visual node-graph map of database tables and schema structures.
-- **Query History Log Panel (`QueryHistory.tsx`)**: Collapsible panel tracking all executed queries with execution time, status, and click-to-rerun.
-- **Data Export & Import (`ExportModal.tsx` & `ImportModal.tsx`)**: UI for exporting/importing table data via CSV, JSON, or SQL dump formats.
-- **Formatted JSON / JSONB Cell Viewer (`JsonViewerModal.tsx`)**: Specialized formatted inspector for complex JSON columns with 1-click copy.
-- **Right-Side Cell Inspector Drawer (`CellInspectorPanel.tsx`)**: TablePlus-style right drawer for inspecting raw multi-line values, text length, and data types.
+### 🕸️ Interactive Schema Visualizer (ERD)
+- **React Flow Node Map**: Every table renders as a draggable node card listing column types, PK key icons, and FK link icons.
+- **Orthogonal Routing**: Foreign key relationships drawn with "1" and "n" cardinality labels.
+- **Interactive Tools**: Built-in mini-map, pan/zoom controls, search input with node highlighting, and right detail panel displaying indexes and constraints.
 
-### Phase 3: DB Admin & Performance Suite
-- **Process Activity Monitor (`ProcessManagerModal.tsx`)**: Active server connection list with query state, PID, client IP, and 1-click process termination.
-- **SQL Execution Plan Visualizer (`ExplainVisualizerModal.tsx`)**: Interactive node-graph breakdown of query costs and index scans (`EXPLAIN ANALYZE`).
+### 🔍 Inline JSON Inspector & Context Menu
+- **Contextual Tree View**: Floating panel renders JSON cells as a syntax-highlighted, collapsible tree (purple keys, green strings, amber numbers, blue booleans, red nulls) with 1-click clipboard copy.
+- **Right-Click Context Menu**: Copy cell value, Copy row as JSON/CSV/SQL INSERT statement, Filter by value, Open in JSON viewer, Set NULL, or Delete row.
 
-### Phase 4: Visual Redesign (TablePlus Parity + Enhancements)
-- **TablePlus Color System**: Custom base background (`#0F0F10`), surface (`#1A1A1C`), card/hover (`#222224`), borders, text, and accent colors defined globally.
-- **Backdrop-Filter Sidebar**: Frosted-glass sidebar (12px blur, 85% opacity) with a subtle inner right border.
-- **Bento Card Panel Separation**: Sections (connections, tables, saved queries) sit in subtle card frames with 8px radius and low-contrast borders.
-- **Row Hover & Selection**: 120ms background transitions on hover, selected row highlighted with 2px indigo accent left border and soft highlight.
-- **Tab Bar Overhaul**: Pill-shaped active tabs, 50% opacity inactive tabs, and close buttons that appear on hover.
-- **Status Bar & Short Cut Hints**: Compact, single-line footer with status dot, latency, shortcuts, and darker background shift.
-- **Outline Focus Rings**: Global custom focus ring overrides (2px solid `#6366F1` at 50% opacity, 2px offset) to replace browser default outlines.
-- **Randomized Skeleton Loading**: Skeleton rows with pseudo-random widths between 40-90% and shimmer gradient animation.
-- **Visual Empty States**: Custom database cylinder SVG illustrations centered with muted labels for empty tables and queries.
-- **Draggable Resizable Editor**: Draggable divider between CodeMirror SQL editor and results grid, with 6px grab zone and custom row-resize cursor.
-- **Run Query Click Spinner**: 150ms spinner animation inside the Run button on click or Ctrl+Enter.
-- **Explain Plan Validations**: Automatically disables Explain button with custom tooltip explanation on non-SELECT queries.
-- **Debounced Dual Filter**: Real-time sidebar query filter that matches both connection and table names simultaneously, with 30% opacity on mismatches.
-- **Pulsing Status Indicators**: 3px connection status dots with pulsing yellow reconnecting states.
-- **Custom Tooltip Engine**: General custom tooltips showing keyboard shortcuts with a 600ms hover delay.
-- **Tab Overflow Dropdown**: Chevron tab selector dropdown for managing multiple open tabs.
-- **Tauri Query Cancellation**: Spawns queries inside async tokio tasks that can be cancelled/aborted mid-flight via IPC.
-- **14 TablePlus Database Dialects**: Complete support for PostgreSQL, MySQL, MariaDB, SQLite, MSSQL, CockroachDB, Redshift, Snowflake, Oracle, ClickHouse, DuckDB, Redis, MongoDB, and Cassandra across editor and connection modal.
-- **Format SQL (Query Beautifier)**: 1-click SQL formatting (`Cmd+I`) that auto-indents and formats SQL statements.
-- **Read-Only Connection Mode**: Toggle switch per connection to protect production databases from accidental DDL or write queries.
-- **SSH Tunneling Configuration**: Route database connection traffic through remote SSH bastion jump hosts.
-- **1-Click DDL Exporter**: Generate and copy `CREATE TABLE` SQL definitions from Structure mode.
-- **Reusable SQL Snippets**: Dropdown library of reusable SQL query templates (JOINs, batch inserts, DDL, indexes, upserts).
-- **Mock Data Generator**: 1-click test row seeder for testing database table schemas.
+### 🛡️ Safe Mode & OS Keychain Security
+- **Safe Mode Shield**: Mandatory confirmation prompts before executing destructive queries (`DROP`, `TRUNCATE`, `DELETE`/`UPDATE` without `WHERE`). Defaults to ON for production connections.
+- **OS Keychain Security**: Passwords, SSH keys, and API keys are stored encrypted via macOS Keychain, Windows Credential Manager, or Linux Secret Service (`keyring` crate).
+- **SSH Tunneling & TLS/SSL**: Route traffic through SSH bastion hosts with custom certificates and strict SSL verification options.
+
+### 📥 CSV & Excel Import / Export Engine
+- **Column Mapping Import**: Drag & drop CSV or Excel (.xlsx) files with auto-matched column mapping, 5-row preview, batch insertion (500 rows/batch), and failed row reporting.
+- **Streaming Export**: Export data to CSV, JSON, SQL dump, or Excel with streaming batch support for large datasets.
+
+### ⚙️ Customizable Settings & Shortcuts (`Cmd + ,`)
+- **TablePlus Preferences**: Configure default grid page sizes (300 to 10,000 rows), font family, font size (11px–18px), statement execution timeouts, and keyword auto-capitalization.
+- **Shortcut Editor**: Customizable keyboard shortcuts with live key recording and Reset Defaults capability.
 
 ---
 
 ## 📁 Clean Codebase Architecture
 
 ```text
-devdash/
-├── src-tauri/             # Rust Backend Engine
-│   └── src/
-│       ├── commands.rs    # Tauri IPC API Handlers
-│       ├── lib.rs         # Tauri Runtime & State Builder
-│       └── db/
-│           ├── executor.rs        # Dynamic SQL Execution
-│           ├── introspection.rs   # Schema, Column & PK Reflection
-│           ├── safe_mode.rs       # Destructive Query Analyzer
-│           ├── staged_edits.rs    # Transactional Batch Updates
-│           ├── export.rs          # CSV, JSON & SQL Dump Parsers
-│           ├── app_storage.rs     # Embedded SQLite Saved Queries
-│           ├── pool.rs            # Connection Pool Manager
-│           └── credentials.rs     # OS Keychain Secrets Vault
-│
-└── src/                   # React + TypeScript Frontend
-    ├── App.tsx            # Main Application Shell & State
-    ├── types.ts           # Shared TypeScript Interfaces
-    └── components/
-        ├── Sidebar.tsx                # Connections & Table Explorer
-        ├── TableGrid.tsx              # Virtualized 60fps Result Grid
-        ├── SqlEditor.tsx              # CodeMirror 6 SQL Editor
-        ├── FilterBar.tsx              # Visual Quick Filter & Sort Builder
-        ├── StructureView.tsx          # Table DDL & Schema Inspector
-        ├── CellInspectorPanel.tsx     # Right-Side Cell Inspector Drawer
-        ├── DiffModal.tsx              # Staged Edit Review Dialog
-        ├── SafeModeModal.tsx          # Destructive Protection Dialog
-        ├── ErDiagramModal.tsx         # Interactive Schema ER Map
-        ├── ExportModal.tsx            # CSV / JSON / SQL Dump Export Modal
-        ├── ImportModal.tsx            # Data File Upload & Import Modal
-        ├── JsonViewerModal.tsx        # Formatted JSON/JSONB Cell Inspector
-        ├── ProcessManagerModal.tsx    # Active Connection & PID Activity Monitor
-        ├── ExplainVisualizerModal.tsx # SQL Execution Plan Tree Diagram
-        ├── QueryHistory.tsx           # SQL Execution Log Panel
-        ├── CommandPalette.tsx         # Cmd+K Global Search
-        ├── SavedQueries.tsx           # Project-Aware Saved Queries
-        └── ConnectionModal.tsx        # Connection Configuration Dialog
+e:\devdash/
+├── src-tauri/                 # Native Rust Backend (Tauri v2)
+│   ├── src/
+│   │   ├── db/                # Database Engine & Feature Modules
+│   │   │   ├── app_storage.rs # Embedded SQLite storage (connections, queries, history, groups)
+│   │   │   ├── autocomplete.rs# SQL Editor schema & column autocomplete provider
+│   │   │   ├── chart_formatter.rs # Query result chart type classifier
+│   │   │   ├── csv_import.rs  # CSV/Excel import engine with type coercion & error reporting
+│   │   │   ├── encrypted_export.rs # AES-256-GCM encrypted export/import
+│   │   │   ├── json_tree.rs   # Structured JSON tree parser
+│   │   │   ├── metrics_board.rs # Live DB telemetry collector
+│   │   │   ├── row_formatter.rs # Right-click context menu data formatters
+│   │   │   ├── schema_migration.rs # Schema snapshot diffing & DDL generator
+│   │   │   ├── shortcut_config.rs  # Keyboard shortcut config manager
+│   │   │   └── structure_editor.rs # Visual table structure DDL executor
+│   │   ├── commands.rs        # Tauri IPC command handlers
+│   │   └── lib.rs             # Application entry point & IPC command registry
+│   └── Cargo.toml
+├── src/                       # React 18 + TypeScript Frontend
+│   ├── components/            # UI Components
+│   │   ├── AiAgentBar.tsx     # Natural language AI Prompt bar
+│   │   ├── ContextMenu.tsx    # Right-click cell context menu
+│   │   ├── HealthGrid.tsx     # Bento telemetry dashboard with Recharts
+│   │   ├── InlineJsonPopup.tsx# Floating syntax-highlighted JSON tree inspector
+│   │   ├── SchemaVisualizer.tsx # Interactive ERD visualizer (React Flow)
+│   │   ├── SettingsModal.tsx  # TablePlus preferences & AI settings modal
+│   │   ├── Sidebar.tsx        # Glassmorphism connection & table sidebar
+│   │   ├── SqlEditor.tsx      # CodeMirror 6 SQL editor
+│   │   ├── StagingCommit.tsx  # Git-style diff table & commit flow
+│   │   └── TableGrid.tsx      # Virtualized high-speed data grid
+│   ├── App.tsx                # Main application layout & workspace state
+│   ├── index.css              # Custom Tailwind CSS theme
+│   └── types.ts               # Core TypeScript interfaces
+├── .github/workflows/         # GitHub Actions Release Automation
+│   └── release.yml            # Automated cross-platform binary builder
+├── README.md
+└── package.json
 ```
-
----
-
-## 🧪 Running Tests
-
-```bash
-# Run Rust backend unit tests (19 tests)
-cd src-tauri
-cargo test
-```
-
----
-
-## 📄 License
-
-Open Source — MIT License.

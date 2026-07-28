@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ConnectionConfig, TableItem } from '../types';
-import { Database, Table, Plus, Search, Server, FolderGit2, CheckCircle2 } from 'lucide-react';
+import { Database, Table, Plus, Search, Server, FolderGit2, CheckCircle2, Home, LogOut, Trash2, AlertTriangle, X } from 'lucide-react';
 
 interface SidebarProps {
   connections: ConnectionConfig[];
@@ -9,6 +9,8 @@ interface SidebarProps {
   onSelectConnection: (conn: ConnectionConfig) => void;
   onSelectTable: (tableName: string) => void;
   onOpenNewConnectionModal: () => void;
+  onDisconnect?: () => void;
+  onDeleteConnection?: (id: string) => void;
   currentProjectPath: string;
 }
 
@@ -19,11 +21,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectConnection,
   onSelectTable,
   onOpenNewConnectionModal,
+  onDisconnect,
+  onDeleteConnection,
   currentProjectPath,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [connectingId, setConnectingId] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<ConnectionConfig | null>(null);
 
   // UX5: 100ms Debounce for real-time filter search
   useEffect(() => {
@@ -55,11 +60,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside className="w-60 glass-sidebar flex flex-col h-full z-10 select-none font-sans text-text">
-      {/* TablePlus style compact header */}
-      <div className="h-10 px-3 flex items-center justify-between bg-transparent border-b border-border shrink-0">
+      {/* TablePlus style compact header with DevDash Logo */}
+      <div className="h-11 px-3 flex items-center justify-between bg-transparent border-b border-border shrink-0">
         <div className="flex items-center space-x-2">
-          <Database className="w-4 h-4 text-accent" />
-          <span className="font-semibold text-[13px] text-text tracking-tight">DevDash</span>
+          <img src="/logo.png" alt="DevDash" className="h-5 w-auto object-contain rounded" />
+          <span className="font-bold text-[14px] text-text tracking-tight font-sans">DEVDASH</span>
         </div>
         <button
           onClick={onOpenNewConnectionModal}
@@ -98,15 +103,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
             }
 
             return (
-              <button
+              <div
                 key={String(conn.id)}
-                onClick={() => handleConnClick(conn)}
-                className={`w-full flex items-center justify-between px-2 py-1 rounded text-[13px] transition-all font-sans ${
+                className={`group w-full flex items-center justify-between px-2 py-1 rounded text-[13px] transition-all font-sans cursor-pointer ${
                   isSelected
                     ? 'bg-accent/15 text-accent font-medium'
                     : 'text-text hover:bg-surface2 hover:text-text'
                 }`}
                 style={{ opacity: matched ? 1 : 0.3 }}
+                onClick={() => handleConnClick(conn)}
               >
                 <div className="flex items-center space-x-2 truncate">
                   {/* 3px status dot */}
@@ -114,8 +119,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <Server className="w-3.5 h-3.5 text-accent shrink-0" />
                   <span className="truncate text-[13px]">{conn.name}</span>
                 </div>
-                {isSelected && <CheckCircle2 className="w-3.5 h-3.5 text-accent shrink-0 ml-1" />}
-              </button>
+                <div className="flex items-center space-x-1">
+                  {isSelected && <CheckCircle2 className="w-3.5 h-3.5 text-accent shrink-0" />}
+                  {onDeleteConnection && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDeleteConfirm(conn);
+                      }}
+                      className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-error/20 text-textMuted hover:text-error transition-all shrink-0"
+                      title={`Remove ${conn.name}`}
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+              </div>
             );
           })}
         </div>
@@ -160,6 +179,67 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Back to Home / Disconnect */}
+      {onDisconnect && (
+        <div className="m-2 mt-0 shrink-0">
+          <button
+            onClick={onDisconnect}
+            className="w-full flex items-center justify-center space-x-2 px-3 py-2 rounded-lg bg-surface2/40 hover:bg-surface2 text-textMuted hover:text-text text-[12px] font-medium transition-all border border-border/30 hover:border-border/60"
+            title="Back to Connection Manager"
+          >
+            <Home className="w-3.5 h-3.5" />
+            <span>Connection Manager</span>
+          </button>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-surface border border-border rounded-xl shadow-2xl w-[380px] overflow-hidden">
+            {/* Header */}
+            <div className="px-5 pt-5 pb-3 flex items-start space-x-3">
+              <div className="w-10 h-10 rounded-xl bg-error/15 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-error" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-sm font-semibold text-text mb-1">Delete Connection</h3>
+                <p className="text-xs text-textMuted leading-relaxed">
+                  Are you sure you want to remove <strong className="text-text">{deleteConfirm.name}</strong>?
+                  This will delete the saved connection details. Your actual database will <strong className="text-text">not</strong> be affected.
+                </p>
+              </div>
+            </div>
+
+            {/* Connection details */}
+            <div className="mx-5 mb-4 px-3 py-2 rounded-lg bg-base border border-border/50 text-[11px] text-textMuted space-y-0.5">
+              <div><span className="text-text/60">Type:</span> {deleteConfirm.db_type}</div>
+              <div><span className="text-text/60">Host:</span> {deleteConfirm.host}:{deleteConfirm.port}</div>
+              <div><span className="text-text/60">Database:</span> {deleteConfirm.database}</div>
+            </div>
+
+            {/* Actions */}
+            <div className="px-5 pb-5 flex items-center justify-end space-x-2">
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="px-4 py-2 rounded-lg text-xs font-medium text-text bg-surface2 hover:bg-surface2/80 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  onDeleteConnection?.(deleteConfirm.id);
+                  setDeleteConfirm(null);
+                }}
+                className="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-error hover:bg-error/90 transition-colors"
+              >
+                Delete Connection
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </aside>
   );
 };
