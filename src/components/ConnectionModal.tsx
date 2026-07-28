@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ConnectionConfig, DbKind } from '../types';
 import { X, Server, Shield, KeyRound, Network } from 'lucide-react';
 
@@ -6,12 +6,14 @@ interface ConnectionModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSave: (conn: Omit<ConnectionConfig, 'id'>, password: string) => void;
+  initialDbKind?: DbKind;
 }
 
 export const ConnectionModal: React.FC<ConnectionModalProps> = ({
   isOpen,
   onClose,
   onSave,
+  initialDbKind,
 }) => {
   const [activeTab, setActiveTab] = useState<'general' | 'ssh'>('general');
   const [name, setName] = useState('');
@@ -30,27 +32,36 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
   const [sshUser, setSshUser] = useState('');
   const [sshKeyPath, setSshKeyPath] = useState('~/.ssh/id_rsa');
 
-  if (!isOpen) return null;
-
   const handleDriverChange = (kind: DbKind) => {
     setDbType(kind);
     switch (kind) {
-      case 'postgres': setPort(5432); setUser('postgres'); break;
-      case 'mysql': setPort(3306); setUser('root'); break;
-      case 'mariadb': setPort(3306); setUser('root'); break;
-      case 'sqlite': setPort(0); break;
-      case 'duckdb': setPort(0); break;
-      case 'mssql': setPort(1433); setUser('sa'); break;
-      case 'cockroachdb': setPort(26257); setUser('root'); break;
-      case 'redshift': setPort(5439); setUser('awsuser'); break;
-      case 'oracle': setPort(1521); setUser('system'); break;
-      case 'snowflake': setPort(443); setUser('admin'); break;
-      case 'redis': setPort(6379); setUser('default'); break;
-      case 'mongodb': setPort(27017); setUser('admin'); break;
-      case 'cassandra': setPort(9042); setUser('cassandra'); break;
-      case 'clickhouse': setPort(8123); setUser('default'); break;
+      case 'postgres': setPort(5432); setUser('postgres'); setDatabase('postgres'); break;
+      case 'mysql': setPort(3306); setUser('root'); setDatabase('mysql'); break;
+      case 'mariadb': setPort(3306); setUser('root'); setDatabase('mariadb'); break;
+      case 'sqlite': setPort(0); setUser(''); setDatabase('./database.sqlite'); break;
+      case 'duckdb': setPort(0); setUser(''); setDatabase('./database.duckdb'); break;
+      case 'mssql': setPort(1433); setUser('sa'); setDatabase('master'); break;
+      case 'cockroachdb': setPort(26257); setUser('root'); setDatabase('defaultdb'); break;
+      case 'redshift': setPort(5439); setUser('awsuser'); setDatabase('dev'); break;
+      case 'oracle': setPort(1521); setUser('system'); setDatabase('ORCL'); break;
+      case 'snowflake': setPort(443); setUser('admin'); setDatabase('DEMO_DB'); break;
+      case 'redis': setPort(6379); setUser('default'); setDatabase('0'); break;
+      case 'mongodb': setPort(27017); setUser('admin'); setDatabase('test'); break;
+      case 'cassandra': setPort(9042); setUser('cassandra'); setDatabase('system'); break;
+      case 'clickhouse': setPort(8123); setUser('default'); setDatabase('default'); break;
+      case 'bigquery': setPort(0); setUser(''); setDatabase('my-project-id'); break;
+      case 'turso': setPort(0); setUser(''); setDatabase('libsql://my-db.turso.io'); break;
     }
   };
+
+  useEffect(() => {
+    if (isOpen) {
+      handleDriverChange(initialDbKind || 'postgres');
+      setName('');
+    }
+  }, [isOpen, initialDbKind]);
+
+  if (!isOpen) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

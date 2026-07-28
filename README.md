@@ -17,6 +17,28 @@
 
 ---
 
+## 🚀 Roadmap & Ongoing Gap Audit (Where to Begin Tomorrow)
+
+Here is the exact prioritized roadmap and gap audit to begin with when returning tomorrow:
+
+### 🔴 High Priority Core Gaps:
+1. **GAP 1: Live Rust Database TCP Drivers & Connection Manager (`src-tauri/src/db_pool.rs`)**
+   - *Goal*: Wire up live connection pooling, active session management, and TCP query execution against real PostgreSQL, MySQL, SQLite, Redis, and MongoDB instances via `sqlx` and native driver crates.
+2. **GAP 2: Working SSH Tunneling Engine (`src-tauri/src/ssh_tunnel.rs`)**
+   - *Goal*: Turn the frontend SSH tunnel config UI into a real working SSH tunnel forwarder using `ssh2` in Rust to forward local ports to remote database hosts.
+3. **GAP 3: Composite Primary Key Constraint Analyzer & Grid Edits**
+   - *Goal*: Parse multi-column PK definitions and allow staging updates/deletes with multi-column `WHERE col1=? AND col2=?` identifiers in `TableGrid.tsx` and staging diffs.
+
+### 🟡 Medium Priority Feature Gaps:
+4. **GAP 4: Chunked Result Streaming for Large Datasets**
+   - *Goal*: Implement streaming IPC events in Tauri to stream query rows in chunks of 500 rows for 100,000+ row datasets without loading gigabytes into RAM.
+5. **GAP 5: Interactive ERD Auto-Layout & Schema Migration Exporter**
+   - *Goal*: Add automatic hierarchical graph layout (Dagre/ELK) to `SchemaVisualizer.tsx` and 1-click full-database DDL dump exporter.
+6. **GAP 6: Native Standalone App Build Packaging (.exe via Tauri)**
+   - *Goal*: Configure production `tauri.conf.json`, bundle assets, and compile native Windows `.exe` release installer.
+
+---
+
 ## 💻 Download & Local Execution Guide
 
 There are two ways to run DevDash on your local machine:

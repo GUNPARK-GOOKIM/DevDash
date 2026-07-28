@@ -11,7 +11,7 @@ import {
 interface WelcomePageProps {
   connections: ConnectionConfig[];
   onConnect: (conn: ConnectionConfig) => void;
-  onNewConnection: () => void;
+  onNewConnection: (kind?: DbKind) => void;
   onDeleteConnection: (id: string) => void;
   onDuplicateConnection: (conn: ConnectionConfig) => void;
   onImportConnections: (file: File) => void;
@@ -39,12 +39,21 @@ const DB_META: Record<DbKind, { color: string; label: string; icon: string; port
   turso:       { color: '#4FF8D2', label: 'Turso',        icon: '🚀', port: 0,     category: 'relational' },
 };
 
-// Featured quick-connect DB types shown as cards
-const FEATURED_DBS: DbKind[] = ['postgres', 'mysql', 'sqlite', 'mongodb', 'redis', 'mssql', 'mariadb', 'duckdb'];
+// 8 Most Used DBs
+const MOST_USED_DBS: DbKind[] = ['postgres', 'mysql', 'sqlite', 'mongodb', 'redis', 'mssql', 'mariadb', 'duckdb'];
+
+// All Compatible DBs grouped by Category
+const CATEGORY_DBS: Record<string, DbKind[]> = {
+  most_used: MOST_USED_DBS,
+  relational: ['postgres', 'mysql', 'sqlite', 'mssql', 'mariadb', 'duckdb', 'cockroachdb', 'redshift', 'oracle', 'snowflake', 'bigquery', 'turso'],
+  nosql: ['mongodb', 'cassandra'],
+  caching: ['redis'],
+  timeseries: ['clickhouse', 'redshift'],
+};
 
 // Filter Categories
 const CATEGORIES = [
-  { id: 'all', label: '[ All ]' },
+  { id: 'most_used', label: '[ Most Used ]' },
   { id: 'relational', label: '[ Relational (SQL) ]' },
   { id: 'nosql', label: '[ Document (NoSQL) ]' },
   { id: 'caching', label: '[ Caching ]' },
@@ -149,7 +158,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
 }) => {
   const [search, setSearch] = useState('');
   const [isSearchFocused, setIsSearchFocused] = useState(false);
-  const [activeCategory, setActiveCategory] = useState('all');
+  const [activeCategory, setActiveCategory] = useState('most_used');
   const [deleteConfirm, setDeleteConfirm] = useState<ConnectionConfig | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -163,10 +172,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
   );
 
   // Filter DB cards by active category
-  const filteredDbCards = FEATURED_DBS.filter(db => {
-    if (activeCategory === 'all') return true;
-    return DB_META[db]?.category === activeCategory;
-  });
+  const filteredDbCards = CATEGORY_DBS[activeCategory] || MOST_USED_DBS;
 
   // Stagger container variants
   const containerVariants: Variants = {
@@ -331,7 +337,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
           {/* New Connection Button at Bottom of Sidebar */}
           <div className="p-3 border-t border-border/30 shrink-0">
             <button
-              onClick={onNewConnection}
+              onClick={() => onNewConnection()}
               className="w-full flex items-center justify-center space-x-2 px-4 py-2.5 rounded-xl bg-accent text-white font-semibold text-xs hover:bg-accent/90 transition-all shadow-lg shadow-accent/20"
             >
               <Plus className="w-4 h-4" />
@@ -404,7 +410,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
                     key={dbType}
                     dbType={dbType}
                     meta={meta}
-                    onConnect={onNewConnection}
+                    onConnect={() => onNewConnection(dbType)}
                   />
                 );
               })}

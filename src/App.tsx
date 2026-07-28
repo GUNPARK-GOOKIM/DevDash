@@ -19,6 +19,7 @@ import { ContextMenu, buildCellContextMenu, ContextMenuAction } from './componen
 import { SettingsModal, AiConfig, GeneralSettings } from './components/SettingsModal';
 import {
   ConnectionConfig,
+  DbKind,
   TableItem,
   ColumnItem,
   PkInfo,
@@ -104,11 +105,23 @@ export const App: React.FC = () => {
     return saved !== 'false';
   });
 
+  const [selectedDbKind, setSelectedDbKind] = useState<DbKind | undefined>(undefined);
+
   // === CONNECTIONS (PERSISTED) ===
   const [connections, setConnections] = useState<ConnectionConfig[]>(() => {
     const saved = localStorage.getItem('devdash_connections');
     if (saved) {
-      try { return JSON.parse(saved); } catch {}
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          // Strictly purge demo connections
+          return parsed.filter((c: any) =>
+            c.id !== 'conn-1' && c.id !== 'conn-2' && c.id !== 'conn-3' &&
+            c.name !== 'production_db_app_main' && c.name !== 'local_test_db' &&
+            c.name !== 'staging_cache' && c.name !== 'POSTGRES Connection'
+          );
+        }
+      } catch {}
     }
     return [];
   });
@@ -497,7 +510,10 @@ export const App: React.FC = () => {
         <WelcomePage
           connections={connections}
           onConnect={handleWelcomeConnect}
-          onNewConnection={() => setIsConnModalOpen(true)}
+          onNewConnection={(kind) => {
+            setSelectedDbKind(kind);
+            setIsConnModalOpen(true);
+          }}
           onDeleteConnection={handleDeleteConnection}
           onDuplicateConnection={handleDuplicateConnection}
           onImportConnections={handleImportConnections}
@@ -506,11 +522,16 @@ export const App: React.FC = () => {
         />
 
         {/* Connection Modal available from Welcome page */}
-        <ConnectionModal isOpen={isConnModalOpen} onClose={() => setIsConnModalOpen(false)} onSave={(connData) => {
-          const newConn: ConnectionConfig = { ...connData, id: `conn-${Date.now()}`, is_connected: true };
-          setConnections(prev => [...prev, newConn]);
-          handleWelcomeConnect(newConn);
-        }} />
+        <ConnectionModal
+          isOpen={isConnModalOpen}
+          initialDbKind={selectedDbKind}
+          onClose={() => setIsConnModalOpen(false)}
+          onSave={(connData) => {
+            const newConn: ConnectionConfig = { ...connData, id: `conn-${Date.now()}`, is_connected: true };
+            setConnections(prev => [...prev, newConn]);
+            handleWelcomeConnect(newConn);
+          }}
+        />
 
         {/* Settings Modal available from Welcome page */}
         <SettingsModal
@@ -534,8 +555,12 @@ export const App: React.FC = () => {
         tables={tables}
         onSelectConnection={(conn) => setActiveConnection(conn)}
         onSelectTable={handleOpenTableTab}
-        onOpenNewConnectionModal={() => setIsConnModalOpen(true)}
+        onOpenNewConnectionModal={() => {
+          setSelectedDbKind(undefined);
+          setIsConnModalOpen(true);
+        }}
         onDisconnect={() => { setActiveConnection(null); setShowWelcome(true); }}
+        onDeleteConnection={handleDeleteConnection}
         currentProjectPath={currentProjectPath}
       />
 
@@ -719,11 +744,16 @@ export const App: React.FC = () => {
       )}
 
       {/* === MODALS === */}
-      <ConnectionModal isOpen={isConnModalOpen} onClose={() => setIsConnModalOpen(false)} onSave={(connData) => {
-        const newConn: ConnectionConfig = { ...connData, id: `conn-${Date.now()}`, is_connected: true };
-        setConnections(prev => [...prev, newConn]);
-        setActiveConnection(newConn);
-      }} />
+      <ConnectionModal
+        isOpen={isConnModalOpen}
+        initialDbKind={selectedDbKind}
+        onClose={() => setIsConnModalOpen(false)}
+        onSave={(connData) => {
+          const newConn: ConnectionConfig = { ...connData, id: `conn-${Date.now()}`, is_connected: true };
+          setConnections(prev => [...prev, newConn]);
+          setActiveConnection(newConn);
+        }}
+      />
 
       <SafeModeModal isOpen={isSafeModeModalOpen} onClose={() => setIsSafeModeModalOpen(false)} sql={pendingDestructiveSql} warningMessage={safeModeWarning} onConfirmExecute={() => executeSqlQuery(pendingDestructiveSql)} />
 
