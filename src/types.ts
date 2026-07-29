@@ -111,7 +111,7 @@ export interface QueryHistoryEntry {
   errorMessage?: string;
 }
 
-export type TabType = 'browser' | 'query' | 'staging' | 'console' | 'structure' | 'erd' | 'health' | 'nosql' | 'explain' | 'routines' | 'roles';
+export type TabType = 'browser' | 'query' | 'staging' | 'console' | 'structure' | 'erd' | 'health' | 'nosql' | 'explain' | 'routines' | 'roles' | 'builder' | 'mockseed';
 
 export interface WorkspaceTab {
   id: string;

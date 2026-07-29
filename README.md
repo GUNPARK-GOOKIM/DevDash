@@ -59,6 +59,26 @@ Here is the exact prioritized roadmap and gap audit to begin with when returning
 
 ---
 
+### 🌟 Enterprise Hardening Gaps:
+15. **GAP 15: Foreign Key Relation Hover Lookup & Cmd+Click Jump (`FkRelationLookup.tsx`)** — **[COMPLETED & PASSED]**
+    - *Implemented*: Built `FkRelationLookup.tsx` with hover card tooltip displaying referenced schema details (`WHERE col = val`) and `Cmd+Click` jump handler, integrated into `TableGrid.tsx` cell renderer.
+16. **GAP 16: Multi-Cell Rectangular Block Range Selection & Excel Copy/Paste (`TableGrid.tsx`)** — **[COMPLETED & PASSED]**
+    - *Implemented*: Added `selectedRange` 2D block state and clipboard listener in `TableGrid.tsx` formatting multi-row/multi-column cell selections into tab-separated TSV strings (`\t`, `\n`) for Excel / Google Sheets compatibility.
+17. **GAP 17: Deep Workspace Session & Unsaved Query Auto-Restore (`AppStorage`)** — **[COMPLETED & PASSED]**
+    - *Implemented*: Added `localStorage` workspace session persistence in `App.tsx` saving open tabs, active connection IDs, staged changes, and unsaved SQL editor drafts across app restarts.
+18. **GAP 18: Live Binary `BLOB` / Image Viewer & Hex Inspector (`CellInspectorPanel.tsx`)** — **[COMPLETED & PASSED]**
+    - *Implemented*: Built view mode switcher (`Text/JSON`, `Hex`, `Image`) in `CellInspectorPanel.tsx` with formatted hex offset viewer (`00000000 | ascii`) and base64/URL image renderer.
+19. **GAP 19: High-Contrast Light Theme Option (`SettingsModal.tsx` & CSS Tokens)** — **[COMPLETED & PASSED]**
+    - *Implemented*: Added `[data-theme='light']` CSS token overrides in `index.css` (`#F8FAFC` base, `#FFFFFF` surface, `#0F172A` text) and theme switcher state handler.
+20. **GAP 20: Synthetic Data & Mock Seed Generator (`MockDataGenerator.tsx`)** — **[COMPLETED & PASSED]**
+    - *Implemented*: Built `MockDataGenerator.tsx` generating 100 to 5,000 synthetic rows matching table column data types (names, emails, prices, dates, UUIDs, IPs, status codes) with 1-click stage/commit handler.
+21. **GAP 21: Extended Export Formats (Parquet, JSONL, Markdown Table)** — **[COMPLETED & PASSED]**
+    - *Implemented*: Upgraded `ExportModal.tsx` and `handleExportData` in `App.tsx` supporting JSON Lines (`.jsonl`), GFM Markdown Tables (`| col |`), and Apache Parquet format selections.
+22. **GAP 22: Visual No-Code Query Builder (`VisualQueryBuilder.tsx`)** — **[COMPLETED & PASSED]**
+    - *Implemented*: Built `VisualQueryBuilder.tsx` providing visual table/column selection, multi-table `JOIN` builder, dynamic `WHERE` filters, `GROUP BY`, `ORDER BY`, and real-time SQL preview generator.
+
+---
+
 ## 💻 Download & Local Execution Guide
 
 There are two ways to run DevDash on your local machine:

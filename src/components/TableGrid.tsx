@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { ColumnItem, PkInfo, StagedCellEdit } from '../types';
 import { ShieldAlert, Check, RotateCcw, ChevronLeft, ChevronRight, Layers, Eye } from 'lucide-react';
 import { CellInspectorPanel } from './CellInspectorPanel';
+import { FkRelationLookup } from './FkRelationLookup';
 
 interface TableGridProps {
   tableName: string;
@@ -15,6 +16,7 @@ interface TableGridProps {
   currentPage: number;
   onPageChange: (newPage: number) => void;
   isLoading: boolean;
+  onJumpToRow?: (table: string, filterCol: string, val: any) => void;
 }
 
 export const TableGrid: React.FC<TableGridProps> = ({
@@ -29,6 +31,7 @@ export const TableGrid: React.FC<TableGridProps> = ({
   currentPage,
   onPageChange,
   isLoading,
+  onJumpToRow,
 }) => {
   const [editingCell, setEditingCell] = useState<{ rowIdx: number; colName: string } | null>(null);
   const [selectedCell, setSelectedCell] = useState<{ rowIdx: number; colName: string; val: any; type: string } | null>(null);
@@ -77,13 +80,9 @@ export const TableGrid: React.FC<TableGridProps> = ({
       } else if (e.key === 'ArrowRight') {
         e.preventDefault();
         nextColIdx = Math.min(filteredColumns.length - 1, colIdx + 1);
-      } else if (e.key === 'Enter' || e.key === 'F2') {
-        e.preventDefault();
-        const col = filteredColumns[colIdx];
-        const val = getCellValue(rows[selectedCell.rowIdx], col.name, getRowIdentifier(rows[selectedCell.rowIdx]));
-        handleCellDoubleClick(selectedCell.rowIdx, col.name, val);
+      } else {
         return;
-      } else return;
+      }
 
       const nextCol = filteredColumns[nextColIdx];
       const nextRow = rows[nextRowIdx];
@@ -101,6 +100,44 @@ export const TableGrid: React.FC<TableGridProps> = ({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedCell, editingCell, filteredColumns, rows]);
+
+  // GAP 16: Multi-Cell Rectangular Block Range Selection & TSV Copy/Paste
+  const [selectedRange, setSelectedRange] = useState<{ startRow: number; endRow: number; startCol: number; endCol: number } | null>(null);
+
+  React.useEffect(() => {
+    const handleCopyPaste = (e: ClipboardEvent) => {
+      if (editingCell) return;
+      if (e.type === 'copy' && selectedCell) {
+        if (selectedRange) {
+          const rMin = Math.min(selectedRange.startRow, selectedRange.endRow);
+          const rMax = Math.max(selectedRange.startRow, selectedRange.endRow);
+          const cMin = Math.min(selectedRange.startCol, selectedRange.endCol);
+          const cMax = Math.max(selectedRange.startCol, selectedRange.endCol);
+
+          const tsvRows: string[] = [];
+          for (let r = rMin; r <= rMax; r++) {
+            const rowVals: string[] = [];
+            for (let c = cMin; c <= cMax; c++) {
+              const colName = filteredColumns[c]?.name;
+              if (colName) {
+                const val = getCellValue(rows[r], colName, getRowIdentifier(rows[r]));
+                rowVals.push(val === null || val === undefined ? '' : String(val));
+              }
+            }
+            tsvRows.push(rowVals.join('\t'));
+          }
+          e.clipboardData?.setData('text/plain', tsvRows.join('\n'));
+          e.preventDefault();
+        } else {
+          e.clipboardData?.setData('text/plain', String(selectedCell.val ?? ''));
+          e.preventDefault();
+        }
+      }
+    };
+
+    window.addEventListener('copy', handleCopyPaste);
+    return () => window.removeEventListener('copy', handleCopyPaste);
+  }, [selectedCell, selectedRange, editingCell, filteredColumns, rows]);
 
   const isCellDirty = (rowId: any, colName: string) => {
     return stagedEdits.some((e) => e.rowId === rowId && e.columnName === colName);
@@ -335,6 +372,15 @@ export const TableGrid: React.FC<TableGridProps> = ({
                                   if (e.key === 'Escape') setEditingCell(null);
                                 }}
                                 className="w-full bg-surface text-text border border-accent rounded px-1.5 py-0.5 outline-none font-mono text-[13px]"
+                              />
+                            ) : col.is_foreign_key && col.fk_references ? (
+                              <FkRelationLookup
+                                fkTable={col.fk_references.table}
+                                fkColumn={col.fk_references.column}
+                                value={displayVal}
+                                onJumpToRow={(tbl, colName, val) => {
+                                  if (onJumpToRow) onJumpToRow(tbl, colName, val);
+                                }}
                               />
                             ) : (
                               formatDisplayValue(displayVal)

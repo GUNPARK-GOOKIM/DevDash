@@ -21,6 +21,8 @@ import { NoSqlInspector } from './components/NoSqlInspector';
 import { ExplainVisualizer } from './components/ExplainVisualizer';
 import { RoutinesManager } from './components/RoutinesManager';
 import { RolesManager } from './components/RolesManager';
+import { VisualQueryBuilder } from './components/VisualQueryBuilder';
+import { MockDataGenerator } from './components/MockDataGenerator';
 import {
   ConnectionConfig,
   DbKind,
@@ -491,7 +493,7 @@ export const App: React.FC = () => {
     setActiveTabId(newId);
   }, [tabs]);
 
-  const handleExportData = useCallback((format: 'csv' | 'json' | 'sql') => {
+  const handleExportData = useCallback((format: 'csv' | 'json' | 'sql' | 'jsonl' | 'markdown' | 'parquet') => {
     let content = '';
     if (format === 'csv') {
       const headers = columns.map(c => c.name).join(',');
@@ -499,6 +501,13 @@ export const App: React.FC = () => {
       content = `${headers}\n${rowStrs}`;
     } else if (format === 'json') {
       content = JSON.stringify(rows, null, 2);
+    } else if (format === 'jsonl') {
+      content = rows.map(r => JSON.stringify(r)).join('\n');
+    } else if (format === 'markdown') {
+      const headers = `| ${columns.map(c => c.name).join(' | ')} |`;
+      const separator = `| ${columns.map(() => '---').join(' | ')} |`;
+      const rowStrs = rows.map(r => `| ${columns.map(c => String(r[c.name] ?? '')).join(' | ')} |`).join('\n');
+      content = `${headers}\n${separator}\n${rowStrs}`;
     } else {
       content = rows.map(r => {
         const vals = columns.map(c => typeof r[c.name] === 'string' ? `'${r[c.name]}'` : String(r[c.name] ?? 'NULL'));
@@ -565,6 +574,8 @@ export const App: React.FC = () => {
       case 'explain': return <Cpu className={cls} />;
       case 'routines': return <Wand2 className={cls} />;
       case 'roles': return <Shield className={cls} />;
+      case 'builder': return <Wand2 className={cls} />;
+      case 'mockseed': return <Sparkles className={cls} />;
       default: return <TableIcon className={cls} />;
     }
   };
@@ -763,6 +774,16 @@ export const App: React.FC = () => {
               <RoutinesManager connectionId={activeConnection?.id || ''} dbType={activeConnection?.db_type || 'postgres'} />
             ) : activeTab.type === 'roles' ? (
               <RolesManager connectionId={activeConnection?.id || ''} dbType={activeConnection?.db_type || 'postgres'} />
+            ) : activeTab.type === 'builder' ? (
+              <VisualQueryBuilder
+                tables={tables}
+                columns={columns}
+                activeTable={activeTab.tableName}
+                onExecuteQuery={(sql) => {
+                  handleOpenNewQueryTab();
+                  handleRunQueryWithSafeMode(sql);
+                }}
+              />
             ) : null}
           </div>
         </div>

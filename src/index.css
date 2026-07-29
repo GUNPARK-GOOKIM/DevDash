@@ -8,6 +8,18 @@
     color: #E8E8EA !important;
   }
 
+  [data-theme='light'] body {
+    background-color: #F8FAFC !important;
+    color: #0F172A !important;
+  }
+
+  [data-theme='light'] .bg-base { background-color: #F8FAFC !important; }
+  [data-theme='light'] .bg-surface { background-color: #FFFFFF !important; }
+  [data-theme='light'] .bg-surface2 { background-color: #F1F5F9 !important; }
+  [data-theme='light'] .text-text { color: #0F172A !important; }
+  [data-theme='light'] .text-textMuted { color: #64748B !important; }
+  [data-theme='light'] .border-border { border-color: #E2E8F0 !important; }
+
   /* Thin custom scrollbars */
   ::-webkit-scrollbar {
     width: 4px;
