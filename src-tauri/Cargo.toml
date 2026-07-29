@@ -28,6 +28,7 @@ aes-gcm = "0.10" # AES-256-GCM authenticated encryption for secure connection ex
 pbkdf2 = "0.12" # Key derivation for passphrase encryption
 hmac = "0.12" # HMAC support for PBKDF2
 sha2 = "0.10" # SHA-256 hashing for PBKDF2
+ssh2 = "0.9" # Native SSH2 protocol library for SSH tunnel port forwarding
 
 # Build configuration dependencies
 [build-dependencies] # Build dependencies section

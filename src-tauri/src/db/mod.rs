@@ -17,3 +17,5 @@ pub mod autocomplete; // Export autocomplete module for SQL editor schema and co
 pub mod shortcut_config; // Export shortcut_config module for keyboard shortcuts config and conflict detection
 pub mod csv_import; // Export csv_import module for CSV previewing, type-coerced row importing, and error reporting
 pub mod encrypted_export; // Export encrypted_export module for AES-256 encrypted connection & query backup
+pub mod ssh_tunnel; // Export ssh_tunnel module for native SSH port forwarding
+

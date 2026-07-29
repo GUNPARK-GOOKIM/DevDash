@@ -4,7 +4,7 @@ use crate::db::credentials; // Import credentials module for keyring secrets man
 use crate::db::executor::{execute_dynamic_query, QueryResultPayload}; // Import dynamic query execution function and payload struct
 use crate::db::export; // Import export module for CSV, JSON, SQL dump operations
 use crate::db::introspection::{fetch_tables, fetch_columns, analyze_primary_keys, TableInfo, ColumnInfo, PkAnalysis}; // Import introspection functions and structs
-use crate::db::pool::ConnectionManager; // Import ConnectionManager for pool lookups
+use crate::db::pool::{ConnectionManager, ConnectionDetails, TestConnectionResult}; // Import ConnectionManager, ConnectionDetails, and TestConnectionResult
 use crate::db::safe_mode::{analyze_sql_safety, SafetyAnalysis}; // Import safe mode analysis function
 use crate::db::staged_edits::{apply_staged_edits, StagedRowEdit}; // Import staged edit execution function and payload struct
 use crate::db::json_tree::{parse_json_tree, JsonParseResult}; // Import JSON tree viewer parser
@@ -29,6 +29,7 @@ use crate::db::csv_import::{
 use crate::db::encrypted_export::{
     export_connections_and_queries, import_connections_and_queries, ExportPayload,
 }; // Import AES-256 encrypted export engine
+use crate::db::ssh_tunnel::{SshConfigPayload, SshTunnelManager, SshTunnelStatus}; // Import SSH tunnel manager and types
 use std::sync::Arc; // Import Arc for atomic reference sharing
 use tauri::State; // Import State extractor type from tauri crate
 use std::collections::HashMap; // Import HashMap for tracking active query handles
@@ -39,6 +40,7 @@ pub struct AppState { // Struct definition for managed state
     pub connection_manager: ConnectionManager, // Multi-pool connection manager instance
     pub storage: Arc<AppStorage>, // Embedded SQLite app storage instance
     pub active_queries: Mutex<HashMap<String, tokio::task::AbortHandle>>, // Map of active query cancellation handles
+    pub ssh_tunnel_manager: SshTunnelManager, // Native SSH tunnel manager handle
 } // End of AppState struct definition
 
 // IPC Command: Save database password securely in OS Keychain
@@ -253,6 +255,22 @@ pub async fn get_all_connection_groups(
     state.storage.get_all_connection_groups().await
 }
 
+// IPC Command: Test reachability and credentials for target database
+#[tauri::command]
+pub async fn test_db_connection(details: ConnectionDetails) -> TestConnectionResult {
+    ConnectionManager::test_connection(&details).await
+}
+
+// IPC Command: Connect to target database using structured ConnectionDetails
+#[tauri::command]
+pub async fn connect_database_config(
+    connection_id: String,
+    details: ConnectionDetails,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.connection_manager.connect_with_details(&connection_id, &details).await
+}
+
 // IPC Command: Establish connection pool to target database
 #[tauri::command] // Tauri command macro annotation
 pub async fn connect_database( // Async command handler function
@@ -374,6 +392,21 @@ pub async fn run_sql_query( // Async command handler function
 
     result
 } // End of run_sql_query command
+
+// IPC Command: Stream dynamic query rows in chunks of 500 rows over Tauri IPC events
+#[tauri::command]
+pub async fn stream_sql_query(
+    connection_id: String,
+    query_id: String,
+    sql: String,
+    chunk_size: Option<usize>,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<QueryResultPayload, String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let size = chunk_size.unwrap_or(500);
+    crate::db::executor::stream_dynamic_query(&app_handle, &pool, &query_id, &sql, size).await
+}
 
 // IPC Command: Get paginated query history
 #[tauri::command]
@@ -566,3 +599,32 @@ pub async fn delete_saved_query( // Async command handler function
 ) -> Result<(), String> { // Command return signature
     state.storage.delete_query(&query_id).await // Call storage delete_query method
 } // End of delete_saved_query command
+
+// IPC Command: Test SSH authentication and reachability
+#[tauri::command]
+pub fn test_ssh_tunnel(config: SshConfigPayload) -> Result<u64, String> {
+    SshTunnelManager::test_ssh_connection(&config)
+}
+
+// IPC Command: Open SSH tunnel and forward local port
+#[tauri::command]
+pub fn open_ssh_tunnel(
+    connection_id: String,
+    ssh_config: SshConfigPayload,
+    target_host: String,
+    target_port: u16,
+    state: State<'_, AppState>,
+) -> Result<u16, String> {
+    state
+        .ssh_tunnel_manager
+        .open_tunnel(&connection_id, &ssh_config, &target_host, target_port)
+}
+
+// IPC Command: Close active SSH tunnel
+#[tauri::command]
+pub fn close_ssh_tunnel(
+    connection_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.ssh_tunnel_manager.close_tunnel(&connection_id)
+}

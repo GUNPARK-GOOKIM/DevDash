@@ -18,35 +18,64 @@ pub struct StagedRowEdit { // Struct definition for single row staged change
 } // End of StagedRowEdit struct definition
 
 // Build dynamic SQL UPDATE query string for a single row staged edit
-pub fn build_update_statement(table: &str, pk_col: &str, edit: &StagedRowEdit) -> Result<String, String> { // SQL UPDATE query builder function
-    if edit.changes.is_empty() { // Verify that row edit contains at least one column modification
-        return Err("No column changes provided for staged edit".to_string()); // Return error if no changes
-    } // End of changes check
+pub fn build_update_statement(table: &str, pk_col: &str, edit: &StagedRowEdit) -> Result<String, String> {
+    if edit.changes.is_empty() {
+        return Err("No column changes provided for staged edit".to_string());
+    }
 
-    let set_clauses: Vec<String> = edit.changes.iter().map(|change| { // Loop over cell changes to construct SET assignments
-        let val_str = match &change.new_value { // Format new value into SQL literal representation
-            Value::String(s) => format!("'{}'", s.replace('\'', "''")), // Escape single quotes for string literal
-            Value::Null => "NULL".to_string(), // NULL keyword for null values
-            other => other.to_string(), // Format numeric or boolean value directly
-        }; // End of value formatting match
-        format!("{} = {}", change.column_name, val_str) // Format col = val assignment clause
-    }).collect(); // Collect set clauses into vector
+    let set_clauses: Vec<String> = edit.changes.iter().map(|change| {
+        let val_str = match &change.new_value {
+            Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+            Value::Null => "NULL".to_string(),
+            other => other.to_string(),
+        };
+        format!("{} = {}", change.column_name, val_str)
+    }).collect();
 
-    let pk_val_str = match &edit.pk_value { // Format primary key value into SQL literal
-        Value::String(s) => format!("'{}'", s.replace('\'', "''")), // Escape single quotes for PK string
-        other => other.to_string(), // Format numeric PK directly
-    }; // End of PK formatting match
+    // Construct WHERE clause supporting single PK, SQLite rowid, or composite multi-column PKs
+    let where_clause = match &edit.pk_value {
+        Value::Object(obj) => {
+            let clauses: Vec<String> = obj.iter().map(|(k, v)| {
+                let v_str = match v {
+                    Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+                    Value::Null => "NULL".to_string(),
+                    other => other.to_string(),
+                };
+                format!("{} = {}", k, v_str)
+            }).collect();
+            clauses.join(" AND ")
+        }
+        Value::String(s) => {
+            if s.starts_with('{') && s.ends_with('}') {
+                if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(s) {
+                    let clauses: Vec<String> = obj.iter().map(|(k, v)| {
+                        let v_str = match v {
+                            Value::String(str_val) => format!("'{}'", str_val.replace('\'', "''")),
+                            Value::Null => "NULL".to_string(),
+                            other => other.to_string(),
+                        };
+                        format!("{} = {}", k, v_str)
+                    }).collect();
+                    clauses.join(" AND ")
+                } else {
+                    format!("{} = '{}'", pk_col, s.replace('\'', "''"))
+                }
+            } else {
+                format!("{} = '{}'", pk_col, s.replace('\'', "''"))
+            }
+        }
+        other => format!("{} = {}", pk_col, other.to_string()),
+    };
 
-    let sql = format!( // Format complete SQL UPDATE statement string
-        "UPDATE {} SET {} WHERE {} = {};", // SQL UPDATE template
-        table, // Table name parameter
-        set_clauses.join(", "), // Joined SET assignments parameter
-        pk_col, // Primary key column parameter
-        pk_val_str // Formatted primary key value parameter
-    ); // End of SQL format
+    let sql = format!(
+        "UPDATE {} SET {} WHERE {};",
+        table,
+        set_clauses.join(", "),
+        where_clause
+    );
 
-    Ok(sql) // Return generated SQL string
-} // End of build_update_statement function
+    Ok(sql)
+}
 
 // Apply a batch of staged row edits atomically within a single database transaction
 pub async fn apply_staged_edits( // Async function to commit batch edits

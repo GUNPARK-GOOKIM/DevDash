@@ -24,10 +24,12 @@ pub struct ColumnInfo { // Struct definition for column information
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)] // Derive traits for JSON serialization
 pub struct PkAnalysis { // Struct definition for primary key analysis
     pub has_single_pk: bool, // True if table has exactly one primary key column
-    pub pk_column_name: Option<String>, // Name of single primary key column if present
+    pub pk_column_name: Option<String>, // Name of primary key column(s)
+    pub pk_columns: Vec<String>, // List of primary key column names
     pub is_read_only: bool, // Read-only flag set if table cannot be safely updated inline
     pub read_only_reason: Option<String>, // User-facing explanation for read-only status
 } // End of PkAnalysis struct definition
+
 
 // Fetch list of table names and types from database catalogs
 pub async fn fetch_tables(pool: &AnyPool, db_kind: &str) -> Result<Vec<TableInfo>, String> { // Fetch tables function
@@ -141,33 +143,38 @@ pub async fn fetch_columns(pool: &AnyPool, db_kind: &str, table_name: &str) -> R
 } // End fetch_columns function
 
 // Analyze primary key constraints on a table to enforce read-only safety
-pub fn analyze_primary_keys(columns: &[ColumnInfo]) -> PkAnalysis { // Primary key safety analyzer function
-    let pk_cols: Vec<&ColumnInfo> = columns.iter().filter(|c| c.is_primary_key).collect(); // Filter columns marked as primary keys
+pub fn analyze_primary_keys(columns: &[ColumnInfo]) -> PkAnalysis {
+    let pk_cols: Vec<&ColumnInfo> = columns.iter().filter(|c| c.is_primary_key).collect();
     
-    if pk_cols.len() == 1 { // Check if table has exactly one primary key column
-        PkAnalysis { // Construct single primary key analysis result
-            has_single_pk: true, // Flag single primary key present
-            pk_column_name: Some(pk_cols[0].name.clone()), // Save primary key column name
-            is_read_only: false, // Table is safely editable
-            read_only_reason: None, // No read-only reason
-        } // End of PkAnalysis struct
-    } else if pk_cols.is_empty() { // Check if table has zero primary key columns
-        // B4 Requirement: SQLite rowid exception handling
-        PkAnalysis { // Construct no primary key analysis result
-            has_single_pk: false, // Flag no explicit single primary key column
-            pk_column_name: Some("rowid".to_string()), // Fallback to SQLite rowid implicit primary key
-            is_read_only: false, // Allow editing via rowid exception
-            read_only_reason: Some("Using SQLite rowid as primary key fallback.".to_string()), // Informative note
-        } // End of PkAnalysis struct
-    } else { // Table has composite (multi-column) primary keys
-        PkAnalysis { // Construct composite primary key analysis result
-            has_single_pk: false, // Flag no single primary key
-            pk_column_name: None, // No single primary key column name
-            is_read_only: true, // Mark table read-only for composite PK safety
-            read_only_reason: Some("Composite (multi-column) primary keys are read-only in v1.".to_string()), // Explanation message
-        } // End of PkAnalysis struct
-    } // End of primary key evaluation conditional
-} // End of analyze_primary_keys function
+    if pk_cols.len() == 1 {
+        PkAnalysis {
+            has_single_pk: true,
+            pk_column_name: Some(pk_cols[0].name.clone()),
+            pk_columns: vec![pk_cols[0].name.clone()],
+            is_read_only: false,
+            read_only_reason: None,
+        }
+    } else if pk_cols.is_empty() {
+        // SQLite rowid exception handling
+        PkAnalysis {
+            has_single_pk: false,
+            pk_column_name: Some("rowid".to_string()),
+            pk_columns: vec!["rowid".to_string()],
+            is_read_only: false,
+            read_only_reason: Some("Using SQLite rowid as primary key fallback.".to_string()),
+        }
+    } else {
+        // Table has composite (multi-column) primary keys - now FULLY EDITABLE!
+        let names: Vec<String> = pk_cols.iter().map(|c| c.name.clone()).collect();
+        PkAnalysis {
+            has_single_pk: false,
+            pk_column_name: Some(names.join(", ")),
+            pk_columns: names,
+            is_read_only: false,
+            read_only_reason: None,
+        }
+    }
+}
 
 #[cfg(test)] // Conditional compilation attribute for unit tests
 mod tests { // Declare internal unit testing module
