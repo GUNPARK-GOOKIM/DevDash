@@ -23,6 +23,9 @@ import { RoutinesManager } from './components/RoutinesManager';
 import { RolesManager } from './components/RolesManager';
 import { VisualQueryBuilder } from './components/VisualQueryBuilder';
 import { MockDataGenerator } from './components/MockDataGenerator';
+import { AuditLoggerModal } from './components/AuditLoggerModal';
+import { SchemaDiffModal } from './components/SchemaDiffModal';
+import { PiiMaskingConfig } from './components/PiiMaskingConfig';
 import {
   ConnectionConfig,
   DbKind,
@@ -301,6 +304,9 @@ export const App: React.FC = () => {
   const [isConnModalOpen, setIsConnModalOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
+  const [isSchemaDiffModalOpen, setIsSchemaDiffModalOpen] = useState(false);
+  const [isPiiConfigModalOpen, setIsPiiConfigModalOpen] = useState(false);
 
   // === INLINE JSON POPUP ===
   const [jsonPopup, setJsonPopup] = useState<{ data: any; rect: { top: number; left: number; width: number; height: number } } | null>(null);
@@ -855,6 +861,10 @@ export const App: React.FC = () => {
       <ExportModal isOpen={isExportModalOpen} onClose={() => setIsExportModalOpen(false)} tableName={activeTab.tableName || 'products'} onExport={handleExportData} />
 
       <ImportModal isOpen={isImportModalOpen} onClose={() => setIsImportModalOpen(false)} onImportSuccess={(file, count) => executeSqlQuery(`-- Imported ${count} rows from ${file}`)} />
+
+      <AuditLoggerModal isOpen={isAuditModalOpen} onClose={() => setIsAuditModalOpen(false)} />
+      <SchemaDiffModal isOpen={isSchemaDiffModalOpen} onClose={() => setIsSchemaDiffModalOpen(false)} />
+      <PiiMaskingConfig isOpen={isPiiConfigModalOpen} onClose={() => setIsPiiConfigModalOpen(false)} />
 
       {/* Settings & Preferences Modal */}
       <SettingsModal

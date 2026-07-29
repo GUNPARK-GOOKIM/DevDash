@@ -18,4 +18,6 @@ pub mod shortcut_config; // Export shortcut_config module for keyboard shortcuts
 pub mod csv_import; // Export csv_import module for CSV previewing, type-coerced row importing, and error reporting
 pub mod encrypted_export; // Export encrypted_export module for AES-256 encrypted connection & query backup
 pub mod ssh_tunnel; // Export ssh_tunnel module for native SSH port forwarding
+pub mod audit; // Export audit module for native SOC2/HIPAA compliance audit logging
+
 
