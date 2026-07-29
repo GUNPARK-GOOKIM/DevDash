@@ -803,6 +803,27 @@ export const App: React.FC = () => {
                 <span className="text-[10px]">Safe Mode</span>
               </span>
             )}
+            <button
+              onClick={() => setIsAuditModalOpen(true)}
+              className="hover:text-text transition-colors text-[10px] bg-surface2/50 px-2 py-0.5 rounded border border-border/50"
+              title="Open SOC2/HIPAA Audit Log"
+            >
+              Audit Log
+            </button>
+            <button
+              onClick={() => setIsSchemaDiffModalOpen(true)}
+              className="hover:text-text transition-colors text-[10px] bg-surface2/50 px-2 py-0.5 rounded border border-border/50"
+              title="Open Schema Diff & Migration Generator"
+            >
+              Schema Diff
+            </button>
+            <button
+              onClick={() => setIsPiiConfigModalOpen(true)}
+              className="hover:text-text transition-colors text-[10px] bg-surface2/50 px-2 py-0.5 rounded border border-border/50"
+              title="Configure Data Masking & PII Protection"
+            >
+              PII Masking
+            </button>
           </div>
 
           <div className="flex items-center space-x-3">
