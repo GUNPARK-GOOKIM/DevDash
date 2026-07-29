@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ConnectionConfig, DbKind } from '../types';
 import { X, Server, Shield, KeyRound, Network } from 'lucide-react';
+import { testDbConnection, testSshTunnel, TestConnectionResultPayload } from '../services/tauriBridge';
 
 interface ConnectionModalProps {
   isOpen: boolean;
@@ -31,6 +32,44 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
   const [sshPort, setSshPort] = useState(22);
   const [sshUser, setSshUser] = useState('');
   const [sshKeyPath, setSshKeyPath] = useState('~/.ssh/id_rsa');
+
+  // Test Connection Diagnostics State
+  const [isTesting, setIsTesting] = useState(false);
+  const [testStatus, setTestStatus] = useState<TestConnectionResultPayload | null>(null);
+
+  const handleTestConnection = async () => {
+    setIsTesting(true);
+    setTestStatus(null);
+
+    if (activeTab === 'ssh' || sshEnabled) {
+      const sshRes = await testSshTunnel({
+        enabled: true,
+        host: sshHost,
+        port: Number(sshPort),
+        user: sshUser,
+        key_path: sshKeyPath,
+        password: password || undefined,
+      });
+      if (!sshRes.success) {
+        setTestStatus(sshRes);
+        setIsTesting(false);
+        return;
+      }
+    }
+
+    const res = await testDbConnection(
+      {
+        db_type: dbType,
+        host,
+        port: Number(port),
+        user,
+        database,
+      },
+      password
+    );
+    setTestStatus(res);
+    setIsTesting(false);
+  };
 
   const handleDriverChange = (kind: DbKind) => {
     setDbType(kind);
@@ -322,20 +361,54 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
             </div>
           )}
 
-          <div className="pt-3 flex justify-end space-x-2 border-t border-white/10">
+          {testStatus && (
+            <div className={`p-2.5 rounded text-[11px] flex items-center justify-between border ${
+              testStatus.success ? 'bg-success/10 border-success/30 text-success' : 'bg-danger/10 border-danger/30 text-danger'
+            }`}>
+              <div className="flex items-center space-x-1.5">
+                <span className="font-semibold">{testStatus.success ? '✓ Connected' : '✕ Connection Failed'}</span>
+                <span>— {testStatus.message}</span>
+              </div>
+              {testStatus.latency_ms > 0 && (
+                <span className="font-mono text-[10px] bg-black/30 px-1.5 py-0.5 rounded text-white/70">
+                  {testStatus.latency_ms}ms
+                </span>
+              )}
+            </div>
+          )}
+
+          <div className="pt-3 flex justify-between items-center border-t border-white/10">
             <button
               type="button"
-              onClick={onClose}
-              className="px-3 py-1.5 rounded bg-surface2 text-text hover:bg-surface2/80 transition-all font-medium"
+              disabled={isTesting}
+              onClick={handleTestConnection}
+              className="px-3 py-1.5 rounded border border-white/15 bg-white/5 text-text hover:bg-white/10 transition-all font-medium flex items-center space-x-1.5 disabled:opacity-50"
             >
-              Cancel
+              {isTesting ? (
+                <>
+                  <span className="w-3 h-3 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+                  <span>Testing...</span>
+                </>
+              ) : (
+                <span>Test Connection</span>
+              )}
             </button>
-            <button
-              type="submit"
-              className="px-4 py-1.5 rounded bg-accent text-white font-medium hover:bg-accentHover shadow-md shadow-accent/20 transition-all"
-            >
-              Save Connection
-            </button>
+
+            <div className="flex space-x-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-3 py-1.5 rounded bg-surface2 text-text hover:bg-surface2/80 transition-all font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-1.5 rounded bg-accent text-white font-medium hover:bg-accentHover shadow-md shadow-accent/20 transition-all"
+              >
+                Save Connection
+              </button>
+            </div>
           </div>
         </form>
       </div>

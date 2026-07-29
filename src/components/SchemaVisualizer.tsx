@@ -151,6 +151,75 @@ export const SchemaVisualizer: React.FC<SchemaVisualizerProps> = ({ tables, onSe
               className="bg-transparent text-xs text-text placeholder-textMuted outline-none w-32"
             />
           </div>
+
+          <button
+            onClick={() => {
+              // Auto-layout algorithm: topological level calculation
+              const levelMap: Record<string, number> = {};
+              tables.forEach((t) => {
+                let lvl = 0;
+                t.columns.forEach((c) => {
+                  if (c.is_foreign_key && c.fk_references) lvl += 1;
+                });
+                levelMap[t.name] = lvl;
+              });
+
+              const levelGroups: Record<number, string[]> = {};
+              tables.forEach((t) => {
+                const lvl = levelMap[t.name] || 0;
+                if (!levelGroups[lvl]) levelGroups[lvl] = [];
+                levelGroups[lvl].push(t.name);
+              });
+
+              setNodes((prevNodes) =>
+                prevNodes.map((n) => {
+                  const lvl = levelMap[n.id] || 0;
+                  const idxInLvl = levelGroups[lvl]?.indexOf(n.id) || 0;
+                  return {
+                    ...n,
+                    position: {
+                      x: idxInLvl * 300 + 40,
+                      y: lvl * 280 + 40,
+                    },
+                  };
+                })
+              );
+            }}
+            className="px-2.5 py-1 bg-surface border border-border rounded-lg text-xs font-medium text-text hover:bg-surface2 transition-colors flex items-center space-x-1"
+          >
+            <Maximize className="w-3.5 h-3.5 text-accent" />
+            <span>Auto Layout</span>
+          </button>
+
+          <button
+            onClick={() => {
+              // Generate full DDL dump
+              const ddlStatements = tables.map((t) => {
+                const colDefs = t.columns.map((c) => {
+                  let line = `  ${c.name} ${c.data_type.toUpperCase()}`;
+                  if (!c.is_nullable) line += ' NOT NULL';
+                  if (c.is_primary_key) line += ' PRIMARY KEY';
+                  return line;
+                });
+                t.columns.forEach((c) => {
+                  if (c.is_foreign_key && c.fk_references) {
+                    colDefs.push(`  FOREIGN KEY (${c.name}) REFERENCES ${c.fk_references.table}(${c.fk_references.column})`);
+                  }
+                });
+                return `CREATE TABLE ${t.name} (\n${colDefs.join(',\n')}\n);`;
+              }).join('\n\n');
+
+              const blob = new Blob([ddlStatements], { type: 'text/plain;charset=utf-8' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `schema_ddl_export_${Date.now()}.sql`;
+              a.click();
+            }}
+            className="px-2.5 py-1 bg-accent text-white rounded-lg text-xs font-medium hover:bg-accentHover shadow-md shadow-accent/20 transition-all flex items-center space-x-1"
+          >
+            <span>Export Schema DDL</span>
+          </button>
         </div>
 
         <ReactFlow

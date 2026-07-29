@@ -63,6 +63,7 @@ export interface ColumnItem {
 export interface PkInfo {
   has_single_pk: boolean;
   pk_column_name?: string;
+  pk_columns?: string[];
   is_read_only: boolean;
   read_only_reason?: string;
 }

@@ -35,6 +35,13 @@ import {
   GitBranch, Activity, Network, Shield, Clock, Wand2, Search, Sparkles, Settings,
 } from 'lucide-react';
 import { Tooltip } from './components/Tooltip';
+import {
+  connectDatabase,
+  getDatabaseTables,
+  getTableColumns,
+  getPkAnalysis,
+  runSqlQuery,
+} from './services/tauriBridge';
 
 export const App: React.FC = () => {
   const currentProjectPath = 'e:\\devdash';
@@ -149,7 +156,7 @@ export const App: React.FC = () => {
   }, [showWelcome]);
 
   // Welcome page handlers
-  const handleWelcomeConnect = useCallback((conn: ConnectionConfig) => {
+  const handleWelcomeConnect = useCallback(async (conn: ConnectionConfig) => {
     setActiveConnection(conn);
     setShowWelcome(false);
     // Track recent connections (most recent first, max 10)
@@ -157,6 +164,16 @@ export const App: React.FC = () => {
       const filtered = prev.filter(id => id !== conn.id);
       return [conn.id, ...filtered].slice(0, 10);
     });
+
+    try {
+      await connectDatabase(conn);
+      const fetchedTables = await getDatabaseTables(conn.id, conn.db_type);
+      if (fetchedTables && fetchedTables.length > 0) {
+        setTables(fetchedTables);
+      }
+    } catch (err) {
+      console.warn('Failed to connect to database or fetch tables:', err);
+    }
   }, []);
 
   const handleDeleteConnection = useCallback((id: string) => {
@@ -215,7 +232,7 @@ export const App: React.FC = () => {
   }, [showWelcome]);
 
   // === TABLES (populated from actual DB connection) ===
-  const [tables] = useState<TableItem[]>([]);
+  const [tables, setTables] = useState<TableItem[]>([]);
 
   // === COLUMNS (populated from selected table) ===
   const [columns, setColumns] = useState<ColumnItem[]>([]);
@@ -223,7 +240,7 @@ export const App: React.FC = () => {
   // === ROWS (populated from query results) ===
   const [rows, setRows] = useState<any[]>([]);
 
-  const [pkInfo] = useState<PkInfo>({ has_single_pk: true, pk_column_name: 'id', is_read_only: false });
+  const [pkInfo, setPkInfo] = useState<PkInfo>({ has_single_pk: true, pk_column_name: 'id', is_read_only: false });
 
   // === WORKSPACE TABS (PERSISTED) ===
   const [tabs, setTabs] = useState<WorkspaceTab[]>(() => {
@@ -333,25 +350,47 @@ export const App: React.FC = () => {
   }, [rows, filterWhere, filterSort]);
 
   // === HANDLERS ===
-  const executeSqlQuery = useCallback((sql: string) => {
-    const start = performance.now();
-    const ms = Math.round(performance.now() - start);
-    setQueryResult({
-      columns: [{ name: 'id', type_name: 'INTEGER' }, { name: 'query', type_name: 'TEXT' }, { name: 'status', type_name: 'VARCHAR' }],
-      rows: [[1, sql, 'EXECUTED']],
-      execution_time_ms: ms,
-      affected_rows: 1,
-    });
-    setQueryHistory(prev => [{
-      id: `qh-${Date.now()}`,
-      sql,
-      connectionName: activeConnection?.name || '',
-      engine: activeConnection?.db_type || '',
-      timestamp: new Date().toISOString(),
-      executionTimeMs: ms,
-      rowCount: 1,
-      status: 'success',
-    }, ...prev]);
+  const executeSqlQuery = useCallback(async (sql: string) => {
+    const connId = activeConnection?.id || 'default';
+    try {
+      const payload = await runSqlQuery(connId, sql);
+      setQueryResult(payload);
+      
+      // Convert rows payload to objects if column descriptors match
+      if (payload.columns && payload.rows) {
+        const objRows = payload.rows.map(r => {
+          const obj: Record<string, any> = {};
+          payload.columns.forEach((col, idx) => {
+            obj[col.name] = r[idx];
+          });
+          return obj;
+        });
+        setRows(objRows);
+      }
+
+      setQueryHistory(prev => [{
+        id: `qh-${Date.now()}`,
+        sql,
+        connectionName: activeConnection?.name || '',
+        engine: activeConnection?.db_type || '',
+        timestamp: new Date().toISOString(),
+        executionTimeMs: payload.execution_time_ms,
+        rowCount: payload.rows?.length || payload.affected_rows || 0,
+        status: 'success',
+      }, ...prev]);
+    } catch (err: any) {
+      console.error('Query execution error:', err);
+      setQueryHistory(prev => [{
+        id: `qh-${Date.now()}`,
+        sql,
+        connectionName: activeConnection?.name || '',
+        engine: activeConnection?.db_type || '',
+        timestamp: new Date().toISOString(),
+        executionTimeMs: 0,
+        rowCount: 0,
+        status: 'error',
+      }, ...prev]);
+    }
   }, [activeConnection]);
 
   const handleRunQueryWithSafeMode = useCallback((sql: string) => {
@@ -391,13 +430,31 @@ export const App: React.FC = () => {
     }]);
   }, [tabs, activeTabId]);
 
-  const handleOpenTableTab = useCallback((tableName: string) => {
+  const handleOpenTableTab = useCallback(async (tableName: string) => {
     const existing = tabs.find(t => t.tableName === tableName && t.type === 'browser');
-    if (existing) { setActiveTabId(existing.id); return; }
-    const newId = `tab-${Date.now()}`;
-    setTabs(prev => [...prev, { id: newId, title: `Browser (${tableName})`, type: 'browser', tableName }]);
-    setActiveTabId(newId);
-  }, [tabs]);
+    if (existing) { setActiveTabId(existing.id); }
+    else {
+      const newId = `tab-${Date.now()}`;
+      setTabs(prev => [...prev, { id: newId, title: `Browser (${tableName})`, type: 'browser', tableName }]);
+      setActiveTabId(newId);
+    }
+
+    if (activeConnection) {
+      try {
+        const [fetchedCols, fetchedPk] = await Promise.all([
+          getTableColumns(activeConnection.id, activeConnection.db_type, tableName),
+          getPkAnalysis(activeConnection.id, activeConnection.db_type, tableName),
+        ]);
+        if (fetchedCols && fetchedCols.length > 0) setColumns(fetchedCols);
+        if (fetchedPk) setPkInfo(fetchedPk);
+        
+        // Execute SELECT query to retrieve live table rows
+        executeSqlQuery(`SELECT * FROM ${tableName} LIMIT 1000;`);
+      } catch (err) {
+        console.warn('Failed to load table details/rows:', err);
+      }
+    }
+  }, [tabs, activeConnection, executeSqlQuery]);
 
   const handleOpenNewQueryTab = useCallback(() => {
     const newId = `tab-${Date.now()}`;

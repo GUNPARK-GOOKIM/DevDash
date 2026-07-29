@@ -67,10 +67,21 @@ export const TableGrid: React.FC<TableGridProps> = ({
     setEditValue(val === null ? '' : typeof val === 'object' ? JSON.stringify(val) : String(val));
   };
 
+  const getRowIdentifier = (row: any) => {
+    if (pkInfo.pk_columns && pkInfo.pk_columns.length > 1) {
+      const obj: Record<string, any> = {};
+      pkInfo.pk_columns.forEach((col: string) => {
+        obj[col] = row[col];
+      });
+      return JSON.stringify(obj);
+    }
+    const pkCol = pkInfo.pk_column_name || 'id';
+    return row[pkCol];
+  };
+
   const handleCellSave = (row: any, colName: string) => {
     if (!editingCell) return;
-    const pkCol = pkInfo.pk_column_name || 'id';
-    const rowId = row[pkCol];
+    const rowId = getRowIdentifier(row);
     const oldValue = row[colName];
 
     if (editValue !== String(oldValue)) {
@@ -216,8 +227,7 @@ export const TableGrid: React.FC<TableGridProps> = ({
               </thead>
               <tbody>
                 {rows.map((row, rowIdx) => {
-                  const pkCol = pkInfo.pk_column_name || 'id';
-                  const rowId = row[pkCol] ?? rowIdx;
+                  const rowId = getRowIdentifier(row) ?? rowIdx;
                   const isRowSelected = selectedCell?.rowIdx === rowIdx;
 
                   return (

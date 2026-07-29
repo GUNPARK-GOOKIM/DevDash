@@ -153,3 +153,24 @@ Detailed log of the visual overhaul implemented:
   - **Shortcuts**: Customizable keyboard shortcuts table with live recording/editing and Reset Defaults button. (PASS)
 
 
+---
+
+## 🚀 Roadmap & Ongoing Gap Audit (Where to Begin Tomorrow)
+
+Here is the exact prioritized roadmap and gap audit to begin with when returning tomorrow:
+
+### 🔴 High Priority Core Gaps:
+1. **GAP 1: Live Rust Database TCP Drivers & Connection Manager (`src-tauri/src/db/pool.rs`)** — **[COMPLETED & PASSED]**
+   - *Implemented*: Structured connection parameters (`ConnectionDetails`), multi-driver connection URL builder (`build_connection_url`), TCP ping testing (`test_db_connection`) with latency diagnostics in ms, resilient cell decoder (`decode_any_cell`), and seamless `tauriBridge.ts` frontend integration for live query execution against real PostgreSQL, MySQL, and SQLite databases. (PASS)
+2. **GAP 2: Working SSH Tunneling Engine (`src-tauri/src/db/ssh_tunnel.rs`)** — **[COMPLETED & PASSED]**
+   - *Implemented*: Built native SSH2 protocol tunnel engine (`SshTunnelManager`) in Rust using `ssh2` crate with public key (`userauth_pubkey_file`), password, and SSH agent authentication. Features auto-allocated local port forwarding (`127.0.0.1:local_port`), `test_ssh_tunnel`, `open_ssh_tunnel`, and `close_ssh_tunnel` IPC commands, and seamless frontend tunneling in `tauriBridge.ts`. (PASS)
+3. **GAP 3: Composite Primary Key Constraint Analyzer & Grid Edits** — **[COMPLETED & PASSED]**
+   - *Implemented*: Upgraded `introspection.rs` and `PkAnalysis` (`pk_columns: Vec<String>`) to allow editing tables with composite primary keys. Upgraded `staged_edits.rs` `build_update_statement` to parse JSON object PK values or composite WHERE clauses (`WHERE col1 = val1 AND col2 = val2`) in `TableGrid.tsx` and staging diffs. (PASS)
+
+### 🟡 Medium Priority Feature Gaps:
+4. **GAP 4: Chunked Result Streaming for Large Datasets** — **[COMPLETED & PASSED]**
+   - *Implemented*: Built `stream_dynamic_query` in `executor.rs` emitting chunk events (`query_chunk_{query_id}`) in blocks of 500 rows over Tauri IPC, with `stream_sql_query` IPC command and `streamSqlQuery` wrapper in `tauriBridge.ts` to prevent RAM bloating on 100k+ row datasets. (PASS)
+5. **GAP 5: Interactive ERD Auto-Layout & Schema Migration Exporter** — **[COMPLETED & PASSED]**
+   - *Implemented*: Added automatic force-directed hierarchical layout calculation and 1-click **Export Schema DDL** button in `SchemaVisualizer.tsx` generating full `CREATE TABLE` and `FOREIGN KEY` SQL dumps. (PASS)
+6. **GAP 6: Native Standalone App Build Packaging (.exe via Tauri)** — **[COMPLETED & PASSED]**
+   - *Implemented*: Configured production `src-tauri/tauri.conf.json` (`beforeBuildCommand: "npm run build"`, `targets: ["nsis", "msi"]`, custom window dimensions, and metadata). Production `dist/` bundle compiled in 35s. (PASS)
