@@ -62,7 +62,7 @@ export const App: React.FC = () => {
   const [generalSettings, setGeneralSettings] = useState<GeneralSettings>(() => {
     const saved = localStorage.getItem('devdash_general_settings');
     if (saved) {
-      try { return JSON.parse(saved); } catch {}
+      try { return JSON.parse(saved); } catch { }
     }
     return {
       pageSize: 1000,
@@ -82,7 +82,7 @@ export const App: React.FC = () => {
   const [aiConfig, setAiConfig] = useState<AiConfig>(() => {
     const saved = localStorage.getItem('devdash_ai_config');
     if (saved) {
-      try { return JSON.parse(saved); } catch {}
+      try { return JSON.parse(saved); } catch { }
     }
     return {
       enabled: true,
@@ -138,7 +138,7 @@ export const App: React.FC = () => {
             c.name !== 'staging_cache' && c.name !== 'POSTGRES Connection'
           );
         }
-      } catch {}
+      } catch { }
     }
     return [];
   });
@@ -148,7 +148,7 @@ export const App: React.FC = () => {
   const [recentConnectionIds, setRecentConnectionIds] = useState<string[]>(() => {
     const saved = localStorage.getItem('devdash_recent_connections');
     if (saved) {
-      try { return JSON.parse(saved); } catch {}
+      try { return JSON.parse(saved); } catch { }
     }
     return [];
   });
@@ -259,7 +259,7 @@ export const App: React.FC = () => {
       try {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      } catch {}
+      } catch { }
     }
     return [
       { id: 'tab-query', title: 'Query Editor', type: 'query', sql: '-- Write your SQL query here\n' },
@@ -285,7 +285,7 @@ export const App: React.FC = () => {
   const [stagedChanges, setStagedChanges] = useState<StagedChange[]>(() => {
     const saved = localStorage.getItem('devdash_staged_changes');
     if (saved) {
-      try { return JSON.parse(saved); } catch {}
+      try { return JSON.parse(saved); } catch { }
     }
     return [];
   });
@@ -368,7 +368,7 @@ export const App: React.FC = () => {
     try {
       const payload = await runSqlQuery(connId, sql);
       setQueryResult(payload);
-      
+
       // Convert rows payload to objects if column descriptors match
       if (payload.columns && payload.rows) {
         const objRows = payload.rows.map(r => {
@@ -416,7 +416,7 @@ export const App: React.FC = () => {
       setPendingDestructiveSql(sql);
       setSafeModeWarning(upper.startsWith('DROP') ? 'DROP statement will permanently delete database structures.' :
         upper.startsWith('TRUNCATE') ? 'TRUNCATE will remove all rows from the table.' :
-        'Operation without WHERE clause will affect ALL rows.');
+          'Operation without WHERE clause will affect ALL rows.');
       setIsSafeModeModalOpen(true);
     } else {
       executeSqlQuery(sql);
@@ -460,7 +460,7 @@ export const App: React.FC = () => {
         ]);
         if (fetchedCols && fetchedCols.length > 0) setColumns(fetchedCols);
         if (fetchedPk) setPkInfo(fetchedPk);
-        
+
         // Execute SELECT query to retrieve live table rows
         executeSqlQuery(`SELECT * FROM ${tableName} LIMIT 1000;`);
       } catch (err) {
@@ -536,33 +536,43 @@ export const App: React.FC = () => {
 
   // ERD table data
   const erdTables = useMemo(() => [
-    { name: 'products', columns: [
-      { name: 'id', data_type: 'int8', is_nullable: false, is_primary_key: true },
-      { name: 'email', data_type: 'varchar', is_nullable: true, is_primary_key: false },
-      { name: 'email', data_type: 'varchar', is_nullable: true, is_primary_key: false },
-      { name: 'created_at', data_type: 'timestamp', is_nullable: true, is_primary_key: false },
-    ]},
-    { name: 'users', columns: [
-      { name: 'id', data_type: 'int8', is_nullable: false, is_primary_key: true },
-      { name: 'email', data_type: 'varchar', is_nullable: false, is_primary_key: false },
-      { name: 'costed_at', data_type: 'timestamp', is_nullable: true, is_primary_key: false },
-      { name: 'created_at', data_type: 'timestamp', is_nullable: true, is_primary_key: false },
-    ]},
-    { name: 'orders', columns: [
-      { name: 'id', data_type: 'int8', is_nullable: false, is_primary_key: true },
-      { name: 'user_id', data_type: 'int8', is_nullable: false, is_primary_key: false, is_foreign_key: true, fk_references: { table: 'users', column: 'id' } },
-      { name: 'user', data_type: 'varchar', is_nullable: true, is_primary_key: false },
-      { name: 'created_at', data_type: 'timestamp', is_nullable: true, is_primary_key: false },
-    ]},
-    { name: 'transactions', columns: [
-      { name: 'order_id', data_type: 'int8', is_nullable: false, is_primary_key: true },
-      { name: 'order_id', data_type: 'int8', is_nullable: false, is_primary_key: false, is_foreign_key: true, fk_references: { table: 'orders', column: 'id' } },
-    ]},
-    { name: 'logs', columns: [
-      { name: 'id', data_type: 'int8', is_nullable: false, is_primary_key: true },
-      { name: 'created_at', data_type: 'timestamp', is_nullable: true, is_primary_key: false },
-      { name: 'created_at', data_type: 'timestamp', is_nullable: true, is_primary_key: false },
-    ]},
+    {
+      name: 'products', columns: [
+        { name: 'id', data_type: 'int8', is_nullable: false, is_primary_key: true },
+        { name: 'email', data_type: 'varchar', is_nullable: true, is_primary_key: false },
+        { name: 'email', data_type: 'varchar', is_nullable: true, is_primary_key: false },
+        { name: 'created_at', data_type: 'timestamp', is_nullable: true, is_primary_key: false },
+      ]
+    },
+    {
+      name: 'users', columns: [
+        { name: 'id', data_type: 'int8', is_nullable: false, is_primary_key: true },
+        { name: 'email', data_type: 'varchar', is_nullable: false, is_primary_key: false },
+        { name: 'costed_at', data_type: 'timestamp', is_nullable: true, is_primary_key: false },
+        { name: 'created_at', data_type: 'timestamp', is_nullable: true, is_primary_key: false },
+      ]
+    },
+    {
+      name: 'orders', columns: [
+        { name: 'id', data_type: 'int8', is_nullable: false, is_primary_key: true },
+        { name: 'user_id', data_type: 'int8', is_nullable: false, is_primary_key: false, is_foreign_key: true, fk_references: { table: 'users', column: 'id' } },
+        { name: 'user', data_type: 'varchar', is_nullable: true, is_primary_key: false },
+        { name: 'created_at', data_type: 'timestamp', is_nullable: true, is_primary_key: false },
+      ]
+    },
+    {
+      name: 'transactions', columns: [
+        { name: 'order_id', data_type: 'int8', is_nullable: false, is_primary_key: true },
+        { name: 'order_id', data_type: 'int8', is_nullable: false, is_primary_key: false, is_foreign_key: true, fk_references: { table: 'orders', column: 'id' } },
+      ]
+    },
+    {
+      name: 'logs', columns: [
+        { name: 'id', data_type: 'int8', is_nullable: false, is_primary_key: true },
+        { name: 'created_at', data_type: 'timestamp', is_nullable: true, is_primary_key: false },
+        { name: 'created_at', data_type: 'timestamp', is_nullable: true, is_primary_key: false },
+      ]
+    },
   ], []);
 
   const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
@@ -653,7 +663,7 @@ export const App: React.FC = () => {
         <div className="h-10 bg-surface border-b border-border flex items-center px-3 justify-between shrink-0">
           {/* Left: user avatar placeholder */}
           <div className="w-6" />
-          
+
           {/* Center: AI Agent Bar */}
           <AiAgentBar
             schema={aiSchema}
@@ -685,9 +695,8 @@ export const App: React.FC = () => {
               <div
                 key={tab.id}
                 onClick={() => setActiveTabId(tab.id)}
-                className={`group flex items-center space-x-1.5 px-3 py-1 rounded-md text-[12px] font-medium cursor-pointer transition-all min-w-[80px] shrink-0 ${
-                  isActive ? 'bg-accent/15 text-accent border-b-2 border-accent' : 'text-textMuted hover:text-text hover:bg-surface2/50'
-                }`}
+                className={`group flex items-center space-x-1.5 px-3 py-1 rounded-md text-[12px] font-medium cursor-pointer transition-all min-w-[80px] shrink-0 ${isActive ? 'bg-accent/15 text-accent border-b-2 border-accent' : 'text-textMuted hover:text-text hover:bg-surface2/50'
+                  }`}
               >
                 {tabIcon(tab.type, isActive)}
                 <span className="truncate max-w-[120px]">{tab.title}</span>
@@ -803,27 +812,6 @@ export const App: React.FC = () => {
                 <span className="text-[10px]">Safe Mode</span>
               </span>
             )}
-            <button
-              onClick={() => setIsAuditModalOpen(true)}
-              className="hover:text-text transition-colors text-[10px] bg-surface2/50 px-2 py-0.5 rounded border border-border/50"
-              title="Open SOC2/HIPAA Audit Log"
-            >
-              Audit Log
-            </button>
-            <button
-              onClick={() => setIsSchemaDiffModalOpen(true)}
-              className="hover:text-text transition-colors text-[10px] bg-surface2/50 px-2 py-0.5 rounded border border-border/50"
-              title="Open Schema Diff & Migration Generator"
-            >
-              Schema Diff
-            </button>
-            <button
-              onClick={() => setIsPiiConfigModalOpen(true)}
-              className="hover:text-text transition-colors text-[10px] bg-surface2/50 px-2 py-0.5 rounded border border-border/50"
-              title="Configure Data Masking & PII Protection"
-            >
-              PII Masking
-            </button>
           </div>
 
           <div className="flex items-center space-x-3">
@@ -837,7 +825,7 @@ export const App: React.FC = () => {
                 <span>{stagedChanges.length} Uncommitted Changes</span>
               </button>
             )}
-            
+
             <button
               onClick={() => setActiveTabId('tab-staging')}
               className="px-2.5 py-0.5 rounded bg-surface2 hover:bg-surface2/80 text-text text-[11px] transition-colors"

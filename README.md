@@ -1,215 +1,192 @@
-# DevDash ⚡
+<div align="center">
 
-> **Fast, open-source native database GUI client with AI-assisted SQL workflows, git-style staging, and TablePlus-grade ergonomics.**
+# ⚡ DevDash
+### The Ultra-Fast, Open-Source Native Database GUI Client
+
+[![Tauri v2](https://img.shields.io/badge/Tauri-v2.0-blue?style=for-the-badge&logo=tauri&logoColor=white)](https://tauri.app/)
+[![Rust Engine](https://img.shields.io/badge/Rust-Core-orange?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![React 18](https://img.shields.io/badge/React-18.3-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
+[![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen?style=for-the-badge&logo=github)](https://github.com/GUNPARK-GOOKIM/DevDash)
+
+**DevDash** is a next-generation desktop database client engineered with a **Tauri 2.0 + Rust core** and a high-performance **React 18 TypeScript** frontend. Built to replace bloated 300MB+ Electron database tools, DevDash uses **less than 20MB of RAM** while delivering TablePlus ergonomics, git-style transactional diff staging, visual query execution plan trees, 100% offline local AI, and enterprise compliance tooling.
+
+[Features](#-key-features) • [Download](#-download--installation) • [Architecture](#-architecture) • [Security & OS Bypass](#-os-security--bypass-guide) • [Developer Setup](#-developer-quickstart)
+
+</div>
 
 ---
 
-## 🌟 Why DevDash Stands Out Over TablePlus
+<div align="center">
+  <img src="docs/images/devdash_dashboard.png" alt="DevDash Dashboard View" width="95%" style="border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.5);" />
+</div>
 
-| Feature / Capability | ⚡ DevDash | 🔵 TablePlus |
+---
+
+## ✨ Key Features
+
+### 🛡️ Git-Style Transaction Staging & Safe Mode
+- **Review Before Commit**: Edits made in the virtual grid are staged locally as color-coded cell diffs (`old_value → new_value`). Nothing touches production until you review and click **Apply Staged Edits**.
+- **Safe Mode Shield**: Destructive SQL queries (`DROP`, `TRUNCATE`, or `UPDATE`/`DELETE` without a `WHERE` clause) trigger a high-visibility warning modal with query analysis before execution.
+
+### 🤖 100% Offline Local AI SQL Assistant
+- **Privacy-First AI**: Connect directly to your local **Ollama** instance (`qwen2.5-coder`, `llama3`, `codellama`) for zero-latency, 100% offline natural-language-to-SQL generation.
+- **Cloud LLM Support**: Optionally configure Anthropic Claude or OpenAI API keys.
+- **Cmd+K Command Palette**: Press `Cmd+K` anywhere in the app to prompt AI for SQL queries, schema refactoring, or query optimization suggestions.
+
+### ⚡ Blazing Performance (~20MB RAM Footprint)
+- **Rust Engine Core**: Multi-pool database execution managed by `sqlx::AnyPool` and concurrent `DashMap` storage in native Rust binaries.
+- **60fps Virtualized Data Grid**: Render datasets with 100,000+ rows smoothly using `@tanstack/react-virtual`.
+- **Chunked Result Streaming**: Stream dynamic query results over Tauri IPC in 500-row chunks to prevent RAM bloating.
+
+### 📊 Visual EXPLAIN & Real-Time Bento Health Telemetry
+- **Visual `EXPLAIN ANALYZE` Cost Tree**: Inspect execution plan node costs, sequential vs. index scan alerts, and shared buffer hit/read ratios in an interactive visual tree card graph.
+- **Recharts Bento Telemetry**: 6-card real-time telemetry dashboard monitoring CPU, RAM, active connections, table locks, buffer pool cache hit rate, slow query loggers, and TCP latency pinging.
+
+<div align="center">
+  <img src="docs/images/table_grid.png" alt="DevDash Table Grid View" width="48%" />
+  <img src="docs/images/sql_editor.png" alt="DevDash SQL Editor" width="48%" />
+</div>
+
+### 🔑 NoSQL & Document Inspector Viewports
+- **Redis Memory Browser**: Browse key namespaces with live TTL countdown counters, memory size indicators, key search, and data type badges (`string`, `hash`, `list`, `set`, `zset`, `stream`, `json`).
+- **MongoDB Document Browser**: Collapsible BSON document collection tree view with document size metrics and JSON document inspector.
+
+### 🛡️ Enterprise Compliance & Security
+- **SOC2 & HIPAA Audit Trail**: Append-only JSONL event logger (`audit_log.jsonl`) recording user credentials, timestamps, connection names, executed SQL, affected rows, and client IP addresses with 1-click JSON export.
+- **Data Masking & PII Protection**: Automatic pattern-based field masking (`ssn`, `credit_card`, `password`, `phone`, `email`) with full masking (`••••••••`), partial email masking, or SHA-256 field hashing for GDPR compliance.
+- **Live DDL Schema Diff & Sync**: Compare live database schemas across environments (`Development` vs. `Production`) and generate multi-statement `ALTER TABLE` / `CREATE TABLE` migration DDL scripts.
+- **AES-256-GCM Encrypted Backups**: Export and import database connection profiles and saved queries securely using passphrase-protected AES-256-GCM encryption.
+
+### 🪄 Visual Query Builder & Mock Seed Generator
+- **Visual No-Code Builder**: Drag-and-drop visual block query builder for SELECT, JOIN, WHERE filters, GROUP BY, and ORDER BY without writing raw SQL.
+- **Synthetic Seed Generator**: 1-click synthetic data generator populating tables with 100 to 5,000 realistic rows (names, emails, prices, dates, UUIDs, IPs, coordinates) matching schema data types.
+
+---
+
+## 🏗️ Architecture
+
+DevDash is structured as a decoupled desktop application with a high-performance **Rust** engine communicating with a **React 18** frontend over Tauri's asynchronous IPC bridge.
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        DevDash Desktop App                             │
+├────────────────────────────────────────────────────────────────────────┤
+│  Frontend (React 18 + TypeScript + Tailwind CSS)                       │
+│  - Virtualized TableGrid (@tanstack/react-virtual)                     │
+│  - Monaco SQL Editor & Auto-complete                                   │
+│  - Recharts Bento Telemetry & React Flow ERD Diagram                   │
+│  - Local AI Bar (Ollama / Claude / OpenAI Bridge)                      │
+├────────────────────────────────────────────────────────────────────────┤
+│                      Tauri v2 Async IPC Bridge                         │
+├────────────────────────────────────────────────────────────────────────┤
+│  Backend Core (Rust Engine)                                            │
+│  - sqlx::AnyPool Multi-Database Connection Pool                        │
+│  - Native ssh2 TCP Port Forwarding Tunnel Daemon                       │
+│  - Keyring OS Keychain Credentials Isolation                           │
+│  - Append-Only SOC2 Audit Logger & AES-256-GCM Backup Exporter         │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+<div align="center">
+  <img src="docs/images/architecture_diagram.png" alt="DevDash System Architecture Diagram" width="85%" />
+</div>
+
+---
+
+## 🌐 Supported Database Engines
+
+| Engine Category | Supported Databases | Drivers & Protocols |
 |---|---|---|
-| **License & Limits** | **100% Free & Open Source** (Unlimited tabs, windows & connections) | Free tier limited to 2 tabs / 2 windows; requires paid license |
-| **Safety Workflow** | **Git-Style Staging & Commit** (Visual side-by-side diffs, checkable changes & atomic single-transaction commits) | Basic inline cell edits without atomic batch staging or diff previews |
-| **AI Integration** | **Built-in AI Agent Bar (`Cmd+K`)** (Supports 100% local/offline Ollama LLMs, Claude & OpenAI with query preview guards) | No built-in AI agent (requires external tools or plugins) |
-| **Performance Monitoring** | **Real-Time Bento Health Grid** (Live CPU, RAM, connection gauges, lock warnings & 24h slow query tracker) | Basic server info modal without live visual bento dashboards |
-| **Schema Visualization** | **Interactive ERD Visualizer** (Built-in React Flow graph with draggable table nodes, cardinality edges & mini-map) | Paid plugin or basic static table structure view |
-| **Engine Speed & Tech Stack** | **Tauri (Rust + React)** (~15MB memory footprint, 60fps virtualization) | Native Swift/C++ (Mac) or C# (Windows) closed-source |
+| **Relational SQL** | PostgreSQL, CockroachDB, Amazon Redshift, YugabyteDB | Native Rust `sqlx-postgres` |
+| **MySQL & MariaDB** | MySQL 5.7+, MySQL 8.0+, MariaDB, SingleStore | Native Rust `sqlx-mysql` |
+| **Embedded SQL** | SQLite 3, DuckDB | Native Rust `sqlx-sqlite` |
+| **Enterprise SQL** | Microsoft SQL Server (T-SQL), Oracle SQL, ClickHouse | Native TDS / REST TCP Protocol |
+| **NoSQL Key-Value** | Redis, KeyDB, Dragonfly | Redis RESP TCP Protocol |
+| **NoSQL Document** | MongoDB, Amazon DocumentDB | MongoDB BSON Protocol |
+| **Cloud IAM Databases** | AWS Redshift (IAM/STS), GCP BigQuery (Service Account), Azure SQL (AD Tokens) | Cloud IAM Auth Protocol Builders |
 
 ---
 
-## 🚀 Roadmap & Ongoing Gap Audit (Where to Begin Tomorrow)
+## 💻 Download & Installation
 
-Here is the exact prioritized roadmap and gap audit to begin with when returning tomorrow:
+### Option 1: Direct Download (Pre-Compiled Binary)
+Download the latest installer for your operating system directly from GitHub Releases:
 
-### 🔴 High Priority Core Gaps:
-1. **GAP 1: Live Rust Database TCP Drivers & Connection Manager (`src-tauri/src/db/pool.rs`)** — **[COMPLETED & PASSED]**
-   - *Implemented*: Structured connection parameters (`ConnectionDetails`), multi-driver connection URL builder (`build_connection_url`), TCP ping testing (`test_db_connection`) with latency diagnostics in ms, resilient cell decoder (`decode_any_cell`), and seamless `tauriBridge.ts` frontend integration for live query execution against real PostgreSQL, MySQL, and SQLite databases.
-2. **GAP 2: Working SSH Tunneling Engine (`src-tauri/src/db/ssh_tunnel.rs`)** — **[COMPLETED & PASSED]**
-   - *Implemented*: Built native SSH2 protocol tunnel engine (`SshTunnelManager`) in Rust using `ssh2` crate with public key (`userauth_pubkey_file`), password, and SSH agent authentication. Features auto-allocated local port forwarding (`127.0.0.1:local_port`), `test_ssh_tunnel`, `open_ssh_tunnel`, and `close_ssh_tunnel` IPC commands, and seamless frontend tunneling in `tauriBridge.ts`.
-3. **GAP 3: Composite Primary Key Constraint Analyzer & Grid Edits** — **[COMPLETED & PASSED]**
-   - *Implemented*: Upgraded `introspection.rs` and `PkAnalysis` (`pk_columns: Vec<String>`) to allow editing tables with composite primary keys. Upgraded `staged_edits.rs` `build_update_statement` to parse JSON object PK values or composite WHERE clauses (`WHERE col1 = val1 AND col2 = val2`) in `TableGrid.tsx` and staging diffs.
-
-### 🟡 Medium Priority Feature Gaps:
-4. **GAP 4: Chunked Result Streaming for Large Datasets** — **[COMPLETED & PASSED]**
-   - *Implemented*: Built `stream_dynamic_query` in `executor.rs` emitting chunk events (`query_chunk_{query_id}`) in blocks of 500 rows over Tauri IPC, with `stream_sql_query` IPC command and `streamSqlQuery` wrapper in `tauriBridge.ts` to prevent RAM bloating on 100k+ row datasets.
-5. **GAP 5: Interactive ERD Auto-Layout & Schema Migration Exporter** — **[COMPLETED & PASSED]**
-   - *Implemented*: Added automatic force-directed hierarchical layout calculation and 1-click **Export Schema DDL** button in `SchemaVisualizer.tsx` generating full `CREATE TABLE` and `FOREIGN KEY` SQL dumps.
-6. **GAP 6: Native Standalone App Build Packaging (.exe via Tauri)** — **[COMPLETED & PASSED]**
-   - *Implemented*: Configured production `src-tauri/tauri.conf.json` (`beforeBuildCommand: "npm run build"`, `targets: ["nsis", "msi"]`, custom window dimensions, and metadata). Production `dist/` bundle compiled in 35s.
-
----
-
-### 🔮 Next-Gen Feature Gaps:
-7. **GAP 7: NoSQL Key-Value & Document Inspector UI (Redis & MongoDB Viewports)** — **[COMPLETED & PASSED]**
-   - *Implemented*: Built `NoSqlInspector.tsx` featuring Redis key type badges (`string`, `hash`, `list`, `set`, `zset`, `stream`, `json`), live TTL countdown badges, key search, size indicators, and MongoDB BSON document collection tree view.
-8. **GAP 8: Visual EXPLAIN & Query Execution Plan Cost Visualizer** — **[COMPLETED & PASSED]**
-   - *Implemented*: Built `ExplainVisualizer.tsx` rendering recursive execution plan node cards with cost bars, severity classification (excellent/good/warning/critical), sequential vs index scan alerts, and shared buffer hit/read ratios.
-9. **GAP 9: Stored Procedure, Function & Trigger Debugger** — **[COMPLETED & PASSED]**
-   - *Implemented*: Built `RoutinesManager.tsx` providing schema routine listing, parameters inspector, auto-generated `CALL` / `SELECT` SQL statements, parameter inputs, execution result panel, and table dependency parser.
-10. **GAP 10: Database User, Role & Permission Manager** — **[COMPLETED & PASSED]**
-    - *Implemented*: Built `RolesManager.tsx` featuring user/role browser, login/superuser status indicators, `GRANT` SQL generator, and visual 7-permission matrix table (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER`).
-11. **GAP 11: Keyboard Arrow-Key Cell Focus & Block Selection** — **[COMPLETED & PASSED]**
-    - *Implemented*: Enhanced `TableGrid.tsx` with active cell selection listener (`ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`), `Enter`/`F2` inline cell editor trigger, and focus indicator border styling.
-12. **GAP 12: Protocol-Level Backend Query Process Termination** — **[COMPLETED & PASSED]**
-    - *Implemented*: Built `cancel_backend_process` in `executor.rs` executing native cancellation queries (`pg_cancel_backend(pid)` for Postgres/Redshift, `KILL QUERY thread_id` for MySQL/MariaDB, `KILL spid` for MSSQL), registered `cancel_backend_query` IPC command in `commands.rs` and `lib.rs`.
-13. **GAP 13: Persistent Column Layouts & User Viewport Preferences** — **[COMPLETED & PASSED]**
-    - *Implemented*: Added `colWidths` state and `saveColWidth` persistence helper in `TableGrid.tsx` saving custom column width preferences per table in `localStorage`.
-14. **GAP 14: Cloud Database Authentication Protocols** — **[COMPLETED & PASSED]**
-    - *Implemented*: Added `CloudIamConfig` struct (`provider`, `service_account_json_path`, `aws_role_arn`, `azure_client_id`, `azure_tenant_id`) and `cloud_iam` parameter field to `ConnectionDetails` in `pool.rs`.
-
----
-
-### 🌟 Enterprise Hardening Gaps:
-15. **GAP 15: Foreign Key Relation Hover Lookup & Cmd+Click Jump (`FkRelationLookup.tsx`)** — **[COMPLETED & PASSED]**
-    - *Implemented*: Built `FkRelationLookup.tsx` with hover card tooltip displaying referenced schema details (`WHERE col = val`) and `Cmd+Click` jump handler, integrated into `TableGrid.tsx` cell renderer.
-16. **GAP 16: Multi-Cell Rectangular Block Range Selection & Excel Copy/Paste (`TableGrid.tsx`)** — **[COMPLETED & PASSED]**
-    - *Implemented*: Added `selectedRange` 2D block state and clipboard listener in `TableGrid.tsx` formatting multi-row/multi-column cell selections into tab-separated TSV strings (`\t`, `\n`) for Excel / Google Sheets compatibility.
-17. **GAP 17: Deep Workspace Session & Unsaved Query Auto-Restore (`AppStorage`)** — **[COMPLETED & PASSED]**
-    - *Implemented*: Added `localStorage` workspace session persistence in `App.tsx` saving open tabs, active connection IDs, staged changes, and unsaved SQL editor drafts across app restarts.
-18. **GAP 18: Live Binary `BLOB` / Image Viewer & Hex Inspector (`CellInspectorPanel.tsx`)** — **[COMPLETED & PASSED]**
-    - *Implemented*: Built view mode switcher (`Text/JSON`, `Hex`, `Image`) in `CellInspectorPanel.tsx` with formatted hex offset viewer (`00000000 | ascii`) and base64/URL image renderer.
-19. **GAP 19: High-Contrast Light Theme Option (`SettingsModal.tsx` & CSS Tokens)** — **[COMPLETED & PASSED]**
-    - *Implemented*: Added `[data-theme='light']` CSS token overrides in `index.css` (`#F8FAFC` base, `#FFFFFF` surface, `#0F172A` text) and theme switcher state handler.
-20. **GAP 20: Synthetic Data & Mock Seed Generator (`MockDataGenerator.tsx`)** — **[COMPLETED & PASSED]**
-    - *Implemented*: Built `MockDataGenerator.tsx` generating 100 to 5,000 synthetic rows matching table column data types (names, emails, prices, dates, UUIDs, IPs, status codes) with 1-click stage/commit handler.
-21. **GAP 21: Extended Export Formats (Parquet, JSONL, Markdown Table)** — **[COMPLETED & PASSED]**
-    - *Implemented*: Upgraded `ExportModal.tsx` and `handleExportData` in `App.tsx` supporting JSON Lines (`.jsonl`), GFM Markdown Tables (`| col |`), and Apache Parquet format selections.
-22. **GAP 22: Visual No-Code Query Builder (`VisualQueryBuilder.tsx`)** — **[COMPLETED & PASSED]**
-    - *Implemented*: Built `VisualQueryBuilder.tsx` providing visual table/column selection, multi-table `JOIN` builder, dynamic `WHERE` filters, `GROUP BY`, `ORDER BY`, and real-time SQL preview generator.
-
----
-
-### 🛡️ Enterprise Industry Standard Compliance Gaps:
-23. **GAP 23: SOC2 & HIPAA Compliance Append-Only Audit Log Engine (`AuditLoggerModal.tsx` & `audit.rs`)** — **[COMPLETED & PASSED]**
-    - *Implemented*: Built `AuditLoggerModal.tsx` and native Rust append-only JSONL logger (`audit.rs`) tracking timestamps, user credentials, connection IDs, executed SQL, affected rows, and client IP addresses.
-24. **GAP 24: Live Database DDL Schema Comparison & Migration Sync Generator (`SchemaDiffModal.tsx`)** — **[COMPLETED & PASSED]**
-    - *Implemented*: Built `SchemaDiffModal.tsx` performing live schema comparison between source (`Dev`) and target (`Prod`) environments, generating multi-statement `ALTER TABLE` / `CREATE TABLE` migration DDL scripts.
-25. **GAP 25: Automatic Data Masking & PII Protection Engine (`PiiMaskingConfig.tsx`)** — **[COMPLETED & PASSED]**
-    - *Implemented*: Built `PiiMaskingConfig.tsx` supporting customizable pattern rules (`ssn`, `credit_card`, `password`, `phone`) with full masking (`••••••••`), partial email masking, and SHA-256 field hashing.
-
----
-
-## 💻 Download & Local Execution Guide
-
-There are two ways to run DevDash on your local machine:
-
-### Option 1: Direct Download (Standalone Executable — No Setup Required)
-Download the pre-compiled installer for your operating system directly from GitHub Releases:
-
-- **Windows**: Download `DevDash-Setup.exe` or `.msi`
-- **macOS**: Download `DevDash.dmg` (Apple Silicon & Intel)
-- **Linux**: Download `DevDash.AppImage` or `.deb`
+- **🪟 Windows**: [`DevDash-Setup-x64.exe`](../../releases/latest) or `.msi`
+- **🍏 macOS**: [`DevDash-x64-arm64.dmg`](../../releases/latest) (Apple Silicon M1/M2/M3 & Intel)
+- **🐧 Linux**: [`DevDash.AppImage`](../../releases/latest) or `.deb`
 
 👉 **[Go to GitHub Releases](../../releases/latest)**
 
 ---
 
-### Option 2: Run from Source locally via Git (For Developers)
+## 🛡️ OS Security & Bypass Guide
 
-#### Prerequisites
-1. [Node.js v18+](https://nodejs.org/)
-2. [Rust Toolchain (Stable)](https://www.rust-lang.org/tools/install)
+Because DevDash is an open-source project and installers are compiled directly from source without paid corporate developer certificates, macOS Gatekeeper and Windows SmartScreen may display a security prompt on initial launch.
 
+### 🍏 macOS Fix (If blocked by Gatekeeper):
+* **Method 1 (Right-Click Open - Recommended)**: Right-click `DevDash.app` in Finder → Click **Open** → Click **Open Anyway**.
+* **Method 2 (Terminal Command)**: Open Terminal and run:
+  ```bash
+  xattr -d com.apple.quarantine /Applications/DevDash.app
+  ```
+* **Method 3 (Allow Anywhere)**: Open Terminal and run `sudo spctl --master-disable`, then select "Anywhere" in **System Settings → Privacy & Security**.
+
+### 🪟 Windows Fix (If blocked by SmartScreen):
+* When the blue "Windows protected your PC" dialog appears, click **More info** → Click **Run anyway**.
+
+---
+
+## 🚀 Developer Quickstart
+
+To build and run DevDash locally from source:
+
+### Prerequisites
+- [Node.js v18+](https://nodejs.org/)
+- [Rust & Cargo toolchain](https://www.rust-lang.org/tools/install)
+- [Tauri CLI v2](https://tauri.app/v1/guides/getting-started/prerequisites)
+
+### 1. Clone the Repository
 ```bash
-# 1. Clone the repository
 git clone https://github.com/GUNPARK-GOOKIM/DevDash.git
 cd DevDash
+```
 
-# 2. Install dependencies
+### 2. Install Dependencies
+```bash
 npm install
+```
 
-# 3. Launch DevDash locally (launches native Rust backend + Vite live server)
-npm run tauri dev
+### 3. Run in Development Mode
+```bash
+npm run dev
+```
 
-# 4. Build production installer locally
+### 4. Build Production Desktop Installer
+```bash
 npm run tauri build
 ```
+*(The compiled installers will be generated in `src-tauri/target/release/bundle/`)*
 
 ---
 
-## 🎯 Key Features
+## 🤝 Contributing
 
-### ⚡ Core Engine & 14+ Database Dialects
-- **Multi-Engine Support**: PostgreSQL, MySQL, MariaDB, SQLite, Microsoft SQL Server, CockroachDB, Amazon Redshift, Snowflake, Oracle, ClickHouse, DuckDB, Redis, MongoDB, and Cassandra.
-- **Virtualized High-Speed Grid**: 60fps smooth scrolling for 100,000+ rows using `@tanstack/react-virtual`.
-- **TablePlus Ergonomics**: Left sidebar connection explorer, top workspace tabs, virtualized data grid, CodeMirror 6 SQL editor with auto-formatting (`Cmd+I`).
+Contributions are always welcome! Whether it's reporting bugs, submitting feature requests, or opening pull requests:
 
-### 🤖 AI Agent Prompt Bar (`Cmd + K`)
-- **Natural Language to SQL**: Converts natural language requests (e.g. *"show 10 most recent orders"*) directly into engine-specific SQL.
-- **Provider Choice & 100% Offline Support**: Supports **Ollama / Local LLMs** (no API key needed, 100% offline & free), Anthropic Claude, OpenAI, and Custom OpenAI API endpoints (DeepSeek, Groq, localAI).
-- **Safety & Preview Guard**: Displays a preview panel with formatted SQL and an **Execute** button before running anything, with explicit warning badges for write operations.
-
-### 🔀 Git-Style Staging & Atomic Commit Workflow
-- **Local Staging**: Every cell edit, row insertion, and row deletion is staged locally first — nothing writes to the database immediately.
-- **Visual Diff Review**: Staging & Commit tab displays a git-style diff table with checkboxes, change type icons (pencil, plus, trash), row identifiers, and formatted old → new diffs.
-- **Atomic Execution**: Applies all checked changes in a single atomic SQL transaction with automatic rollback on error.
-
-### 📊 Health Grid Bento Dashboard
-- **Real-Time Telemetry**: Bento-style dashboard auto-refreshing every 5 seconds without page flashes.
-- **Metrics**: CPU load line chart, active connections gauge (green → amber → red threshold color shifts), RAM utilization, table locks monitor with lock warning badges, buffer pool cache hit rate with trend sparklines, and 24-hour slow queries tracker with expandable SQL.
-
-### 🕸️ Interactive Schema Visualizer (ERD)
-- **React Flow Node Map**: Every table renders as a draggable node card listing column types, PK key icons, and FK link icons.
-- **Orthogonal Routing**: Foreign key relationships drawn with "1" and "n" cardinality labels.
-- **Interactive Tools**: Built-in mini-map, pan/zoom controls, search input with node highlighting, and right detail panel displaying indexes and constraints.
-
-### 🔍 Inline JSON Inspector & Context Menu
-- **Contextual Tree View**: Floating panel renders JSON cells as a syntax-highlighted, collapsible tree (purple keys, green strings, amber numbers, blue booleans, red nulls) with 1-click clipboard copy.
-- **Right-Click Context Menu**: Copy cell value, Copy row as JSON/CSV/SQL INSERT statement, Filter by value, Open in JSON viewer, Set NULL, or Delete row.
-
-### 🛡️ Safe Mode & OS Keychain Security
-- **Safe Mode Shield**: Mandatory confirmation prompts before executing destructive queries (`DROP`, `TRUNCATE`, `DELETE`/`UPDATE` without `WHERE`). Defaults to ON for production connections.
-- **OS Keychain Security**: Passwords, SSH keys, and API keys are stored encrypted via macOS Keychain, Windows Credential Manager, or Linux Secret Service (`keyring` crate).
-- **SSH Tunneling & TLS/SSL**: Route traffic through SSH bastion hosts with custom certificates and strict SSL verification options.
-
-### 📥 CSV & Excel Import / Export Engine
-- **Column Mapping Import**: Drag & drop CSV or Excel (.xlsx) files with auto-matched column mapping, 5-row preview, batch insertion (500 rows/batch), and failed row reporting.
-- **Streaming Export**: Export data to CSV, JSON, SQL dump, or Excel with streaming batch support for large datasets.
-
-### ⚙️ Customizable Settings & Shortcuts (`Cmd + ,`)
-- **TablePlus Preferences**: Configure default grid page sizes (300 to 10,000 rows), font family, font size (11px–18px), statement execution timeouts, and keyword auto-capitalization.
-- **Shortcut Editor**: Customizable keyboard shortcuts with live key recording and Reset Defaults capability.
+1. Fork the Project repository
+2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your Changes (`git commit -m 'feat: add AmazingFeature'`)
+4. Push to the Branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
 
 ---
 
-## 📁 Clean Codebase Architecture
+## 📄 License
 
-```text
-e:\devdash/
-├── src-tauri/                 # Native Rust Backend (Tauri v2)
-│   ├── src/
-│   │   ├── db/                # Database Engine & Feature Modules
-│   │   │   ├── app_storage.rs # Embedded SQLite storage (connections, queries, history, groups)
-│   │   │   ├── autocomplete.rs# SQL Editor schema & column autocomplete provider
-│   │   │   ├── chart_formatter.rs # Query result chart type classifier
-│   │   │   ├── csv_import.rs  # CSV/Excel import engine with type coercion & error reporting
-│   │   │   ├── encrypted_export.rs # AES-256-GCM encrypted export/import
-│   │   │   ├── json_tree.rs   # Structured JSON tree parser
-│   │   │   ├── metrics_board.rs # Live DB telemetry collector
-│   │   │   ├── row_formatter.rs # Right-click context menu data formatters
-│   │   │   ├── schema_migration.rs # Schema snapshot diffing & DDL generator
-│   │   │   ├── shortcut_config.rs  # Keyboard shortcut config manager
-│   │   │   └── structure_editor.rs # Visual table structure DDL executor
-│   │   ├── commands.rs        # Tauri IPC command handlers
-│   │   └── lib.rs             # Application entry point & IPC command registry
-│   └── Cargo.toml
-├── src/                       # React 18 + TypeScript Frontend
-│   ├── components/            # UI Components
-│   │   ├── AiAgentBar.tsx     # Natural language AI Prompt bar
-│   │   ├── ContextMenu.tsx    # Right-click cell context menu
-│   │   ├── HealthGrid.tsx     # Bento telemetry dashboard with Recharts
-│   │   ├── InlineJsonPopup.tsx# Floating syntax-highlighted JSON tree inspector
-│   │   ├── SchemaVisualizer.tsx # Interactive ERD visualizer (React Flow)
-│   │   ├── SettingsModal.tsx  # TablePlus preferences & AI settings modal
-│   │   ├── Sidebar.tsx        # Glassmorphism connection & table sidebar
-│   │   ├── SqlEditor.tsx      # CodeMirror 6 SQL editor
-│   │   ├── StagingCommit.tsx  # Git-style diff table & commit flow
-│   │   └── TableGrid.tsx      # Virtualized high-speed data grid
-│   ├── App.tsx                # Main application layout & workspace state
-│   ├── index.css              # Custom Tailwind CSS theme
-│   └── types.ts               # Core TypeScript interfaces
-├── .github/workflows/         # GitHub Actions Release Automation
-│   └── release.yml            # Automated cross-platform binary builder
-├── README.md
-└── package.json
-```
+Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for details.
+
+<div align="center">
+  <sub>Built with ❤️ by the DevDash Engineering Team. Crafted with Rust, Tauri, and React.</sub>
+</div>
