@@ -105,6 +105,21 @@ pub struct StreamDonePayload {
     pub total_rows: u64,
 }
 
+// GAP 12: Protocol-level Backend Process Termination
+pub async fn cancel_backend_process(pool: &AnyPool, pid_or_thread_id: u32, db_kind: &str) -> Result<(), String> {
+    let cancel_sql = match db_kind.to_lowercase().as_str() {
+        "postgres" | "cockroachdb" | "redshift" => format!("SELECT pg_cancel_backend({})", pid_or_thread_id),
+        "mysql" | "mariadb" => format!("KILL QUERY {}", pid_or_thread_id),
+        "mssql" => format!("KILL {}", pid_or_thread_id),
+        _ => return Err(format!("Engine {} does not support remote protocol query cancellation", db_kind)),
+    };
+    sqlx::query(&cancel_sql)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("Protocol query cancellation failed: {}", e))?;
+    Ok(())
+}
+
 // Stream dynamic query results in chunks of chunk_size (default 500) to prevent RAM bloating
 pub async fn stream_dynamic_query<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,

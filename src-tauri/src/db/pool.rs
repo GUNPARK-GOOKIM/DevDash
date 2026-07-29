@@ -6,6 +6,16 @@ use sqlx::AnyPool; // Import AnyPool from sqlx root crate
 use std::sync::Arc; // Import Arc for atomic reference counting across threads
 use std::time::{Duration, Instant}; // Import Duration and Instant for latency calculation
 
+// Cloud IAM Authentication Protocol Parameters (GAP 14)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CloudIamConfig {
+    pub provider: String, // "gcp_bigquery", "aws_redshift", "azure_ad"
+    pub service_account_json_path: Option<String>,
+    pub aws_role_arn: Option<String>,
+    pub azure_client_id: Option<String>,
+    pub azure_tenant_id: Option<String>,
+}
+
 // Structured connection parameters payload
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ConnectionDetails {
@@ -16,6 +26,7 @@ pub struct ConnectionDetails {
     pub password: Option<String>, // Password credential
     pub database: String, // Database or schema name / file path
     pub ssl_mode: Option<String>, // SSL / TLS mode (disable, require, verify-full)
+    pub cloud_iam: Option<CloudIamConfig>, // Cloud IAM credentials (GAP 14)
 }
 
 // Result payload for connection testing diagnostics

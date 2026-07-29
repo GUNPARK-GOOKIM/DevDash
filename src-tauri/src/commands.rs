@@ -520,6 +520,18 @@ pub async fn import_encrypted_data(
     import_connections_and_queries(&state.storage, std::path::Path::new(&import_path), &passphrase).await
 }
 
+// IPC Command: Protocol-level query cancellation (pg_cancel_backend / KILL QUERY)
+#[tauri::command]
+pub async fn cancel_backend_query(
+    connection_id: String,
+    pid_or_thread_id: u32,
+    db_kind: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    crate::db::executor::cancel_backend_process(&pool, pid_or_thread_id, &db_kind).await
+}
+
 // IPC Command: Cancel a running database query mid-flight
 #[tauri::command] // Tauri command macro annotation
 pub async fn cancel_query(

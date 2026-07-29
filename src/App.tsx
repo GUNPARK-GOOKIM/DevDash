@@ -17,6 +17,10 @@ import { AiAgentBar } from './components/AiAgentBar';
 import { InlineJsonPopup } from './components/InlineJsonPopup';
 import { ContextMenu, buildCellContextMenu, ContextMenuAction } from './components/ContextMenu';
 import { SettingsModal, AiConfig, GeneralSettings } from './components/SettingsModal';
+import { NoSqlInspector } from './components/NoSqlInspector';
+import { ExplainVisualizer } from './components/ExplainVisualizer';
+import { RoutinesManager } from './components/RoutinesManager';
+import { RolesManager } from './components/RolesManager';
 import {
   ConnectionConfig,
   DbKind,
@@ -33,6 +37,7 @@ import {
 import {
   X, Plus, Terminal, Table as TableIcon, Layers, Download, Upload,
   GitBranch, Activity, Network, Shield, Clock, Wand2, Search, Sparkles, Settings,
+  Database, Cpu,
 } from 'lucide-react';
 import { Tooltip } from './components/Tooltip';
 import {
@@ -556,6 +561,10 @@ export const App: React.FC = () => {
       case 'structure': return <Layers className={cls} />;
       case 'erd': return <Network className={cls} />;
       case 'health': return <Activity className={cls} />;
+      case 'nosql': return <Database className={cls} />;
+      case 'explain': return <Cpu className={cls} />;
+      case 'routines': return <Wand2 className={cls} />;
+      case 'roles': return <Shield className={cls} />;
       default: return <TableIcon className={cls} />;
     }
   };
@@ -746,6 +755,14 @@ export const App: React.FC = () => {
               <SchemaVisualizer tables={erdTables} onSelectTable={handleOpenTableTab} />
             ) : activeTab.type === 'health' ? (
               <HealthGrid connectionId={activeConnection?.id || ''} dbType={activeConnection?.db_type || 'postgres'} />
+            ) : activeTab.type === 'nosql' ? (
+              <NoSqlInspector connectionId={activeConnection?.id || ''} dbType={(activeConnection?.db_type as 'redis' | 'mongodb') || 'redis'} />
+            ) : activeTab.type === 'explain' ? (
+              <ExplainVisualizer connectionId={activeConnection?.id || ''} dbType={activeConnection?.db_type || 'postgres'} />
+            ) : activeTab.type === 'routines' ? (
+              <RoutinesManager connectionId={activeConnection?.id || ''} dbType={activeConnection?.db_type || 'postgres'} />
+            ) : activeTab.type === 'roles' ? (
+              <RolesManager connectionId={activeConnection?.id || ''} dbType={activeConnection?.db_type || 'postgres'} />
             ) : null}
           </div>
         </div>

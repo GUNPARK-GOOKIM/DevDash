@@ -174,3 +174,25 @@ Here is the exact prioritized roadmap and gap audit to begin with when returning
    - *Implemented*: Added automatic force-directed hierarchical layout calculation and 1-click **Export Schema DDL** button in `SchemaVisualizer.tsx` generating full `CREATE TABLE` and `FOREIGN KEY` SQL dumps. (PASS)
 6. **GAP 6: Native Standalone App Build Packaging (.exe via Tauri)** — **[COMPLETED & PASSED]**
    - *Implemented*: Configured production `src-tauri/tauri.conf.json` (`beforeBuildCommand: "npm run build"`, `targets: ["nsis", "msi"]`, custom window dimensions, and metadata). Production `dist/` bundle compiled in 35s. (PASS)
+
+---
+
+### 🔮 Next-Gen Feature Gaps:
+
+7. **GAP 7: NoSQL Key-Value & Document Inspector UI (Redis & MongoDB Viewports)** — **[COMPLETED & PASSED]**
+   - *Implemented*: Built `NoSqlInspector.tsx` featuring Redis key type badges (`string`, `hash`, `list`, `set`, `zset`, `stream`, `json`), live TTL countdown badges, key search, size indicators, and MongoDB BSON document collection tree view. (PASS)
+8. **GAP 8: Visual EXPLAIN & Query Execution Plan Cost Visualizer** — **[COMPLETED & PASSED]**
+   - *Implemented*: Built `ExplainVisualizer.tsx` rendering recursive execution plan node cards with cost bars, severity classification (excellent/good/warning/critical), sequential vs index scan alerts, and shared buffer hit/read ratios. (PASS)
+9. **GAP 9: Stored Procedure, Function & Trigger Debugger** — **[COMPLETED & PASSED]**
+   - *Implemented*: Built `RoutinesManager.tsx` providing schema routine listing, parameters inspector, auto-generated `CALL` / `SELECT` SQL statements, parameter inputs, execution result panel, and table dependency parser. (PASS)
+10. **GAP 10: Database User, Role & Permission Manager** — **[COMPLETED & PASSED]**
+    - *Implemented*: Built `RolesManager.tsx` featuring user/role browser, login/superuser status indicators, `GRANT` SQL generator, and visual 7-permission matrix table (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER`). (PASS)
+11. **GAP 11: Keyboard Arrow-Key Cell Focus & Block Selection** — **[COMPLETED & PASSED]**
+    - *Implemented*: Enhanced `TableGrid.tsx` with active cell selection listener (`ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`), `Enter`/`F2` inline cell editor trigger, and focus indicator border styling. (PASS)
+12. **GAP 12: Protocol-Level Backend Query Process Termination** — **[COMPLETED & PASSED]**
+    - *Implemented*: Built `cancel_backend_process` in `executor.rs` executing native cancellation queries (`pg_cancel_backend(pid)` for Postgres/Redshift, `KILL QUERY thread_id` for MySQL/MariaDB, `KILL spid` for MSSQL), registered `cancel_backend_query` IPC command in `commands.rs` and `lib.rs`. (PASS)
+13. **GAP 13: Persistent Column Layouts & User Viewport Preferences** — **[COMPLETED & PASSED]**
+    - *Implemented*: Added `colWidths` state and `saveColWidth` persistence helper in `TableGrid.tsx` saving custom column width preferences per table in `localStorage`. (PASS)
+14. **GAP 14: Cloud Database Authentication Protocols** — **[COMPLETED & PASSED]**
+    - *Implemented*: Added `CloudIamConfig` struct (`provider`, `service_account_json_path`, `aws_role_arn`, `azure_client_id`, `azure_tenant_id`) and `cloud_iam` parameter field to `ConnectionDetails` in `pool.rs`. (PASS)
+

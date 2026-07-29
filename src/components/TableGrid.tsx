@@ -36,11 +36,71 @@ export const TableGrid: React.FC<TableGridProps> = ({
   const [colSearch] = useState<string>('');
   const [showInspector, setShowInspector] = useState<boolean>(false);
 
+  // GAP 13: Persistent Column Layouts
+  const [colWidths, setColWidths] = useState<Record<string, number>>(() => {
+    const saved = localStorage.getItem(`devdash_col_widths_${tableName}`);
+    if (saved) { try { return JSON.parse(saved); } catch {} }
+    return {};
+  });
+
+  const saveColWidth = (colName: string, width: number) => {
+    const next = { ...colWidths, [colName]: width };
+    setColWidths(next);
+    localStorage.setItem(`devdash_col_widths_${tableName}`, JSON.stringify(next));
+  };
+
   const parentRef = useRef<HTMLDivElement>(null);
 
   const filteredColumns = columns.filter((c) =>
     c.name.toLowerCase().includes(colSearch.toLowerCase())
   );
+
+  // GAP 11: Keyboard Arrow Key Cell Focus & Navigation
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!selectedCell || editingCell) return;
+      const colIdx = filteredColumns.findIndex(c => c.name === selectedCell.colName);
+      if (colIdx === -1) return;
+
+      let nextRowIdx = selectedCell.rowIdx;
+      let nextColIdx = colIdx;
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        nextRowIdx = Math.max(0, selectedCell.rowIdx - 1);
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        nextRowIdx = Math.min(rows.length - 1, selectedCell.rowIdx + 1);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        nextColIdx = Math.max(0, colIdx - 1);
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        nextColIdx = Math.min(filteredColumns.length - 1, colIdx + 1);
+      } else if (e.key === 'Enter' || e.key === 'F2') {
+        e.preventDefault();
+        const col = filteredColumns[colIdx];
+        const val = getCellValue(rows[selectedCell.rowIdx], col.name, getRowIdentifier(rows[selectedCell.rowIdx]));
+        handleCellDoubleClick(selectedCell.rowIdx, col.name, val);
+        return;
+      } else return;
+
+      const nextCol = filteredColumns[nextColIdx];
+      const nextRow = rows[nextRowIdx];
+      if (nextRow && nextCol) {
+        const val = getCellValue(nextRow, nextCol.name, getRowIdentifier(nextRow));
+        setSelectedCell({
+          rowIdx: nextRowIdx,
+          colName: nextCol.name,
+          val,
+          type: nextCol.data_type,
+        });
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedCell, editingCell, filteredColumns, rows]);
 
   const isCellDirty = (rowId: any, colName: string) => {
     return stagedEdits.some((e) => e.rowId === rowId && e.columnName === colName);

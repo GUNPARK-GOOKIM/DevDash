@@ -46,6 +46,7 @@ pub fn run() { // Entry point library run function for Tauri application
             commands::run_sql_query, // Register run_sql_query IPC command
             commands::stream_sql_query, // Register stream_sql_query IPC command
             commands::cancel_query, // Register cancel_query IPC command
+            commands::cancel_backend_query, // Register cancel_backend_query IPC command (GAP 12)
             commands::check_sql_safety, // Register check_sql_safety IPC command
             commands::commit_staged_row_edits, // Register commit_staged_row_edits IPC command
             commands::export_table_data, // Register export_table_data IPC command
