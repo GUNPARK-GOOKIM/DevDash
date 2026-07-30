@@ -32,3 +32,36 @@ pub fn append_audit_entry(log_dir: &PathBuf, entry: &AuditEntry) -> Result<(), S
     writeln!(file, "{}", json_line).map_err(|e| format!("Failed to write log entry: {}", e))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_append_audit_entry_jsonl() {
+        let dir = tempdir().unwrap();
+        let log_dir = dir.path().to_path_buf();
+
+        let entry = AuditEntry {
+            id: "audit-101".to_string(),
+            timestamp: "2026-07-31T00:00:00Z".to_string(),
+            user: "admin".to_string(),
+            connection_name: "prod_db".to_string(),
+            action_type: "STAGE_COMMIT".to_string(),
+            sql: "UPDATE users SET active = true WHERE id = 1;".to_string(),
+            affected_rows: 1,
+            status: "SUCCESS".to_string(),
+            client_ip: "127.0.0.1".to_string(),
+        };
+
+        let result = append_audit_entry(&log_dir, &entry);
+        assert!(result.is_ok());
+
+        let file_path = log_dir.join("audit_log.jsonl");
+        let content = std::fs::read_to_string(file_path).unwrap();
+        assert!(content.contains("audit-101"));
+        assert!(content.contains("admin"));
+        assert!(content.contains("STAGE_COMMIT"));
+    }
+}
