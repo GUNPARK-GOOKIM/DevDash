@@ -6,7 +6,7 @@
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2.0-blue?style=for-the-badge&logo=tauri&logoColor=white)](https://tauri.app/)
 [![Rust Engine](https://img.shields.io/badge/Rust-Core-orange?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![React 18](https://img.shields.io/badge/React-18.3-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=for-the-badge)](LICENSE)
 [![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen?style=for-the-badge&logo=github)](https://github.com/GUNPARK-GOOKIM/DevDash)
 
 **DevDash** is a high-performance **local-first database engineering platform** and native desktop GUI client built with a **Tauri 2.0 + Rust core** and **React 18 TypeScript**. Using **less than 20MB of RAM** (vs 300MB+ in Electron), DevDash delivers git-style transactional diff staging, visual EXPLAIN execution plan cost trees, 100% offline local AI, bento health telemetry, NoSQL inspectors, and enterprise compliance tools.
@@ -18,7 +18,8 @@
 ---
 
 <div align="center">
-  <img src="docs/images/devdash_dashboard.png" alt="DevDash Dashboard View" width="95%" style="border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.5);" />
+  <h3>📹 Live Workspace Interaction & Animation</h3>
+  <img src="docs/images/devdash_demo_animation.webp" alt="DevDash Live Interactive Demo Animation" width="95%" style="border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.5);" />
 </div>
 
 ---
@@ -43,27 +44,35 @@
 
 ---
 
-## 🏗️ Architecture & Component Roles
+## 📸 Interactive Workspace Showcase
 
-```text
-DevDash Workspace
-├── src-tauri/src/db/          (Rust Core Engine)
-│   ├── pool.rs                - Multi-pool sqlx connection manager & Cloud IAM auth
-│   ├── executor.rs            - Chunked 500-row query executor & process cancellation
-│   ├── staged_edits.rs        - Transactional batch UPDATE compiler with atomic rollback
-│   ├── introspection.rs       - Schema constraints, PK/FK indexes & routine parser
-│   ├── ssh_tunnel.rs          - Thread-safe background ssh2 TCP port forwarding daemon
-│   ├── encrypted_export.rs    - Passphrase-based AES-256-GCM configuration backup
-│   └── audit.rs               - Append-only SOC2/HIPAA compliance JSONL event logger
-└── src/components/            (React 18 Frontend UI)
-    ├── TableGrid.tsx          - Virtualized grid (@tanstack/react-virtual) & 2D range select
-    ├── SqlEditor.tsx          - CodeMirror SQL syntax editor & auto-formatter
-    ├── ExplainVisualizer.tsx  - Visual execution plan tree graph & buffer hit ratios
-    ├── HealthGrid.tsx         - Recharts Bento telemetry metrics & slow query logger
-    ├── NoSqlInspector.tsx     - Redis key TTL countdown inspector & Mongo BSON tree
-    ├── AuditLoggerModal.tsx   - SOC2 audit trail exporter
-    ├── SchemaDiffModal.tsx    - Live schema migration DDL generator
-    └── PiiMaskingConfig.tsx   - Field PII masking & GDPR hashing engine
+<div align="center">
+  <img src="docs/images/devdash_workspace_flow.webp" alt="DevDash Animated Workspace Flow" width="95%" style="border-radius: 12px; margin-bottom: 16px;" />
+</div>
+
+<div align="center">
+  <img src="docs/images/table_grid.png" alt="DevDash Virtualized Grid View" width="48%" />
+  <img src="docs/images/sql_editor.png" alt="DevDash CodeMirror SQL Editor" width="48%" />
+</div>
+
+<div align="center" style="margin-top: 16px;">
+  <img src="docs/images/dialect_selector.png" alt="DevDash Dialect Selector" width="48%" />
+  <img src="docs/images/devdash_welcome.png" alt="DevDash Connection Manager" width="48%" />
+</div>
+
+---
+
+## 🏗️ Architecture & System Execution Flow
+
+```mermaid
+flowchart TD
+    UI[React 18 Virtualized Grid UI] -->|IPC Invocation| Bridge[src/services/tauriBridge.ts]
+    Bridge -->|Async Tauri IPC| Rust[Tauri Rust Core Engine]
+    Rust -->|Connection Pool| Pool[sqlx::AnyPool Multi-Driver]
+    Pool --> SQL[(PostgreSQL / MySQL / SQLite)]
+    Rust -->|RESP Protocol| Redis[(Redis Key-Value Cache)]
+    Rust -->|BSON Protocol| Mongo[(MongoDB Document Store)]
+    Rust -->|Append-Only| Audit[audit_log.jsonl SOC2/HIPAA Log]
 ```
 
 <div align="center">
@@ -87,11 +96,6 @@ DevDash Workspace
 - **Rust Engine Core**: Multi-pool database execution managed by `sqlx::AnyPool` and concurrent `DashMap` storage in native Rust binaries.
 - **60fps Virtualized Data Grid**: Render datasets with 100,000+ rows smoothly using `@tanstack/react-virtual`.
 - **Chunked Result Streaming**: Stream dynamic query results over Tauri IPC in 500-row chunks to prevent RAM bloating.
-
-<div align="center">
-  <img src="docs/images/table_grid.png" alt="DevDash Table Grid View" width="48%" />
-  <img src="docs/images/sql_editor.png" alt="DevDash SQL Editor" width="48%" />
-</div>
 
 ---
 
@@ -138,10 +142,13 @@ npm install
 # 3. Type-check Frontend
 npx tsc --noEmit
 
-# 4. Run in Development Mode
+# 4. Run Architecture Integrity Audit
+python scripts/check-architecture.py
+
+# 5. Run in Development Mode
 npm run dev
 
-# 5. Compile Production Bundle
+# 6. Compile Production Desktop Installers
 npm run build
 npm run tauri build
 ```
@@ -150,7 +157,7 @@ npm run tauri build
 
 ## 📄 License
 
-Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for details.
+Distributed under the **Apache License 2.0**. See [`LICENSE`](LICENSE) for details.
 
 <div align="center">
   <sub>Built with ❤️ by the DevDash Engineering Team. Crafted with Rust, Tauri, and React.</sub>
