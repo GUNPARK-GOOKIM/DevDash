@@ -4,6 +4,12 @@ import { ShieldAlert, Check, RotateCcw, ChevronLeft, ChevronRight, Layers, Eye }
 import { CellInspectorPanel } from './CellInspectorPanel';
 import { FkRelationLookup } from './FkRelationLookup';
 
+export interface PiiMaskRuleApplied {
+  fieldPattern: string;
+  maskType: 'FULL' | 'PARTIAL_EMAIL' | 'LAST_FOUR' | 'HASH_SHA256';
+  enabled: boolean;
+}
+
 interface TableGridProps {
   tableName: string;
   columns: ColumnItem[];
@@ -17,6 +23,31 @@ interface TableGridProps {
   onPageChange: (newPage: number) => void;
   isLoading: boolean;
   onJumpToRow?: (table: string, filterCol: string, val: any) => void;
+  piiRules?: PiiMaskRuleApplied[];
+}
+
+function applyPiiMask(colName: string, val: any, rules?: PiiMaskRuleApplied[]): any {
+  if (val === null || val === undefined || !rules?.length) return val;
+  const lower = colName.toLowerCase();
+  const rule = rules.find((r) => r.enabled && lower.includes(r.fieldPattern.toLowerCase()));
+  if (!rule) return val;
+  const s = String(val);
+  switch (rule.maskType) {
+    case 'FULL':
+      return '••••••••';
+    case 'LAST_FOUR':
+      return s.length <= 4 ? '••••' : `${'•'.repeat(Math.max(0, s.length - 4))}${s.slice(-4)}`;
+    case 'PARTIAL_EMAIL': {
+      const at = s.indexOf('@');
+      if (at <= 1) return '•••@•••';
+      return `${s[0]}***${s[at - 1] || ''}@${s.slice(at + 1)}`;
+    }
+    case 'HASH_SHA256':
+      // Display-only marker; real crypto hash would require Web Crypto async path
+      return `[masked:${s.length}ch]`;
+    default:
+      return val;
+  }
 }
 
 export const TableGrid: React.FC<TableGridProps> = ({
@@ -32,6 +63,7 @@ export const TableGrid: React.FC<TableGridProps> = ({
   onPageChange,
   isLoading,
   onJumpToRow,
+  piiRules,
 }) => {
   const [editingCell, setEditingCell] = useState<{ rowIdx: number; colName: string } | null>(null);
   const [selectedCell, setSelectedCell] = useState<{ rowIdx: number; colName: string; val: any; type: string } | null>(null);
@@ -192,14 +224,15 @@ export const TableGrid: React.FC<TableGridProps> = ({
     setEditingCell(null);
   };
 
-  const formatDisplayValue = (val: any) => {
-    if (val === null || val === undefined) {
+  const formatDisplayValue = (val: any, colName?: string) => {
+    const display = colName ? applyPiiMask(colName, val, piiRules) : val;
+    if (display === null || display === undefined) {
       return <span className="text-textMuted italic font-sans text-xs">NULL</span>;
     }
-    if (typeof val === 'object') {
-      return JSON.stringify(val);
+    if (typeof display === 'object') {
+      return JSON.stringify(display);
     }
-    return String(val);
+    return String(display);
   };
 
   const renderEmptyState = () => (
@@ -383,7 +416,7 @@ export const TableGrid: React.FC<TableGridProps> = ({
                                 }}
                               />
                             ) : (
-                              formatDisplayValue(displayVal)
+                              formatDisplayValue(displayVal, col.name)
                             )}
                           </td>
                         );

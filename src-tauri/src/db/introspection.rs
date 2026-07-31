@@ -31,116 +31,161 @@ pub struct PkAnalysis { // Struct definition for primary key analysis
 } // End of PkAnalysis struct definition
 
 
+/// Reject table identifiers that could be used for SQL injection in catalog queries.
+fn validate_identifier(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Table name cannot be empty".to_string());
+    }
+    if name.len() > 128 {
+        return Err("Table name is too long".to_string());
+    }
+    // Allow schema-qualified names like public.users and quoted-safe alphanumerics/underscore
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+    {
+        return Err(format!(
+            "Invalid table identifier '{}': only alphanumeric, underscore, and dot are allowed",
+            name
+        ));
+    }
+    Ok(())
+}
+
 // Fetch list of table names and types from database catalogs
-pub async fn fetch_tables(pool: &AnyPool, db_kind: &str) -> Result<Vec<TableInfo>, String> { // Fetch tables function
-    let mut tables = Vec::new(); // Initialize empty vector to store discovered tables
-    
-    // Choose catalog query based on database driver kind
-    match db_kind.to_lowercase().as_str() { // Match on database engine identifier
-        "postgres" | "postgresql" | "cockroachdb" | "redshift" => { // Postgres-compatible engines
-            let sql = "SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"; // Postgres catalog query
-            let rows = sqlx::query::<Any>(sql).fetch_all(pool).await.map_err(|e| e.to_string())?; // Execute query against Any pool
-            for row in rows { // Loop over result rows
-                let name: String = row.get(0); // Extract table_name column value
-                let table_type: String = row.get(1); // Extract table_type column value
-                tables.push(TableInfo { name, table_type }); // Push table info struct into vector
-            } // End of rows iteration loop
-        } // End of Postgres branch
-        "mysql" | "mariadb" => { // MySQL-compatible engines
-            let sql = "SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name;"; // MySQL catalog query
-            let rows = sqlx::query::<Any>(sql).fetch_all(pool).await.map_err(|e| e.to_string())?; // Execute query against Any pool
-            for row in rows { // Loop over result rows
-                let name: String = row.get(0); // Extract table_name column value
-                let table_type: String = row.get(1); // Extract table_type column value
-                tables.push(TableInfo { name, table_type }); // Push table info struct into vector
-            } // End of rows iteration loop
-        } // End of MySQL branch
-        _ => { // Fallback/SQLite database handler branch
-            let sql = "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name;"; // SQLite master catalog query
-            let rows = sqlx::query::<Any>(sql).fetch_all(pool).await.map_err(|e| e.to_string())?; // Execute query against Any pool
-            for row in rows { // Loop over result rows
-                let name: String = row.get(0); // Extract table name column value
-                let table_type: String = row.get(1); // Extract object type column value
-                tables.push(TableInfo { name, table_type }); // Push table info struct into vector
-            } // End of rows iteration loop
-        } // End of SQLite/fallback branch
-    } // End of database kind match statement
+pub async fn fetch_tables(pool: &AnyPool, db_kind: &str) -> Result<Vec<TableInfo>, String> {
+    let mut tables = Vec::new();
 
-    Ok(tables) // Return discovered tables vector
-} // End of fetch_tables function
+    match db_kind.to_lowercase().as_str() {
+        "postgres" | "postgresql" | "cockroachdb" | "redshift" => {
+            let sql = "SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;";
+            let rows = sqlx::query::<Any>(sql)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let name: String = row.get(0);
+                let table_type: String = row.get(1);
+                tables.push(TableInfo { name, table_type });
+            }
+        }
+        "mysql" | "mariadb" => {
+            let sql = "SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name;";
+            let rows = sqlx::query::<Any>(sql)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let name: String = row.get(0);
+                let table_type: String = row.get(1);
+                tables.push(TableInfo { name, table_type });
+            }
+        }
+        _ => {
+            let sql = "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name;";
+            let rows = sqlx::query::<Any>(sql)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let name: String = row.get(0);
+                let table_type: String = row.get(1);
+                tables.push(TableInfo { name, table_type });
+            }
+        }
+    }
 
-// Fetch column details for a given table
-pub async fn fetch_columns(pool: &AnyPool, db_kind: &str, table_name: &str) -> Result<Vec<ColumnInfo>, String> { // Fetch columns function
-    let mut columns = Vec::new(); // Initialize empty columns vector
+    Ok(tables)
+}
 
-    match db_kind.to_lowercase().as_str() { // Match database engine kind
-        "postgres" | "postgresql" | "cockroachdb" | "redshift" => { // Postgres catalog inspect
-            let sql = format!(
-                "SELECT c.column_name, c.data_type, c.is_nullable, 
+// Fetch column details for a given table (parameterized — no string interpolation of table name)
+pub async fn fetch_columns(
+    pool: &AnyPool,
+    db_kind: &str,
+    table_name: &str,
+) -> Result<Vec<ColumnInfo>, String> {
+    validate_identifier(table_name)?;
+    let mut columns = Vec::new();
+
+    match db_kind.to_lowercase().as_str() {
+        "postgres" | "postgresql" | "cockroachdb" | "redshift" => {
+            let sql = "SELECT c.column_name, c.data_type, c.is_nullable,
                         CASE WHEN kcu.column_name IS NOT NULL THEN true ELSE false END as is_pk
                  FROM information_schema.columns c
-                 LEFT JOIN information_schema.table_constraints tc 
-                   ON c.table_name = tc.table_name AND tc.constraint_type = 'PRIMARY KEY'
-                 LEFT JOIN information_schema.key_column_usage kcu 
-                   ON tc.constraint_name = kcu.constraint_name AND c.column_name = kcu.column_name
-                 WHERE c.table_name = '{}' AND c.table_schema = 'public';",
-                table_name
-            ); // Postgres column inspection query
-            let rows = sqlx::query::<Any>(&sql).fetch_all(pool).await.map_err(|e| e.to_string())?; // Execute query
-            for row in rows { // Iterate result rows
-                let name: String = row.get(0); // Extract column name
-                let data_type: String = row.get(1); // Extract data type
-                let is_nullable_str: String = row.get(2); // Extract nullable string
-                let is_pk: bool = row.get(3); // Extract primary key boolean
-                columns.push(ColumnInfo { // Push column descriptor
-                    name, // Column name
-                    data_type, // Data type
-                    is_nullable: is_nullable_str == "YES", // Parse boolean
-                    is_primary_key: is_pk, // PK status
-                }); // End column push
-            } // End row loop
-        } // End Postgres branch
-        "mysql" | "mariadb" => { // MySQL catalog inspect
-            let sql = format!(
-                "SELECT column_name, data_type, is_nullable, column_key
+                 LEFT JOIN information_schema.table_constraints tc
+                   ON c.table_name = tc.table_name AND c.table_schema = tc.table_schema AND tc.constraint_type = 'PRIMARY KEY'
+                 LEFT JOIN information_schema.key_column_usage kcu
+                   ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema AND c.column_name = kcu.column_name
+                 WHERE c.table_name = $1 AND c.table_schema = 'public'
+                 ORDER BY c.ordinal_position";
+            let rows = sqlx::query::<Any>(sql)
+                .bind(table_name)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let name: String = row.get(0);
+                let data_type: String = row.get(1);
+                let is_nullable_str: String = row.get(2);
+                let is_pk: bool = row.get(3);
+                columns.push(ColumnInfo {
+                    name,
+                    data_type,
+                    is_nullable: is_nullable_str == "YES",
+                    is_primary_key: is_pk,
+                });
+            }
+        }
+        "mysql" | "mariadb" => {
+            // MySQL prepared statements use ? placeholders with sqlx Any
+            let sql = "SELECT column_name, data_type, is_nullable, column_key
                  FROM information_schema.columns
-                 WHERE table_name = '{}' AND table_schema = DATABASE();",
-                table_name
-            ); // MySQL column query
-            let rows = sqlx::query::<Any>(&sql).fetch_all(pool).await.map_err(|e| e.to_string())?; // Execute query
-            for row in rows { // Iterate result rows
-                let name: String = row.get(0); // Extract column name
-                let data_type: String = row.get(1); // Extract data type
-                let is_nullable_str: String = row.get(2); // Extract nullable string
-                let column_key: String = row.get(3); // Extract key type string
-                columns.push(ColumnInfo { // Push column descriptor
-                    name, // Column name
-                    data_type, // Data type
-                    is_nullable: is_nullable_str == "YES", // Parse boolean
-                    is_primary_key: column_key == "PRI", // Check if Primary Key
-                }); // End column push
-            } // End row loop
-        } // End MySQL branch
-        _ => { // SQLite PRAGMA table_info catalog inspect
-            let sql = format!("PRAGMA table_info('{}');", table_name); // SQLite PRAGMA table_info query
-            let rows = sqlx::query::<Any>(&sql).fetch_all(pool).await.map_err(|e| e.to_string())?; // Execute query
-            for row in rows { // Iterate result rows
-                let name: String = row.get(1); // Extract column name from index 1
-                let data_type: String = row.get(2); // Extract data type from index 2
-                let notnull: i64 = row.get(3); // Extract NOT NULL flag from index 3
-                let pk: i64 = row.get(5); // Extract PK index from index 5
-                columns.push(ColumnInfo { // Push column descriptor
-                    name, // Column name
-                    data_type, // Data type
-                    is_nullable: notnull == 0, // Invert NOT NULL flag
-                    is_primary_key: pk > 0, // Check if PK order > 0
-                }); // End column push
-            } // End row loop
-        } // End SQLite branch
-    } // End database kind match
+                 WHERE table_name = ? AND table_schema = DATABASE()
+                 ORDER BY ordinal_position";
+            let rows = sqlx::query::<Any>(sql)
+                .bind(table_name)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let name: String = row.get(0);
+                let data_type: String = row.get(1);
+                let is_nullable_str: String = row.get(2);
+                let column_key: String = row.get(3);
+                columns.push(ColumnInfo {
+                    name,
+                    data_type,
+                    is_nullable: is_nullable_str == "YES",
+                    is_primary_key: column_key == "PRI",
+                });
+            }
+        }
+        _ => {
+            // SQLite PRAGMA cannot bind table names; identifier was validated above.
+            // Double-quote escaping for safety.
+            let safe = table_name.replace('"', "\"\"");
+            let sql = format!("PRAGMA table_info(\"{}\");", safe);
+            let rows = sqlx::query::<Any>(&sql)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let name: String = row.get(1);
+                let data_type: String = row.get(2);
+                let notnull: i64 = row.get(3);
+                let pk: i64 = row.get(5);
+                columns.push(ColumnInfo {
+                    name,
+                    data_type,
+                    is_nullable: notnull == 0,
+                    is_primary_key: pk > 0,
+                });
+            }
+        }
+    }
 
-    Ok(columns) // Return columns vector
-} // End fetch_columns function
+    Ok(columns)
+}
 
 // Analyze primary key constraints on a table to enforce read-only safety
 pub fn analyze_primary_keys(columns: &[ColumnInfo]) -> PkAnalysis {

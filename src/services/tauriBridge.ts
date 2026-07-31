@@ -246,6 +246,15 @@ export const closeSshTunnel = async (connectionId: string): Promise<void> => {
   await invoke('close_ssh_tunnel', { connectionId });
 };
 
+export const disconnectDatabase = async (connectionId: string): Promise<void> => {
+  if (!isTauriAvailable()) return;
+  try {
+    await invoke('disconnect_database', { connectionId });
+  } catch {
+    /* already closed or never opened */
+  }
+};
+
 export const streamSqlQuery = async (
   connectionId: string,
   sql: string,
@@ -277,11 +286,216 @@ export const streamSqlQuery = async (
     unlistenDone();
   });
 
-  await invoke('stream_sql_query', {
+  try {
+    await invoke('stream_sql_query', {
+      connectionId,
+      queryId,
+      sql,
+      chunkSize: 500,
+    });
+  } catch (err) {
+    unlistenCols();
+    unlistenChunk();
+    unlistenDone();
+    throw err;
+  }
+};
+
+// ─── Credentials (OS keychain) ───────────────────────────────────────
+export const saveDbPassword = async (connectionId: string, password: string): Promise<void> => {
+  if (!isTauriAvailable()) return;
+  await invoke('save_db_password', { connectionId, password });
+};
+
+export const getDbPassword = async (connectionId: string): Promise<string | null> => {
+  if (!isTauriAvailable()) return null;
+  try {
+    return await invoke<string>('get_db_password', { connectionId });
+  } catch {
+    return null;
+  }
+};
+
+// ─── Safety / staging ────────────────────────────────────────────────
+export interface SafetyAnalysis {
+  is_destructive: boolean;
+  destructive_type?: string;
+  warning_message?: string;
+  requires_confirmation: boolean;
+}
+
+export const checkSqlSafety = async (sql: string): Promise<SafetyAnalysis> => {
+  if (!isTauriAvailable()) {
+    const upper = sql.trim().toUpperCase();
+    const isDestructive =
+      upper.startsWith('DROP') ||
+      upper.startsWith('TRUNCATE') ||
+      (upper.startsWith('DELETE') && !upper.includes('WHERE')) ||
+      (upper.startsWith('UPDATE') && !upper.includes('WHERE'));
+    return {
+      is_destructive: isDestructive,
+      requires_confirmation: isDestructive,
+      warning_message: isDestructive ? 'Destructive operation detected' : undefined,
+    };
+  }
+  return await invoke<SafetyAnalysis>('check_sql_safety', { sql });
+};
+
+export interface StagedCellChangePayload {
+  column_name: string;
+  new_value: unknown;
+}
+
+export interface StagedRowEditPayload {
+  pk_value: unknown;
+  changes: StagedCellChangePayload[];
+}
+
+export const commitStagedRowEdits = async (
+  connectionId: string,
+  tableName: string,
+  pkColumn: string,
+  edits: StagedRowEditPayload[]
+): Promise<number> => {
+  if (!isTauriAvailable()) {
+    throw new Error('Staged commits require the native Tauri desktop app');
+  }
+  return await invoke<number>('commit_staged_row_edits', {
     connectionId,
-    queryId,
-    sql,
-    chunkSize: 500,
+    tableName,
+    pkColumn,
+    edits,
   });
+};
+
+// ─── Live metrics ────────────────────────────────────────────────────
+export interface DatabaseLiveMetrics {
+  active_connections: number;
+  queries_per_second: number;
+  cache_hit_ratio: number;
+  slow_queries: { query: string; duration_ms: number; calls: number }[];
+  table_sizes: { table_name: string; size_bytes: number; size_pretty: string }[];
+  response_time_ms: number;
+}
+
+export const getLiveDatabaseMetrics = async (
+  connectionId: string,
+  engine: 'postgres' | 'mysql' | 'sqlite'
+): Promise<DatabaseLiveMetrics> => {
+  if (!isTauriAvailable()) {
+    throw new Error('Live metrics require the native Tauri desktop app');
+  }
+  return await invoke<DatabaseLiveMetrics>('get_live_database_metrics', {
+    connectionId,
+    engine,
+  });
+};
+
+// ─── Audit log ───────────────────────────────────────────────────────
+export interface AuditLogEntryPayload {
+  id: string;
+  timestamp: string;
+  user: string;
+  connection_name: string;
+  action_type: string;
+  sql: string;
+  affected_rows: number;
+  status: string;
+  client_ip: string;
+}
+
+export const getAuditLog = async (limit = 200): Promise<AuditLogEntryPayload[]> => {
+  if (!isTauriAvailable()) return [];
+  return await invoke<AuditLogEntryPayload[]>('get_audit_log', { limit });
+};
+
+// ─── Structure editor ────────────────────────────────────────────────
+export type EngineDialect = 'postgres' | 'mysql' | 'sqlite';
+
+export const structureAddColumn = async (
+  connectionId: string,
+  tableName: string,
+  columnName: string,
+  dataType: string,
+  engine: EngineDialect
+): Promise<void> => {
+  if (!isTauriAvailable()) throw new Error('Structure edits require native app');
+  // Serde on the Rust side expects lowercase enum variants (rename_all = "lowercase")
+  await invoke('structure_add_column', {
+    connectionId,
+    payload: {
+      table_name: tableName,
+      column_name: columnName,
+      data_type: dataType,
+      is_nullable: true,
+    },
+    engine,
+  });
+};
+
+export const structureDropColumn = async (
+  connectionId: string,
+  tableName: string,
+  columnName: string,
+  engine: EngineDialect
+): Promise<void> => {
+  if (!isTauriAvailable()) throw new Error('Structure edits require native app');
+  await invoke('structure_drop_column', {
+    connectionId,
+    payload: { table_name: tableName, column_name: columnName },
+    engine,
+  });
+};
+
+// Engines the backend can actually open
+export const SUPPORTED_ENGINES = new Set([
+  'postgres',
+  'postgresql',
+  'mysql',
+  'mariadb',
+  'sqlite',
+  'cockroachdb',
+  'redshift',
+]);
+
+export const isEngineSupported = (dbType: string): boolean =>
+  SUPPORTED_ENGINES.has(dbType.toLowerCase());
+
+export const importCsvContent = async (
+  connectionId: string,
+  tableName: string,
+  csvContent: string
+): Promise<{ inserted_count: number; failed_count: number; failed_rows: { row_index: number; reason: string }[] }> => {
+  if (!isTauriAvailable()) {
+    throw new Error('CSV import requires the native Tauri desktop app');
+  }
+  return await invoke('import_csv_content', {
+    connectionId,
+    tableName,
+    csvContent,
+  });
+};
+
+export const saveSecret = async (account: string, secret: string): Promise<void> => {
+  if (!isTauriAvailable()) return;
+  await invoke('save_secret', { account, secret });
+};
+
+export const getSecret = async (account: string): Promise<string | null> => {
+  if (!isTauriAvailable()) return null;
+  try {
+    return await invoke<string>('get_secret', { account });
+  } catch {
+    return null;
+  }
+};
+
+export const deleteSecret = async (account: string): Promise<void> => {
+  if (!isTauriAvailable()) return;
+  try {
+    await invoke('delete_secret', { account });
+  } catch {
+    /* ignore missing secret */
+  }
 };
 

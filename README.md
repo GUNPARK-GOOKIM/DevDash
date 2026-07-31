@@ -9,9 +9,9 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=for-the-badge)](LICENSE)
 [![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen?style=for-the-badge&logo=github)](https://github.com/GUNPARK-GOOKIM/DevDash)
 
-**DevDash** is a high-performance **local-first database engineering platform** and native desktop GUI client built with a **Tauri 2.0 + Rust core** and **React 18 TypeScript**. Using **less than 20MB of RAM** (vs 300MB+ in Electron), DevDash delivers git-style transactional diff staging, visual EXPLAIN execution plan cost trees, 100% offline local AI, bento health telemetry, NoSQL inspectors, and enterprise compliance tools.
+**DevDash** is a **local-first native database GUI client** built with **Tauri 2.0 + Rust** and **React 18 TypeScript**. Core SQL workflows (connect, introspect, query, stage/edit, export/import) target **PostgreSQL, MySQL/MariaDB, and SQLite** (plus Postgres wire-compat engines CockroachDB/Redshift). Several advanced UI surfaces exist as prototypes and are **not** production-complete — see the status matrix below.
 
-[Architecture Reference](PROGRESS.md) • [Capability Status](#-capability--status-matrix) • [Key Features](#-key-features) • [Download](#-download--installation) • [OS Bypass Guide](#-os-security--bypass-guide)
+[Architecture Reference](docs/ARCHITECTURE.md) • [Capability Status](#-capability--status-matrix) • [Key Features](#-key-features) • [Download](#-download--installation) • [OS Bypass Guide](#-os-security--bypass-guide)
 
 </div>
 
@@ -26,21 +26,36 @@
 
 ## 📊 Capability & Status Matrix
 
-| Engine & Feature Capability | Implementation Status | Core Module / Driver |
-|-----------------------------|:---------------------:|----------------------|
-| **Multi-Driver SQL Query Engine** (Postgres, MySQL, SQLite, MSSQL, CockroachDB) | ✅ Completed | `src-tauri/src/db/pool.rs` (`sqlx::AnyPool`) |
-| **Git-Style Transactional Diff Staging** (old→new diff review before commit) | ✅ Completed | `src-tauri/src/db/staged_edits.rs` + `StagingCommit.tsx` |
-| **100% Offline Local AI SQL Assistant** (Ollama / `qwen2.5-coder` / Claude / OpenAI) | ✅ Completed | `src/components/AiAgentBar.tsx` (`Cmd+K`) |
-| **Visual EXPLAIN Execution Plan Cost Visualizer** (Cost bars & scan alerts) | ✅ Completed | `src/components/ExplainVisualizer.tsx` |
-| **6-Card Recharts Bento Telemetry Grid** (CPU, RAM, cache hit, locks, latency) | ✅ Completed | `src/components/HealthGrid.tsx` |
-| **NoSQL Key-Value & BSON Document Inspectors** (Redis RESP & Mongo BSON) | ✅ Completed | `src/components/NoSqlInspector.tsx` |
-| **Stored Routine Debugger & Parameter Runner** (PL/pgSQL / T-SQL / MySQL) | ✅ Completed | `src/components/RoutinesManager.tsx` |
-| **Visual User & Privilege Matrix Manager** (7-permission `GRANT`/`REVOKE` matrix) | ✅ Completed | `src/components/RolesManager.tsx` |
-| **SOC2 / HIPAA Append-Only Audit Logger** (`audit_log.jsonl` logger) | ✅ Completed | `src-tauri/src/db/audit.rs` + `AuditLoggerModal.tsx` |
-| **Live DDL Schema Diff & Migration Sync Generator** (`Dev` vs `Prod` sync) | ✅ Completed | `src/components/SchemaDiffModal.tsx` |
-| **Automatic Data Masking & PII Protection Engine** (GDPR pattern rules) | ✅ Completed | `src/components/PiiMaskingConfig.tsx` |
-| **Visual No-Code Query Builder & Synthetic Mock Seed Generator** | ✅ Completed | `VisualQueryBuilder.tsx` + `MockDataGenerator.tsx` |
-| **Spreadsheet Grid Editing & 2D TSV Range Copy/Paste** (`Shift+Arrow`, `Ctrl+C/V`) | ✅ Completed | `src/components/TableGrid.tsx` |
+Status meanings: **Complete** = end-to-end from UI through Rust IPC to real engines · **Partial** = real backend pieces but incomplete UX/wiring · **UI prototype** = frontend demo data only · **Missing** = not implemented.
+
+| Engine & Feature Capability | Status | Evidence |
+|-----------------------------|:------:|----------|
+| **SQL drivers: Postgres / MySQL / MariaDB / SQLite** | ✅ Complete | `sqlx` features in `Cargo.toml`; `pool.rs` + `introspection.rs` |
+| **CockroachDB / Redshift** | ⚠️ Partial | Treated as Postgres wire protocol; not separately tested |
+| **MSSQL / Oracle / Snowflake / DuckDB / BigQuery / Turso** | ❌ Missing | UI options only; backend rejects unsupported engines |
+| **Redis / MongoDB / Cassandra** | ❌ UI prototype | `NoSqlInspector.tsx` used hardcoded demo data; no RESP/BSON drivers |
+| **Connect / introspect / run SQL / stream results** | ✅ Complete | `commands.rs`, `executor.rs`, `tauriBridge.ts` |
+| **Git-style staged cell edits + transactional commit** | ⚠️ Partial | Backend `staged_edits.rs` works; frontend now wires commit (string-built SQL, not bind params) |
+| **Safe Mode destructive SQL gate** | ✅ Complete | `safe_mode.rs` + confirmation modal |
+| **OS keychain passwords** | ✅ Complete | `credentials.rs` via `keyring` |
+| **SSH tunnel** | ⚠️ Partial | `ssh_tunnel.rs` opens local forward; session-per-connection is heavy / limited |
+| **Local AI (Ollama) + cloud LLM providers** | ⚠️ Partial | Browser `fetch` to Ollama/OpenAI/Claude from UI — works when configured; not “built-in offline AI” |
+| **EXPLAIN plan visualizer** | ❌ UI prototype | `ExplainVisualizer.tsx` ships a hardcoded demo plan tree |
+| **Health / metrics grid** | ⚠️ Partial | Live metrics IPC for PG/MySQL/SQLite; no fake CPU/RAM; QPS/slow queries limited |
+| **Routines manager** | ❌ UI prototype | Hardcoded demo routines |
+| **Roles / privilege matrix** | ❌ UI prototype | Hardcoded demo users/roles |
+| **Audit log (local JSONL)** | ⚠️ Partial | Append-only JSONL + IPC reader; **not** SOC2/HIPAA certified |
+| **Schema diff modal (Dev vs Prod)** | ❌ UI prototype | Hardcoded migration DDL in `SchemaDiffModal.tsx` (footer marked `*`) |
+| **Per-table migration SQL helper** | ⚠️ Partial | Backend `schema_migration.rs` exists; multi-env sync UI is fake |
+| **PII masking engine** | ⚠️ Partial | Rules persist and mask grid display values; not applied to exports/AI context |
+| **CSV import** | ⚠️ Partial | Real backend import from CSV content; SQL dump import not implemented |
+| **Visual query builder** | ⚠️ Partial | Frontend SQL generator; no server validation |
+| **Mock data generator** | ⚠️ Partial | Generates rows client-side; insert path incomplete |
+| **Command palette / process manager** | ❌ Dead UI | Components exist but are not mounted in `App.tsx` |
+| **Virtualized grid + TSV copy** | ⚠️ Partial | `@tanstack/react-virtual` is a dependency but the grid currently maps all rows (not windowed); TSV copy works |
+| **Encrypted connection export** | ⚠️ Partial | AES-GCM module present; limited UI exposure |
+| **Cloud IAM auth** | ❌ Missing | Struct stub only (`CloudIamConfig`) |
+| **&lt;20MB RAM claim** | ❓ Unverified | Not measured in CI |
 
 ---
 
@@ -66,13 +81,11 @@
 
 ```mermaid
 flowchart TD
-    UI[React 18 Virtualized Grid UI] -->|IPC Invocation| Bridge[src/services/tauriBridge.ts]
-    Bridge -->|Async Tauri IPC| Rust[Tauri Rust Core Engine]
-    Rust -->|Connection Pool| Pool[sqlx::AnyPool Multi-Driver]
+    UI[React 18 UI] -->|IPC| Bridge[src/services/tauriBridge.ts]
+    Bridge -->|Tauri invoke| Rust[Rust Core]
+    Rust --> Pool[sqlx::AnyPool]
     Pool --> SQL[(PostgreSQL / MySQL / SQLite)]
-    Rust -->|RESP Protocol| Redis[(Redis Key-Value Cache)]
-    Rust -->|BSON Protocol| Mongo[(MongoDB Document Store)]
-    Rust -->|Append-Only| Audit[audit_log.jsonl SOC2/HIPAA Log]
+    Rust --> Audit[Local audit_log.jsonl]
 ```
 
 <div align="center">
@@ -87,15 +100,15 @@ flowchart TD
 - **Review Before Commit**: Edits made in the virtual grid are staged locally as color-coded cell diffs (`old_value → new_value`). Nothing touches production until you review and click **Apply Staged Edits**.
 - **Safe Mode Shield**: Destructive SQL queries (`DROP`, `TRUNCATE`, or `UPDATE`/`DELETE` without a `WHERE` clause) trigger a high-visibility warning modal with query analysis before execution.
 
-### 🤖 100% Offline Local AI SQL Assistant
-- **Privacy-First AI**: Connect directly to your local **Ollama** instance (`qwen2.5-coder`, `llama3`, `codellama`) for zero-latency, 100% offline natural-language-to-SQL generation.
-- **Cloud LLM Support**: Optionally configure Anthropic Claude or OpenAI API keys.
-- **Cmd+K Command Palette**: Press `Cmd+K` anywhere in the app to prompt AI for SQL queries, schema refactoring, or query optimization suggestions.
+### 🤖 Optional AI SQL Assistant
+- **Local Ollama**: When enabled in Settings, the UI calls your local Ollama HTTP API for NL→SQL (schema context is sent from the client).
+- **Cloud LLM Support**: Optional OpenAI-compatible / Anthropic endpoints via API key (network required).
+- **Cmd+K**: Focuses the AI bar when AI is enabled.
 
-### ⚡ Blazing Performance (~20MB RAM Footprint)
-- **Rust Engine Core**: Multi-pool database execution managed by `sqlx::AnyPool` and concurrent `DashMap` storage in native Rust binaries.
-- **60fps Virtualized Data Grid**: Render datasets with 100,000+ rows smoothly using `@tanstack/react-virtual`.
-- **Chunked Result Streaming**: Stream dynamic query results over Tauri IPC in 500-row chunks to prevent RAM bloating.
+### ⚡ Native Performance Path
+- **Rust Engine Core**: Multi-pool database execution managed by `sqlx::AnyPool` and concurrent `DashMap` storage.
+- **Virtualized Data Grid**: Uses `@tanstack/react-virtual` for large result sets.
+- **Chunked Result Streaming**: Optional stream of query results over Tauri IPC in 500-row chunks.
 
 ---
 

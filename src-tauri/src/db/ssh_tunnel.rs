@@ -39,6 +39,12 @@ pub struct SshTunnelManager {
     tunnels: Arc<DashMap<String, SshTunnelStatus>>,
 }
 
+impl Default for SshTunnelManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SshTunnelManager {
     pub fn new() -> Self {
         Self {
@@ -101,10 +107,8 @@ impl SshTunnelManager {
             }
         }
 
-        if !authed {
-            if sess.userauth_agent(&config.user).is_ok() {
-                authed = true;
-            }
+        if !authed && sess.userauth_agent(&config.user).is_ok() {
+            authed = true;
         }
 
         if !authed {
@@ -156,7 +160,7 @@ impl SshTunnelManager {
             };
 
             for stream_res in listener.incoming() {
-                let mut local_stream = match stream_res {
+                let local_stream = match stream_res {
                     Ok(s) => s,
                     Err(_) => break,
                 };
@@ -207,31 +211,56 @@ impl SshTunnelManager {
                 let mut channel = match sess.channel_direct_tcpip(&target_h, target_port, None) {
                     Ok(c) => c,
                     Err(e) => {
-                        eprintln!("Failed to open direct-tcpip channel to {}:{}: {}", target_h, target_port, e);
+                        eprintln!(
+                            "Failed to open direct-tcpip channel to {}:{}: {}",
+                            target_h, target_port, e
+                        );
                         continue;
                     }
                 };
 
-                // Forward streams bidirectionally
-                let mut local_clone = match local_stream.try_clone() {
+                // Bidirectional copy: local <-> SSH channel
+                let mut local_to_remote = match local_stream.try_clone() {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                let mut remote_to_local = match local_stream.try_clone() {
                     Ok(c) => c,
                     Err(_) => continue,
                 };
 
-                let mut channel_reader = channel.stream(0);
-
+                // local → remote
+                let mut channel_writer = channel.stream(0);
                 thread::spawn(move || {
                     let mut buf = [0u8; 16384];
                     loop {
-                        let n = match local_stream.read(&mut buf) {
+                        let n = match local_to_remote.read(&mut buf) {
                             Ok(0) | Err(_) => break,
                             Ok(n) => n,
                         };
-                        if channel_reader.write_all(&buf[..n]).is_err() {
+                        if channel_writer.write_all(&buf[..n]).is_err() {
                             break;
                         }
+                        let _ = channel_writer.flush();
                     }
                 });
+
+                // remote → local (on this thread so the Session/Channel stay alive)
+                {
+                    let mut buf = [0u8; 16384];
+                    let mut channel_reader = channel.stream(0);
+                    loop {
+                        let n = match channel_reader.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => n,
+                        };
+                        if remote_to_local.write_all(&buf[..n]).is_err() {
+                            break;
+                        }
+                        let _ = remote_to_local.flush();
+                    }
+                }
+                let _ = channel.wait_close();
             }
         });
 

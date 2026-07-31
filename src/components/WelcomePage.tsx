@@ -39,25 +39,17 @@ const DB_META: Record<DbKind, { color: string; label: string; icon: string; port
   turso:       { color: '#4FF8D2', label: 'Turso',        icon: '🚀', port: 0,     category: 'relational' },
 };
 
-// 8 Most Used DBs
-const MOST_USED_DBS: DbKind[] = ['postgres', 'mysql', 'sqlite', 'mongodb', 'redis', 'mssql', 'mariadb', 'duckdb'];
+// Engines the Rust backend can actually open today
+const MOST_USED_DBS: DbKind[] = ['postgres', 'mysql', 'sqlite', 'mariadb', 'cockroachdb', 'redshift'];
 
-// All Compatible DBs grouped by Category
 const CATEGORY_DBS: Record<string, DbKind[]> = {
   most_used: MOST_USED_DBS,
-  relational: ['postgres', 'mysql', 'sqlite', 'mssql', 'mariadb', 'duckdb', 'cockroachdb', 'redshift', 'oracle', 'snowflake', 'bigquery', 'turso'],
-  nosql: ['mongodb', 'cassandra'],
-  caching: ['redis'],
-  timeseries: ['clickhouse', 'redshift'],
+  relational: ['postgres', 'mysql', 'sqlite', 'mariadb', 'cockroachdb', 'redshift'],
 };
 
-// Filter Categories
 const CATEGORIES = [
-  { id: 'most_used', label: '[ Most Used ]' },
+  { id: 'most_used', label: '[ Supported ]' },
   { id: 'relational', label: '[ Relational (SQL) ]' },
-  { id: 'nosql', label: '[ Document (NoSQL) ]' },
-  { id: 'caching', label: '[ Caching ]' },
-  { id: 'timeseries', label: '[ Time Series ]' },
 ];
 
 // Interactive Spotlight + 3D Tilt Card Component
