@@ -20,78 +20,171 @@ pub struct SafetyAnalysis { // Safety analysis result struct
     pub requires_confirmation: bool, // True if safe mode requires user confirmation before execution
 } // End SafetyAnalysis struct
 
-// Analyze a SQL statement string to detect potentially destructive operations
-pub fn analyze_sql_safety(sql: &str) -> SafetyAnalysis { // SQL safety analyzer function
-    let normalized = sql.trim().to_uppercase(); // Normalize SQL to uppercase trimmed string
-    let tokens: Vec<&str> = normalized.split_whitespace().collect(); // Tokenize SQL into whitespace-separated words
+/// Strip simple SQL line/block comments so safety checks cannot be trivially bypassed.
+fn strip_sql_comments(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if in_single {
+            out.push(c);
+            if c == '\'' {
+                // handle escaped ''
+                if i + 1 < bytes.len() && bytes[i + 1] as char == '\'' {
+                    out.push('\'');
+                    i += 2;
+                    continue;
+                }
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            out.push(c);
+            if c == '"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '\'' {
+            in_single = true;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '"' {
+            in_double = true;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        // line comment
+        if c == '-' && i + 1 < bytes.len() && bytes[i + 1] as char == '-' {
+            while i < bytes.len() && bytes[i] as char != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // block comment
+        if c == '/' && i + 1 < bytes.len() && bytes[i + 1] as char == '*' {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] as char == '*' && bytes[i + 1] as char == '/') {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
 
-    if tokens.is_empty() { // Check for empty query
-        return SafetyAnalysis { // Return safe result for empty queries
-            is_destructive: false, // Not destructive
-            destructive_type: None, // No type
-            warning_message: None, // No warning
-            requires_confirmation: false, // No confirmation needed
-        }; // End return
-    } // End empty check
+fn analyze_single_statement(sql: &str) -> SafetyAnalysis {
+    let normalized = sql.trim().to_uppercase();
+    let tokens: Vec<&str> = normalized.split_whitespace().collect();
 
-    // Check for DROP TABLE
-    if tokens.len() >= 2 && tokens[0] == "DROP" && tokens[1] == "TABLE" { // Detect DROP TABLE pattern
-        return SafetyAnalysis { // Return destructive result
-            is_destructive: true, // Destructive operation
-            destructive_type: Some(DestructiveType::DropTable), // DROP TABLE type
-            warning_message: Some("DROP TABLE will permanently delete the table and all its data.".to_string()), // Warning message
-            requires_confirmation: true, // Requires confirmation
-        }; // End return
-    } // End DROP TABLE check
+    if tokens.is_empty() {
+        return SafetyAnalysis {
+            is_destructive: false,
+            destructive_type: None,
+            warning_message: None,
+            requires_confirmation: false,
+        };
+    }
 
-    // Check for DROP DATABASE
-    if tokens.len() >= 2 && tokens[0] == "DROP" && tokens[1] == "DATABASE" { // Detect DROP DATABASE pattern
-        return SafetyAnalysis { // Return destructive result
-            is_destructive: true, // Destructive operation
-            destructive_type: Some(DestructiveType::DropDatabase), // DROP DATABASE type
-            warning_message: Some("DROP DATABASE will permanently delete the entire database.".to_string()), // Warning message
-            requires_confirmation: true, // Requires confirmation
-        }; // End return
-    } // End DROP DATABASE check
+    if tokens.len() >= 2 && tokens[0] == "DROP" && tokens[1] == "TABLE" {
+        return SafetyAnalysis {
+            is_destructive: true,
+            destructive_type: Some(DestructiveType::DropTable),
+            warning_message: Some(
+                "DROP TABLE will permanently delete the table and all its data.".to_string(),
+            ),
+            requires_confirmation: true,
+        };
+    }
 
-    // Check for TRUNCATE TABLE
-    if tokens.len() >= 1 && tokens[0] == "TRUNCATE" { // Detect TRUNCATE pattern
-        return SafetyAnalysis { // Return destructive result
-            is_destructive: true, // Destructive operation
-            destructive_type: Some(DestructiveType::TruncateTable), // TRUNCATE type
-            warning_message: Some("TRUNCATE will remove all rows from the table.".to_string()), // Warning message
-            requires_confirmation: true, // Requires confirmation
-        }; // End return
-    } // End TRUNCATE check
+    if tokens.len() >= 2 && tokens[0] == "DROP" && tokens[1] == "DATABASE" {
+        return SafetyAnalysis {
+            is_destructive: true,
+            destructive_type: Some(DestructiveType::DropDatabase),
+            warning_message: Some(
+                "DROP DATABASE will permanently delete the entire database.".to_string(),
+            ),
+            requires_confirmation: true,
+        };
+    }
 
-    // Check for DELETE without WHERE
-    if tokens[0] == "DELETE" && !normalized.contains("WHERE") { // Detect DELETE without WHERE clause
-        return SafetyAnalysis { // Return destructive result
-            is_destructive: true, // Destructive operation
-            destructive_type: Some(DestructiveType::DeleteWithoutWhere), // DELETE without WHERE type
-            warning_message: Some("DELETE without WHERE clause will remove ALL rows from the table.".to_string()), // Warning message
-            requires_confirmation: true, // Requires confirmation
-        }; // End return
-    } // End DELETE check
+    if tokens[0] == "TRUNCATE" {
+        return SafetyAnalysis {
+            is_destructive: true,
+            destructive_type: Some(DestructiveType::TruncateTable),
+            warning_message: Some("TRUNCATE will remove all rows from the table.".to_string()),
+            requires_confirmation: true,
+        };
+    }
 
-    // Check for UPDATE without WHERE
-    if tokens[0] == "UPDATE" && !normalized.contains("WHERE") { // Detect UPDATE without WHERE clause
-        return SafetyAnalysis { // Return destructive result
-            is_destructive: true, // Destructive operation
-            destructive_type: Some(DestructiveType::UpdateWithoutWhere), // UPDATE without WHERE type
-            warning_message: Some("UPDATE without WHERE clause will modify ALL rows in the table.".to_string()), // Warning message
-            requires_confirmation: true, // Requires confirmation
-        }; // End return
-    } // End UPDATE check
+    // WHERE detection: word-boundary style (avoid matching column values)
+    let has_where = normalized.split_whitespace().any(|t| t == "WHERE" || t.starts_with("WHERE"));
 
-    // Default: query is safe
-    SafetyAnalysis { // Return safe analysis result
-        is_destructive: false, // Not destructive
-        destructive_type: None, // No destructive type
-        warning_message: None, // No warning message
-        requires_confirmation: false, // No confirmation needed
-    } // End default SafetyAnalysis
-} // End analyze_sql_safety function
+    if tokens[0] == "DELETE" && !has_where {
+        return SafetyAnalysis {
+            is_destructive: true,
+            destructive_type: Some(DestructiveType::DeleteWithoutWhere),
+            warning_message: Some(
+                "DELETE without WHERE clause will remove ALL rows from the table.".to_string(),
+            ),
+            requires_confirmation: true,
+        };
+    }
+
+    if tokens[0] == "UPDATE" && !has_where {
+        return SafetyAnalysis {
+            is_destructive: true,
+            destructive_type: Some(DestructiveType::UpdateWithoutWhere),
+            warning_message: Some(
+                "UPDATE without WHERE clause will modify ALL rows in the table.".to_string(),
+            ),
+            requires_confirmation: true,
+        };
+    }
+
+    SafetyAnalysis {
+        is_destructive: false,
+        destructive_type: None,
+        warning_message: None,
+        requires_confirmation: false,
+    }
+}
+
+/// Analyze SQL (including multi-statement batches) for destructive operations.
+pub fn analyze_sql_safety(sql: &str) -> SafetyAnalysis {
+    let cleaned = strip_sql_comments(sql);
+    // Split on semicolons outside of strings is approximate; comments already stripped.
+    let statements: Vec<&str> = cleaned
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if statements.is_empty() {
+        return analyze_single_statement("");
+    }
+
+    for stmt in &statements {
+        let analysis = analyze_single_statement(stmt);
+        if analysis.requires_confirmation {
+            return analysis;
+        }
+    }
+
+    analyze_single_statement(statements[0])
+}
 
 #[cfg(test)] // Conditional compilation for unit tests
 mod tests { // Unit test module
@@ -153,9 +246,26 @@ mod tests { // Unit test module
         assert!(!result.requires_confirmation); // Assert no confirmation needed
     } // End test
 
-    #[test] // Test empty query is safe
-    fn test_empty_query_safe() { // Test function
-        let result = analyze_sql_safety(""); // Analyze empty string
-        assert!(!result.is_destructive); // Assert not destructive
-    } // End test
-} // End tests module
+    #[test]
+    fn test_empty_query_safe() {
+        let result = analyze_sql_safety("");
+        assert!(!result.is_destructive);
+    }
+
+    #[test]
+    fn test_comment_cannot_hide_drop() {
+        let result = analyze_sql_safety("-- harmless\nDROP TABLE users;");
+        assert!(result.is_destructive);
+        assert_eq!(result.destructive_type, Some(DestructiveType::DropTable));
+    }
+
+    #[test]
+    fn test_multi_statement_flags_second() {
+        let result = analyze_sql_safety("SELECT 1; DELETE FROM users;");
+        assert!(result.is_destructive);
+        assert_eq!(
+            result.destructive_type,
+            Some(DestructiveType::DeleteWithoutWhere)
+        );
+    }
+}

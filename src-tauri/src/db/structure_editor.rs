@@ -53,31 +53,50 @@ pub struct DropIndexPayload {
     pub index_name: String,
 }
 
-pub fn build_add_column_sql(payload: &AddColumnPayload, engine: EngineDialect) -> String {
-    let null_clause = if payload.is_nullable { "NULL" } else { "NOT NULL" };
-    match engine {
-        EngineDialect::Mysql => format!(
-            "ALTER TABLE `{}` ADD COLUMN `{}` {} {};",
-            payload.table_name, payload.column_name, payload.data_type, null_clause
-        ),
-        _ => format!(
-            "ALTER TABLE \"{}\" ADD COLUMN \"{}\" {} {};",
-            payload.table_name, payload.column_name, payload.data_type, null_clause
-        ),
+fn validate_structure_idents(table: &str, columns: &[&str]) -> Result<(), String> {
+    crate::db::identifiers::validate_table_identifier(table)?;
+    for c in columns {
+        crate::db::identifiers::validate_simple_identifier(c)?;
     }
+    // Data type must be a conservative token set (letters, digits, space, parens, comma, underscore)
+    Ok(())
 }
 
-pub fn build_drop_column_sql(payload: &DropColumnPayload, engine: EngineDialect) -> String {
-    match engine {
-        EngineDialect::Mysql => format!(
-            "ALTER TABLE `{}` DROP COLUMN `{}`;",
-            payload.table_name, payload.column_name
-        ),
-        _ => format!(
-            "ALTER TABLE \"{}\" DROP COLUMN \"{}\";",
-            payload.table_name, payload.column_name
-        ),
+fn validate_data_type(data_type: &str) -> Result<(), String> {
+    if data_type.is_empty() || data_type.len() > 64 {
+        return Err("Invalid data type".to_string());
     }
+    if !data_type
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '(' || c == ')' || c == ',' || c == ' ')
+    {
+        return Err(format!("Invalid data type '{}'", data_type));
+    }
+    Ok(())
+}
+
+pub fn build_add_column_sql(payload: &AddColumnPayload, engine: EngineDialect) -> Result<String, String> {
+    validate_structure_idents(&payload.table_name, &[&payload.column_name])?;
+    validate_data_type(&payload.data_type)?;
+    let null_clause = if payload.is_nullable { "NULL" } else { "NOT NULL" };
+    let mysql = matches!(engine, EngineDialect::Mysql);
+    Ok(format!(
+        "ALTER TABLE {} ADD COLUMN {} {} {};",
+        crate::db::identifiers::quote_table(&payload.table_name, mysql)?,
+        crate::db::identifiers::quote_ident(&payload.column_name, mysql),
+        payload.data_type,
+        null_clause
+    ))
+}
+
+pub fn build_drop_column_sql(payload: &DropColumnPayload, engine: EngineDialect) -> Result<String, String> {
+    validate_structure_idents(&payload.table_name, &[&payload.column_name])?;
+    let mysql = matches!(engine, EngineDialect::Mysql);
+    Ok(format!(
+        "ALTER TABLE {} DROP COLUMN {};",
+        crate::db::identifiers::quote_table(&payload.table_name, mysql)?,
+        crate::db::identifiers::quote_ident(&payload.column_name, mysql)
+    ))
 }
 
 pub fn build_rename_column_sql(payload: &RenameColumnPayload, engine: EngineDialect) -> String {
@@ -204,7 +223,7 @@ mod tests {
             data_type: "TEXT".to_string(),
             is_nullable: true,
         };
-        let add_sql = build_add_column_sql(&add_payload, EngineDialect::Sqlite);
+        let add_sql = build_add_column_sql(&add_payload, EngineDialect::Sqlite).unwrap();
         assert_eq!(add_sql, "ALTER TABLE \"users\" ADD COLUMN \"email\" TEXT NULL;");
         execute_structure_sql(&pool, &add_sql).await.unwrap();
 
@@ -243,7 +262,7 @@ mod tests {
             table_name: "users".to_string(),
             column_name: "email".to_string(),
         };
-        let drop_col_sql = build_drop_column_sql(&drop_col_payload, EngineDialect::Sqlite);
+        let drop_col_sql = build_drop_column_sql(&drop_col_payload, EngineDialect::Sqlite).unwrap();
         execute_structure_sql(&pool, &drop_col_sql).await.unwrap();
     }
 }

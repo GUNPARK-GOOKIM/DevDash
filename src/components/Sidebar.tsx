@@ -49,14 +49,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
     return name.toLowerCase().includes(debouncedSearch.toLowerCase());
   };
 
-  // UX6: Reconnection handler with pulsing yellow state
+  // Reconnect: show brief connecting state, then invoke real parent handler
   const handleConnClick = (conn: ConnectionConfig) => {
     if (activeConnection?.id === conn.id) return;
     setConnectingId(conn.id);
-    setTimeout(() => {
-      onSelectConnection(conn);
+    Promise.resolve(onSelectConnection(conn)).finally(() => {
       setConnectingId(null);
-    }, 1200); // 1.2s pulse yellow attempt simulation
+    });
   };
 
   return (

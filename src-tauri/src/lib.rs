@@ -15,10 +15,22 @@ pub fn run() { // Entry point library run function for Tauri application
     
     let connection_manager = ConnectionManager::new(); // Create new ConnectionManager multi-pool instance
     let ssh_tunnel_manager = SshTunnelManager::new(); // Create new SshTunnelManager instance
-    let runtime = tokio::runtime::Runtime::new().expect("Failed to initialize tokio runtime"); // Create tokio runtime for async storage init
-    let storage = runtime.block_on(async { // Run async block on tokio runtime
-        Arc::new(AppStorage::new("devdash_internal.db").await.expect("Failed to initialize embedded app storage")) // Instantiate embedded SQLite app storage asynchronously
-    }); // End of runtime block_on
+    // Store app DB under the user config dir (not the process CWD / app bundle)
+    let storage_path = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("devdash")
+        .join("devdash_internal.db");
+    if let Some(parent) = storage_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let runtime = tokio::runtime::Runtime::new().expect("Failed to initialize tokio runtime");
+    let storage = runtime.block_on(async {
+        Arc::new(
+            AppStorage::new(storage_path.to_string_lossy().as_ref())
+                .await
+                .expect("Failed to initialize embedded app storage"),
+        )
+    });
 
     let app_state = AppState { // Construct global AppState container
         connection_manager, // Set connection_manager field
@@ -79,11 +91,16 @@ pub fn run() { // Entry point library run function for Tauri application
             commands::get_shortcut_config, // Register get_shortcut_config IPC command
             commands::update_shortcut_binding, // Register update_shortcut_binding IPC command
             commands::reset_shortcut_config, // Register reset_shortcut_config IPC command
-            commands::preview_csv_data, // Register preview_csv_data IPC command
-            commands::import_csv_data, // Register import_csv_data IPC command
-            commands::export_encrypted_data, // Register export_encrypted_data IPC command
-            commands::import_encrypted_data // Register import_encrypted_data IPC command
-        ]) // End of invoke_handler registration
+            commands::preview_csv_data,
+            commands::import_csv_data,
+            commands::import_csv_content,
+            commands::export_encrypted_data,
+            commands::import_encrypted_data,
+            commands::get_audit_log,
+            commands::save_secret,
+            commands::get_secret,
+            commands::delete_secret
+        ])
         .run(tauri::generate_context!()) // Run Tauri application context
         .expect("error while running devdash tauri application"); // Handle application runtime errors
 } // End of run function

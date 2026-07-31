@@ -18,17 +18,41 @@ pub struct ExportPayload {
     pub version: String,
 }
 
+const KDF_ITERS_V1: u32 = 10_000; // legacy files (pre-hardening)
+const KDF_ITERS_V2: u32 = 100_000; // current default
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncryptedExportFile {
     pub salt_b64: String,
     pub nonce_b64: String,
     pub ciphertext_b64: String,
+    /// PBKDF2 iteration count. Absent/None means legacy 10_000.
+    #[serde(default)]
+    pub kdf_iters: Option<u32>,
 }
 
-fn derive_aes_key(passphrase: &str, salt: &[u8]) -> [u8; 32] {
+fn derive_aes_key(passphrase: &str, salt: &[u8], iters: u32) -> [u8; 32] {
     let mut key = [0u8; 32];
-    pbkdf2_hmac::<Sha256>(passphrase.as_bytes(), salt, 10_000, &mut key);
+    pbkdf2_hmac::<Sha256>(passphrase.as_bytes(), salt, iters, &mut key);
     key
+}
+
+fn try_decrypt_with_iters(
+    salt: &[u8],
+    nonce_bytes: &[u8],
+    ciphertext: &[u8],
+    passphrase: &str,
+    iters: u32,
+) -> Result<ExportPayload, String> {
+    let key = derive_aes_key(passphrase, salt, iters);
+    let cipher =
+        Aes256Gcm::new_from_slice(&key).map_err(|e| format!("AES key init failed: {}", e))?;
+    let nonce = Nonce::from_slice(nonce_bytes);
+    let plaintext_bytes = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| "Decryption failed: Incorrect passphrase or corrupted data".to_string())?;
+    serde_json::from_slice(&plaintext_bytes)
+        .map_err(|e| format!("Failed to parse decrypted payload: {}", e))
 }
 
 pub fn encrypt_export_payload(
@@ -41,9 +65,9 @@ pub fn encrypt_export_payload(
     let salt: [u8; 16] = uuid::Uuid::new_v4().as_bytes()[..16].try_into().unwrap();
     let nonce_bytes: [u8; 12] = uuid::Uuid::new_v4().as_bytes()[..12].try_into().unwrap();
 
-    let key = derive_aes_key(passphrase, &salt);
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|e| format!("AES key init failed: {}", e))?;
+    let key = derive_aes_key(passphrase, &salt, KDF_ITERS_V2);
+    let cipher =
+        Aes256Gcm::new_from_slice(&key).map_err(|e| format!("AES key init failed: {}", e))?;
 
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
@@ -57,6 +81,7 @@ pub fn encrypt_export_payload(
         salt_b64: engine.encode(salt),
         nonce_b64: engine.encode(nonce_bytes),
         ciphertext_b64: engine.encode(ciphertext),
+        kdf_iters: Some(KDF_ITERS_V2),
     })
 }
 
@@ -77,17 +102,25 @@ pub fn decrypt_export_payload(
         .decode(&encrypted_file.ciphertext_b64)
         .map_err(|e| format!("Invalid ciphertext base64: {}", e))?;
 
-    let key = derive_aes_key(passphrase, &salt);
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|e| format!("AES key init failed: {}", e))?;
+    // Prefer declared iteration count; fall back to legacy then current.
+    let mut candidates: Vec<u32> = Vec::new();
+    if let Some(iters) = encrypted_file.kdf_iters {
+        candidates.push(iters);
+    }
+    for iters in [KDF_ITERS_V2, KDF_ITERS_V1] {
+        if !candidates.contains(&iters) {
+            candidates.push(iters);
+        }
+    }
 
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let plaintext_bytes = cipher
-        .decrypt(nonce, ciphertext.as_ref())
-        .map_err(|_| "Decryption failed: Incorrect passphrase or corrupted data".to_string())?;
-
-    serde_json::from_slice(&plaintext_bytes)
-        .map_err(|e| format!("Failed to parse decrypted payload: {}", e))
+    let mut last_err = String::new();
+    for iters in candidates {
+        match try_decrypt_with_iters(&salt, &nonce_bytes, &ciphertext, passphrase, iters) {
+            Ok(payload) => return Ok(payload),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
 }
 
 pub async fn export_connections_and_queries(
@@ -153,6 +186,34 @@ pub async fn import_connections_and_queries(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_decrypt_accepts_legacy_10k_files_without_kdf_field() {
+        let payload = ExportPayload {
+            connections: vec![],
+            saved_queries: vec![],
+            exported_at: "2026-01-01T00:00:00Z".to_string(),
+            version: "1.0".to_string(),
+        };
+        // Manually encrypt with legacy iteration count and omit kdf_iters
+        let salt: [u8; 16] = [1; 16];
+        let nonce_bytes: [u8; 12] = [2; 12];
+        let key = derive_aes_key("legacy-pass", &salt, KDF_ITERS_V1);
+        let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let json_bytes = serde_json::to_vec(&payload).unwrap();
+        let ciphertext = cipher.encrypt(nonce, json_bytes.as_ref()).unwrap();
+        use base64::Engine;
+        let engine = base64::engine::general_purpose::STANDARD;
+        let file = EncryptedExportFile {
+            salt_b64: engine.encode(salt),
+            nonce_b64: engine.encode(nonce_bytes),
+            ciphertext_b64: engine.encode(ciphertext),
+            kdf_iters: None, // legacy
+        };
+        let roundtrip = decrypt_export_payload(&file, "legacy-pass").unwrap();
+        assert_eq!(roundtrip.version, "1.0");
+    }
 
     #[tokio::test]
     async fn test_encrypted_export_import_roundtrip_zero_passwords() {

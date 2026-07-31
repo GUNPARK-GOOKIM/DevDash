@@ -37,45 +37,116 @@ pub struct TestConnectionResult {
     pub message: String, // Detailed message or exception diagnostics
 }
 
+/// Engines that sqlx AnyPool can actually open today (compiled drivers only).
+pub fn is_supported_engine(db_type: &str) -> bool {
+    matches!(
+        db_type.to_lowercase().as_str(),
+        "postgres" | "postgresql" | "mysql" | "mariadb" | "sqlite" | "cockroachdb" | "redshift"
+    )
+}
+
+/// Percent-encode credentials/path segments so passwords with @ : / etc. do not break URLs.
+fn url_encode_component(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
 // Helper function to build sqlx connection URL string from structured parameters
-pub fn build_connection_url(details: &ConnectionDetails) -> String {
+pub fn build_connection_url(details: &ConnectionDetails) -> Result<String, String> {
     let db_kind = details.db_type.to_lowercase();
-    let pass_str = details.password.as_deref().unwrap_or("");
-    
+
+    // Reject engines that have UI entries but no real driver implementation.
+    if matches!(
+        db_kind.as_str(),
+        "mssql" | "oracle" | "snowflake" | "redis" | "mongodb" | "cassandra"
+            | "clickhouse" | "duckdb" | "bigquery" | "turso"
+    ) {
+        return Err(format!(
+            "Database engine '{}' is not supported by the current backend. \
+             Supported engines: PostgreSQL, MySQL/MariaDB, SQLite, CockroachDB, Redshift.",
+            details.db_type
+        ));
+    }
+
+    if details.cloud_iam.is_some() {
+        return Err(
+            "Cloud IAM authentication is not implemented yet. Use username/password credentials."
+                .to_string(),
+        );
+    }
+
+    let user = url_encode_component(&details.user);
+    let pass_str = details
+        .password
+        .as_deref()
+        .map(url_encode_component)
+        .unwrap_or_default();
+    let database = url_encode_component(&details.database);
+
     match db_kind.as_str() {
-        "sqlite" | "duckdb" => {
+        "sqlite" => {
             if details.database.starts_with("sqlite:") || details.database.starts_with("file:") {
-                details.database.clone()
+                Ok(details.database.clone())
             } else {
-                format!("sqlite:{}?mode=rwc", details.database)
+                Ok(format!("sqlite:{}?mode=rwc", details.database))
             }
         }
         "mysql" | "mariadb" => {
             if pass_str.is_empty() {
-                format!("mysql://{}@{}:{}/{}", details.user, details.host, details.port, details.database)
+                Ok(format!(
+                    "mysql://{}@{}:{}/{}",
+                    user, details.host, details.port, database
+                ))
             } else {
-                format!("mysql://{}:{}@{}:{}/{}", details.user, pass_str, details.host, details.port, details.database)
+                Ok(format!(
+                    "mysql://{}:{}@{}:{}/{}",
+                    user, pass_str, details.host, details.port, database
+                ))
             }
         }
-        "mssql" => {
-            format!("mssql://{}:{}@{}:{}/{}", details.user, pass_str, details.host, details.port, details.database)
-        }
-        _ => {
-            // Default to Postgres / Cockroach / Redshift URL format
+        // Postgres wire-compatible engines (Cockroach / Redshift use the postgres protocol)
+        "postgres" | "postgresql" | "cockroachdb" | "redshift" | _ => {
             let ssl = details.ssl_mode.as_deref().unwrap_or("prefer");
             if pass_str.is_empty() {
-                format!("postgres://{}@{}:{}/{}?sslmode={}", details.user, details.host, details.port, details.database, ssl)
+                Ok(format!(
+                    "postgres://{}@{}:{}/{}?sslmode={}",
+                    user, details.host, details.port, database, ssl
+                ))
             } else {
-                format!("postgres://{}:{}@{}:{}/{}?sslmode={}", details.user, pass_str, details.host, details.port, details.database, ssl)
+                Ok(format!(
+                    "postgres://{}:{}@{}:{}/{}?sslmode={}",
+                    user, pass_str, details.host, details.port, database, ssl
+                ))
             }
         }
     }
 }
 
+/// Active pool plus the engine kind used to open it (needed for dialect-aware SQL).
+#[derive(Clone)]
+pub struct ManagedConnection {
+    pub pool: AnyPool,
+    pub db_type: String,
+}
+
 // Central connection manager struct holding active database pools
 #[derive(Clone)]
 pub struct ConnectionManager {
-    pools: Arc<DashMap<String, AnyPool>>, // Thread-safe map storing pools keyed by connection ID
+    pools: Arc<DashMap<String, ManagedConnection>>,
+}
+
+impl Default for ConnectionManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ConnectionManager {
@@ -91,10 +162,24 @@ impl ConnectionManager {
         sqlx::any::install_default_drivers();
     }
 
+    /// True when identifiers should be backtick-quoted (MySQL/MariaDB).
+    pub fn is_mysql_style(db_type: &str) -> bool {
+        matches!(db_type.to_lowercase().as_str(), "mysql" | "mariadb")
+    }
+
     // Test reachability and credentials for a connection config without storing pool
     pub async fn test_connection(details: &ConnectionDetails) -> TestConnectionResult {
-        let url = build_connection_url(details);
         let start = Instant::now();
+        let url = match build_connection_url(details) {
+            Ok(u) => u,
+            Err(msg) => {
+                return TestConnectionResult {
+                    success: false,
+                    latency_ms: start.elapsed().as_millis() as u64,
+                    message: msg,
+                };
+            }
+        };
 
         let pool_res = AnyPoolOptions::new()
             .max_connections(1)
@@ -113,7 +198,10 @@ impl ConnectionManager {
                     Ok(_) => TestConnectionResult {
                         success: true,
                         latency_ms: elapsed,
-                        message: format!("Successfully connected to {} database ({:?}ms)", details.db_type, elapsed),
+                        message: format!(
+                            "Successfully connected to {} database ({}ms)",
+                            details.db_type, elapsed
+                        ),
                     },
                     Err(e) => TestConnectionResult {
                         success: false,
@@ -131,36 +219,69 @@ impl ConnectionManager {
     }
 
     // Establish a connection pool for a connection string and store it
-    pub async fn connect(&self, id: &str, url: &str) -> Result<(), String> {
+    pub async fn connect(&self, id: &str, url: &str, db_type: &str) -> Result<(), String> {
+        // Pure in-memory SQLite URLs allocate a separate empty DB per connection.
+        // Cap the pool at 1 (or use shared-cache URLs) so schema/data remain visible.
+        let is_ephemeral_sqlite = {
+            let lower = url.to_lowercase();
+            lower.contains("sqlite::memory:")
+                || lower.contains("mode=memory")
+                || lower == "sqlite::memory:"
+        };
+        let max_conns = if is_ephemeral_sqlite { 1 } else { 10 };
+
+        // Replace existing pool for this id if reconnecting
+        if let Some((_, old)) = self.pools.remove(id) {
+            old.pool.close().await;
+        }
+
         let pool = AnyPoolOptions::new()
-            .max_connections(10)
+            .max_connections(max_conns)
             .acquire_timeout(Duration::from_secs(10))
             .connect(url)
             .await
             .map_err(|e| format!("Failed to connect to database: {}", e))?;
 
-        self.pools.insert(id.to_string(), pool);
+        self.pools.insert(
+            id.to_string(),
+            ManagedConnection {
+                pool,
+                db_type: db_type.to_string(),
+            },
+        );
         Ok(())
     }
 
     // Connect using structured connection details
-    pub async fn connect_with_details(&self, id: &str, details: &ConnectionDetails) -> Result<(), String> {
-        let url = build_connection_url(details);
-        self.connect(id, &url).await
+    pub async fn connect_with_details(
+        &self,
+        id: &str,
+        details: &ConnectionDetails,
+    ) -> Result<(), String> {
+        let url = build_connection_url(details)?;
+        self.connect(id, &url, &details.db_type).await
     }
 
     // Retrieve an active connection pool reference by connection ID
     pub fn get_pool(&self, id: &str) -> Result<AnyPool, String> {
         self.pools
             .get(id)
-            .map(|r| r.value().clone())
+            .map(|r| r.pool.clone())
+            .ok_or_else(|| format!("Connection ID '{}' is not connected or pool expired", id))
+    }
+
+    /// Engine kind recorded when the pool was opened (defaults to empty if unknown).
+    pub fn get_db_type(&self, id: &str) -> Result<String, String> {
+        self.pools
+            .get(id)
+            .map(|r| r.db_type.clone())
             .ok_or_else(|| format!("Connection ID '{}' is not connected or pool expired", id))
     }
 
     // Disconnect and remove a connection pool from cache
     pub async fn disconnect(&self, id: &str) -> Result<(), String> {
-        if let Some((_, pool)) = self.pools.remove(id) {
-            pool.close().await;
+        if let Some((_, managed)) = self.pools.remove(id) {
+            managed.pool.close().await;
         }
         Ok(())
     }
@@ -187,8 +308,47 @@ mod tests {
             password: Some("secret".to_string()),
             database: "testdb".to_string(),
             ssl_mode: Some("disable".to_string()),
+            cloud_iam: None,
         };
-        let url = build_connection_url(&details);
-        assert_eq!(url, "postgres://postgres:secret@localhost:5432/testdb?sslmode=disable");
+        let url = build_connection_url(&details).unwrap();
+        assert_eq!(
+            url,
+            "postgres://postgres:secret@localhost:5432/testdb?sslmode=disable"
+        );
+    }
+
+    #[test]
+    fn test_url_builder_encodes_special_password_chars() {
+        let details = ConnectionDetails {
+            db_type: "postgres".to_string(),
+            host: "localhost".to_string(),
+            port: 5432,
+            user: "user@corp".to_string(),
+            password: Some("p@ss:w/rd".to_string()),
+            database: "testdb".to_string(),
+            ssl_mode: Some("disable".to_string()),
+            cloud_iam: None,
+        };
+        let url = build_connection_url(&details).unwrap();
+        assert_eq!(
+            url,
+            "postgres://user%40corp:p%40ss%3Aw%2Frd@localhost:5432/testdb?sslmode=disable"
+        );
+    }
+
+    #[test]
+    fn test_unsupported_engine_rejected() {
+        let details = ConnectionDetails {
+            db_type: "mongodb".to_string(),
+            host: "localhost".to_string(),
+            port: 27017,
+            user: "admin".to_string(),
+            password: None,
+            database: "test".to_string(),
+            ssl_mode: None,
+            cloud_iam: None,
+        };
+        let err = build_connection_url(&details).unwrap_err();
+        assert!(err.contains("not supported"));
     }
 }

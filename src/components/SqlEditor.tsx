@@ -27,21 +27,17 @@ export interface DialectOption {
   dialectObj: any;
 }
 
+// Syntax highlighting only — connection engines are limited by the Rust backend.
 export const DIALECTS: DialectOption[] = [
   { id: 'postgres', name: 'PostgreSQL', category: 'Relational', dialectObj: PostgreSQL },
   { id: 'mysql', name: 'MySQL', category: 'Relational', dialectObj: MySQL },
   { id: 'mariadb', name: 'MariaDB', category: 'Relational', dialectObj: MySQL },
   { id: 'sqlite', name: 'SQLite', category: 'Relational', dialectObj: SQLite },
-  { id: 'mssql', name: 'SQL Server (MSSQL)', category: 'Relational', dialectObj: MSSQL },
   { id: 'cockroachdb', name: 'CockroachDB', category: 'Relational', dialectObj: PostgreSQL },
   { id: 'redshift', name: 'Amazon Redshift', category: 'Cloud', dialectObj: PostgreSQL },
-  { id: 'snowflake', name: 'Snowflake', category: 'Cloud', dialectObj: StandardSQL },
-  { id: 'oracle', name: 'Oracle', category: 'Relational', dialectObj: StandardSQL },
-  { id: 'clickhouse', name: 'ClickHouse', category: 'Cloud', dialectObj: StandardSQL },
-  { id: 'duckdb', name: 'DuckDB', category: 'Relational', dialectObj: SQLite },
-  { id: 'redis', name: 'Redis', category: 'NoSQL', dialectObj: StandardSQL },
-  { id: 'mongodb', name: 'MongoDB', category: 'NoSQL', dialectObj: StandardSQL },
-  { id: 'cassandra', name: 'Cassandra', category: 'NoSQL', dialectObj: StandardSQL },
+  // Editor-only (no backend driver): kept for syntax convenience
+  { id: 'mssql', name: 'SQL Server (highlight only)', category: 'Relational', dialectObj: MSSQL },
+  { id: 'standard', name: 'Standard SQL (highlight only)', category: 'Relational', dialectObj: StandardSQL },
 ];
 
 export interface SqlSnippet {

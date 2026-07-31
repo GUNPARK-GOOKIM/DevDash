@@ -47,14 +47,23 @@ import {
 import { Tooltip } from './components/Tooltip';
 import {
   connectDatabase,
+  disconnectDatabase,
   getDatabaseTables,
   getTableColumns,
   getPkAnalysis,
   runSqlQuery,
+  saveDbPassword,
+  getDbPassword,
+  checkSqlSafety,
+  commitStagedRowEdits,
+  structureAddColumn,
+  structureDropColumn,
+  isEngineSupported,
+  EngineDialect,
 } from './services/tauriBridge';
 
 export const App: React.FC = () => {
-  const currentProjectPath = 'e:\\devdash';
+  const currentProjectPath = 'local';
 
   // === SETTINGS STATE ===
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -82,7 +91,17 @@ export const App: React.FC = () => {
   const [aiConfig, setAiConfig] = useState<AiConfig>(() => {
     const saved = localStorage.getItem('devdash_ai_config');
     if (saved) {
-      try { return JSON.parse(saved); } catch { }
+      try {
+        const parsed = JSON.parse(saved);
+        // Strip any legacy plaintext keys from localStorage immediately
+        if (parsed.apiKey && parsed.apiKey !== '__KEYCHAIN__' && parsed.apiKey !== '') {
+          localStorage.setItem(
+            'devdash_ai_config',
+            JSON.stringify({ ...parsed, apiKey: '__KEYCHAIN__' })
+          );
+        }
+        return { ...parsed, apiKey: '' };
+      } catch { /* fall through */ }
     }
     return {
       enabled: true,
@@ -98,10 +117,36 @@ export const App: React.FC = () => {
     localStorage.setItem('devdash_general_settings', JSON.stringify(newSettings));
   };
 
-  const handleAiConfigChange = (newConfig: AiConfig) => {
+  const handleAiConfigChange = async (newConfig: AiConfig) => {
+    // Never persist API keys in localStorage — store in OS keychain when available
+    const { apiKey, ...rest } = newConfig;
+    const safeForStorage = { ...rest, apiKey: apiKey ? '__KEYCHAIN__' : '' };
     setAiConfig(newConfig);
-    localStorage.setItem('devdash_ai_config', JSON.stringify(newConfig));
+    localStorage.setItem('devdash_ai_config', JSON.stringify(safeForStorage));
+    if (apiKey && apiKey !== '__KEYCHAIN__') {
+      try {
+        const { saveSecret } = await import('./services/tauriBridge');
+        await saveSecret('ai_api_key', apiKey);
+      } catch (err) {
+        console.warn('Failed to store AI API key in keychain:', err);
+      }
+    }
   };
+
+  // Hydrate AI API key from keychain on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const { getSecret } = await import('./services/tauriBridge');
+        const key = await getSecret('ai_api_key');
+        if (key) {
+          setAiConfig((prev) => ({ ...prev, apiKey: key }));
+        }
+      } catch {
+        /* browser mode or missing key */
+      }
+    })();
+  }, []);
 
   // Cmd + comma for Settings
   useEffect(() => {
@@ -166,8 +211,20 @@ export const App: React.FC = () => {
   }, [showWelcome]);
 
   // Welcome page handlers
-  const handleWelcomeConnect = useCallback(async (conn: ConnectionConfig) => {
-    setActiveConnection(conn);
+  const handleWelcomeConnect = useCallback(async (conn: ConnectionConfig, password?: string) => {
+    if (!isEngineSupported(conn.db_type)) {
+      alert(
+        `Engine "${conn.db_type}" is not supported by the backend yet.\n\nSupported: PostgreSQL, MySQL/MariaDB, SQLite, CockroachDB, Redshift.`
+      );
+      return;
+    }
+
+    // Drop previous pool when switching connections (avoid leaking remote sessions)
+    if (activeConnection?.id && activeConnection.id !== conn.id) {
+      await disconnectDatabase(activeConnection.id);
+    }
+
+    setActiveConnection({ ...conn, is_connected: false });
     setShowWelcome(false);
     // Track recent connections (most recent first, max 10)
     setRecentConnectionIds(prev => {
@@ -176,15 +233,20 @@ export const App: React.FC = () => {
     });
 
     try {
-      await connectDatabase(conn);
-      const fetchedTables = await getDatabaseTables(conn.id, conn.db_type);
-      if (fetchedTables && fetchedTables.length > 0) {
-        setTables(fetchedTables);
+      let pwd = password;
+      if (pwd === undefined || pwd === '') {
+        pwd = (await getDbPassword(conn.id)) || undefined;
       }
+      await connectDatabase(conn, pwd);
+      setActiveConnection({ ...conn, is_connected: true });
+      const fetchedTables = await getDatabaseTables(conn.id, conn.db_type);
+      setTables(fetchedTables || []);
     } catch (err) {
       console.warn('Failed to connect to database or fetch tables:', err);
+      setActiveConnection({ ...conn, is_connected: false });
+      alert(`Connection failed: ${String(err)}`);
     }
-  }, []);
+  }, [activeConnection?.id]);
 
   const handleDeleteConnection = useCallback((id: string) => {
     setConnections(prev => prev.filter(c => c.id !== id));
@@ -307,6 +369,21 @@ export const App: React.FC = () => {
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
   const [isSchemaDiffModalOpen, setIsSchemaDiffModalOpen] = useState(false);
   const [isPiiConfigModalOpen, setIsPiiConfigModalOpen] = useState(false);
+  const [piiRules, setPiiRules] = useState(() => {
+    const saved = localStorage.getItem('devdash_pii_rules');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch { /* fall through */ }
+    }
+    return [
+      { id: 'pii-1', fieldPattern: 'ssn', maskType: 'LAST_FOUR' as const, enabled: true },
+      { id: 'pii-2', fieldPattern: 'credit_card', maskType: 'LAST_FOUR' as const, enabled: true },
+      { id: 'pii-3', fieldPattern: 'password', maskType: 'FULL' as const, enabled: true },
+      { id: 'pii-4', fieldPattern: 'email', maskType: 'PARTIAL_EMAIL' as const, enabled: false },
+      { id: 'pii-5', fieldPattern: 'phone', maskType: 'LAST_FOUR' as const, enabled: true },
+    ];
+  });
 
   // === INLINE JSON POPUP ===
   const [jsonPopup, setJsonPopup] = useState<{ data: any; rect: { top: number; left: number; width: number; height: number } } | null>(null);
@@ -406,22 +483,110 @@ export const App: React.FC = () => {
     }
   }, [activeConnection]);
 
-  const handleRunQueryWithSafeMode = useCallback((sql: string) => {
-    if (!safeModeEnabled) { executeSqlQuery(sql); return; }
-    const upper = sql.trim().toUpperCase();
-    const isDestructive = upper.startsWith('DROP') || upper.startsWith('TRUNCATE') ||
-      (upper.startsWith('DELETE') && !upper.includes('WHERE')) ||
-      (upper.startsWith('UPDATE') && !upper.includes('WHERE'));
-    if (isDestructive) {
-      setPendingDestructiveSql(sql);
-      setSafeModeWarning(upper.startsWith('DROP') ? 'DROP statement will permanently delete database structures.' :
-        upper.startsWith('TRUNCATE') ? 'TRUNCATE will remove all rows from the table.' :
-          'Operation without WHERE clause will affect ALL rows.');
-      setIsSafeModeModalOpen(true);
-    } else {
+  const handleRunQueryWithSafeMode = useCallback(async (sql: string) => {
+    if (!safeModeEnabled) {
       executeSqlQuery(sql);
+      return;
+    }
+    try {
+      const analysis = await checkSqlSafety(sql);
+      if (analysis.requires_confirmation || analysis.is_destructive) {
+        setPendingDestructiveSql(sql);
+        setSafeModeWarning(
+          analysis.warning_message || 'Destructive operation detected. Confirm to continue.'
+        );
+        setIsSafeModeModalOpen(true);
+      } else {
+        executeSqlQuery(sql);
+      }
+    } catch {
+      // Fall back to local heuristic if backend unavailable
+      const upper = sql.trim().toUpperCase();
+      const isDestructive =
+        upper.startsWith('DROP') ||
+        upper.startsWith('TRUNCATE') ||
+        (upper.startsWith('DELETE') && !upper.includes('WHERE')) ||
+        (upper.startsWith('UPDATE') && !upper.includes('WHERE'));
+      if (isDestructive) {
+        setPendingDestructiveSql(sql);
+        setSafeModeWarning('Destructive operation detected. Confirm to continue.');
+        setIsSafeModeModalOpen(true);
+      } else {
+        executeSqlQuery(sql);
+      }
     }
   }, [safeModeEnabled, executeSqlQuery]);
+
+  const mapEngineDialect = useCallback((dbType?: string): EngineDialect => {
+    const t = (dbType || 'postgres').toLowerCase();
+    if (t === 'mysql' || t === 'mariadb') return 'mysql';
+    if (t === 'sqlite') return 'sqlite';
+    return 'postgres';
+  }, []);
+
+  const handleCommitStaged = useCallback(async (_message: string) => {
+    if (!activeConnection) {
+      alert('No active connection to commit against.');
+      return;
+    }
+    const checked = stagedChanges.filter((c) => c.checked && c.changeType === 'update');
+    if (checked.length === 0) {
+      setStagedChanges((prev) => prev.filter((c) => !c.checked));
+      setStagedEdits([]);
+      return;
+    }
+
+    const currentTab = tabs.find((t) => t.id === activeTabId);
+
+    // Group by table
+    const byTable = new Map<string, typeof checked>();
+    for (const change of checked) {
+      const list = byTable.get(change.tableName) || [];
+      list.push(change);
+      byTable.set(change.tableName, list);
+    }
+
+    try {
+      for (const [tableName, changes] of byTable) {
+        // Resolve PK column from current pkInfo when matching table, else 'id'
+        const pkColumn =
+          (currentTab?.tableName === tableName && pkInfo.pk_column_name) ||
+          pkInfo.pk_column_name ||
+          'id';
+
+        // Collapse cell-level staged changes into row edits
+        const rowMap = new Map<string | number, { pk: string | number; changes: { column_name: string; new_value: unknown }[] }>();
+        for (const c of changes) {
+          const matchingEdit = stagedEdits.find(
+            (e) => e.rowId === c.rowId && e.columnName === c.columnName
+          );
+          const entry = rowMap.get(c.rowId) || { pk: c.rowId, changes: [] };
+          entry.changes.push({
+            column_name: c.columnName || c.identifier,
+            new_value: matchingEdit?.newValue ?? null,
+          });
+          rowMap.set(c.rowId, entry);
+        }
+
+        const edits = Array.from(rowMap.values()).map((r) => ({
+          pk_value: r.pk,
+          changes: r.changes,
+        }));
+
+        await commitStagedRowEdits(activeConnection.id, tableName, pkColumn, edits);
+      }
+
+      setStagedChanges((prev) => prev.filter((c) => !c.checked));
+      setStagedEdits([]);
+
+      // Refresh active browser table if open
+      if (currentTab?.type === 'browser' && currentTab.tableName) {
+        executeSqlQuery(`SELECT * FROM ${currentTab.tableName} LIMIT 1000;`);
+      }
+    } catch (err) {
+      alert(`Failed to commit staged edits: ${String(err)}`);
+    }
+  }, [activeConnection, stagedChanges, stagedEdits, pkInfo, tabs, activeTabId, executeSqlQuery]);
 
   const handleStageEdit = useCallback((edit: StagedCellEdit) => {
     setStagedEdits(prev => {
@@ -515,10 +680,19 @@ export const App: React.FC = () => {
       const rowStrs = rows.map(r => `| ${columns.map(c => String(r[c.name] ?? '')).join(' | ')} |`).join('\n');
       content = `${headers}\n${separator}\n${rowStrs}`;
     } else {
-      content = rows.map(r => {
-        const vals = columns.map(c => typeof r[c.name] === 'string' ? `'${r[c.name]}'` : String(r[c.name] ?? 'NULL'));
-        return `INSERT INTO products (${columns.map(c => c.name).join(', ')}) VALUES (${vals.join(', ')});`;
-      }).join('\n');
+      const tbl = tabs.find((t) => t.id === activeTabId)?.tableName || 'exported_table';
+      content = rows
+        .map((r) => {
+          const vals = columns.map((c) =>
+            typeof r[c.name] === 'string'
+              ? `'${String(r[c.name]).replace(/'/g, "''")}'`
+              : r[c.name] === null || r[c.name] === undefined
+                ? 'NULL'
+                : String(r[c.name])
+          );
+          return `INSERT INTO ${tbl} (${columns.map((c) => c.name).join(', ')}) VALUES (${vals.join(', ')});`;
+        })
+        .join('\n');
     }
     const blob = new Blob([content], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
@@ -529,53 +703,30 @@ export const App: React.FC = () => {
     a.click();
   }, [columns, rows, tabs, activeTabId]);
 
-  // Schema for AI agent
-  const aiSchema = useMemo(() => ({
-    tables: tables.map(t => ({ name: t.name, columns: columns.map(c => c.name) })),
-  }), [tables, columns]);
-
-  // ERD table data
-  const erdTables = useMemo(() => [
-    {
-      name: 'products', columns: [
-        { name: 'id', data_type: 'int8', is_nullable: false, is_primary_key: true },
-        { name: 'email', data_type: 'varchar', is_nullable: true, is_primary_key: false },
-        { name: 'email', data_type: 'varchar', is_nullable: true, is_primary_key: false },
-        { name: 'created_at', data_type: 'timestamp', is_nullable: true, is_primary_key: false },
-      ]
-    },
-    {
-      name: 'users', columns: [
-        { name: 'id', data_type: 'int8', is_nullable: false, is_primary_key: true },
-        { name: 'email', data_type: 'varchar', is_nullable: false, is_primary_key: false },
-        { name: 'costed_at', data_type: 'timestamp', is_nullable: true, is_primary_key: false },
-        { name: 'created_at', data_type: 'timestamp', is_nullable: true, is_primary_key: false },
-      ]
-    },
-    {
-      name: 'orders', columns: [
-        { name: 'id', data_type: 'int8', is_nullable: false, is_primary_key: true },
-        { name: 'user_id', data_type: 'int8', is_nullable: false, is_primary_key: false, is_foreign_key: true, fk_references: { table: 'users', column: 'id' } },
-        { name: 'user', data_type: 'varchar', is_nullable: true, is_primary_key: false },
-        { name: 'created_at', data_type: 'timestamp', is_nullable: true, is_primary_key: false },
-      ]
-    },
-    {
-      name: 'transactions', columns: [
-        { name: 'order_id', data_type: 'int8', is_nullable: false, is_primary_key: true },
-        { name: 'order_id', data_type: 'int8', is_nullable: false, is_primary_key: false, is_foreign_key: true, fk_references: { table: 'orders', column: 'id' } },
-      ]
-    },
-    {
-      name: 'logs', columns: [
-        { name: 'id', data_type: 'int8', is_nullable: false, is_primary_key: true },
-        { name: 'created_at', data_type: 'timestamp', is_nullable: true, is_primary_key: false },
-        { name: 'created_at', data_type: 'timestamp', is_nullable: true, is_primary_key: false },
-      ]
-    },
-  ], []);
-
   const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
+
+  // Schema for AI agent — include columns only for the currently inspected table
+  // (full multi-table schema map would require per-table introspection cache)
+  const aiSchema = useMemo(() => ({
+    tables: tables.map(t => ({
+      name: t.name,
+      columns: activeTab?.tableName === t.name ? columns.map(c => c.name) : [],
+    })),
+  }), [tables, columns, activeTab?.tableName]);
+
+  // ERD: use live tables + columns when available; otherwise table names only
+  const erdTables = useMemo(() => {
+    if (tables.length === 0) return [];
+    return tables.map((t) => {
+      if (activeTab?.tableName === t.name && columns.length > 0) {
+        return { name: t.name, columns };
+      }
+      return {
+        name: t.name,
+        columns: [{ name: '(open table to load columns)', data_type: '', is_nullable: true, is_primary_key: false }],
+      };
+    });
+  }, [tables, columns, activeTab?.tableName]);
 
   const tabIcon = (type: TabType, isActive: boolean) => {
     const cls = `w-[14px] h-[14px] shrink-0 ${isActive ? 'text-accent' : 'text-text/30'}`;
@@ -619,10 +770,27 @@ export const App: React.FC = () => {
           isOpen={isConnModalOpen}
           initialDbKind={selectedDbKind}
           onClose={() => setIsConnModalOpen(false)}
-          onSave={(connData) => {
-            const newConn: ConnectionConfig = { ...connData, id: `conn-${Date.now()}`, is_connected: true };
-            setConnections(prev => [...prev, newConn]);
-            handleWelcomeConnect(newConn);
+          onSave={async (connData, password) => {
+            if (!isEngineSupported(connData.db_type)) {
+              alert(
+                `Engine "${connData.db_type}" is not supported by the backend yet.\n\nSupported: PostgreSQL, MySQL/MariaDB, SQLite, CockroachDB, Redshift.`
+              );
+              return;
+            }
+            const newConn: ConnectionConfig = {
+              ...connData,
+              id: `conn-${Date.now()}`,
+              is_connected: false,
+            };
+            if (password) {
+              try {
+                await saveDbPassword(newConn.id, password);
+              } catch (err) {
+                console.warn('Failed to store password in OS keychain:', err);
+              }
+            }
+            setConnections((prev) => [...prev, newConn]);
+            await handleWelcomeConnect(newConn, password);
           }}
         />
 
@@ -646,7 +814,10 @@ export const App: React.FC = () => {
         connections={connections}
         activeConnection={activeConnection}
         tables={tables}
-        onSelectConnection={(conn) => setActiveConnection(conn)}
+        onSelectConnection={async (conn) => {
+          // Real reconnect — previous code only set React state
+          await handleWelcomeConnect(conn);
+        }}
         onSelectTable={handleOpenTableTab}
         onOpenNewConnectionModal={() => {
           setSelectedDbKind(undefined);
@@ -721,9 +892,32 @@ export const App: React.FC = () => {
               <TableIcon className="w-3.5 h-3.5 text-accent" />
               <strong className="text-text font-semibold">{activeTab.tableName}</strong>
             </div>
-            <div className="flex items-center space-x-2">
-              <button className="px-2 py-0.5 rounded bg-accent/20 text-accent text-[11px] font-medium">Activ.</button>
-              <button className="px-2 py-0.5 rounded text-textMuted text-[11px] hover:bg-surface2">Clear ∨</button>
+            <div className="flex items-center space-x-1">
+              <button
+                onClick={() => {
+                  const id = `tab-structure-${Date.now()}`;
+                  setTabs((prev) => [
+                    ...prev.filter((t) => t.type !== 'structure'),
+                    { id, title: `Structure (${activeTab.tableName})`, type: 'structure', tableName: activeTab.tableName },
+                  ]);
+                  setActiveTabId(id);
+                }}
+                className="px-2 py-0.5 rounded text-textMuted text-[11px] hover:bg-surface2"
+              >
+                Structure
+              </button>
+              <button
+                onClick={() => setIsImportModalOpen(true)}
+                className="px-2 py-0.5 rounded text-textMuted text-[11px] hover:bg-surface2"
+              >
+                Import CSV
+              </button>
+              <button
+                onClick={() => setIsExportModalOpen(true)}
+                className="px-2 py-0.5 rounded text-textMuted text-[11px] hover:bg-surface2"
+              >
+                Export
+              </button>
             </div>
           </div>
         )}
@@ -746,6 +940,7 @@ export const App: React.FC = () => {
                   currentPage={currentPage}
                   onPageChange={setCurrentPage}
                   isLoading={false}
+                  piiRules={piiRules}
                 />
               </>
             ) : activeTab.type === 'query' || activeTab.type === 'console' ? (
@@ -763,32 +958,96 @@ export const App: React.FC = () => {
                 stagedChanges={stagedChanges}
                 onToggleChange={(id) => setStagedChanges(prev => prev.map(c => c.id === id ? { ...c, checked: !c.checked } : c))}
                 onToggleAll={(checked) => setStagedChanges(prev => prev.map(c => ({ ...c, checked })))}
-                onCommit={(msg) => {
-                  // Apply all checked changes
-                  setStagedChanges(prev => prev.filter(c => !c.checked));
-                  setStagedEdits([]);
-                }}
+                onCommit={handleCommitStaged}
                 onDiscard={(id) => setStagedChanges(prev => prev.filter(c => c.id !== id))}
               />
             ) : activeTab.type === 'structure' ? (
               <StructureView
                 tableName={activeTab.tableName || 'products'}
                 columns={columns}
-                onAddColumn={(name, type) => setColumns(prev => [...prev, { name, data_type: type, is_nullable: true, is_primary_key: false }])}
-                onDropColumn={(name) => setColumns(prev => prev.filter(c => c.name !== name))}
+                onAddColumn={async (name, type) => {
+                  if (!activeConnection || !activeTab.tableName) {
+                    setColumns((prev) => [
+                      ...prev,
+                      { name, data_type: type, is_nullable: true, is_primary_key: false },
+                    ]);
+                    return;
+                  }
+                  try {
+                    await structureAddColumn(
+                      activeConnection.id,
+                      activeTab.tableName,
+                      name,
+                      type,
+                      mapEngineDialect(activeConnection.db_type)
+                    );
+                    const refreshed = await getTableColumns(
+                      activeConnection.id,
+                      activeConnection.db_type,
+                      activeTab.tableName
+                    );
+                    setColumns(refreshed);
+                  } catch (err) {
+                    alert(`Failed to add column: ${String(err)}`);
+                  }
+                }}
+                onDropColumn={async (name) => {
+                  if (!activeConnection || !activeTab.tableName) {
+                    setColumns((prev) => prev.filter((c) => c.name !== name));
+                    return;
+                  }
+                  try {
+                    await structureDropColumn(
+                      activeConnection.id,
+                      activeTab.tableName,
+                      name,
+                      mapEngineDialect(activeConnection.db_type)
+                    );
+                    setColumns((prev) => prev.filter((c) => c.name !== name));
+                  } catch (err) {
+                    alert(`Failed to drop column: ${String(err)}`);
+                  }
+                }}
               />
             ) : activeTab.type === 'erd' ? (
               <SchemaVisualizer tables={erdTables} onSelectTable={handleOpenTableTab} />
             ) : activeTab.type === 'health' ? (
               <HealthGrid connectionId={activeConnection?.id || ''} dbType={activeConnection?.db_type || 'postgres'} />
             ) : activeTab.type === 'nosql' ? (
-              <NoSqlInspector connectionId={activeConnection?.id || ''} dbType={(activeConnection?.db_type as 'redis' | 'mongodb') || 'redis'} />
+              <div className="flex items-center justify-center h-full text-textMuted p-8">
+                <div className="text-center space-y-2 max-w-md">
+                  <p className="text-sm font-medium text-text">NoSQL inspector is a UI prototype only</p>
+                  <p className="text-xs">
+                    There is no Redis/MongoDB driver in the Rust backend. The previous demo used hardcoded sample keys/documents.
+                    Use a real Redis/Mongo client until protocol drivers are implemented.
+                  </p>
+                </div>
+              </div>
             ) : activeTab.type === 'explain' ? (
-              <ExplainVisualizer connectionId={activeConnection?.id || ''} dbType={activeConnection?.db_type || 'postgres'} />
+              <ExplainVisualizer
+                connectionId={activeConnection?.id || ''}
+                dbType={activeConnection?.db_type || 'postgres'}
+                onRunExplain={(sql) => handleRunQueryWithSafeMode(sql)}
+              />
             ) : activeTab.type === 'routines' ? (
-              <RoutinesManager connectionId={activeConnection?.id || ''} dbType={activeConnection?.db_type || 'postgres'} />
+              <div className="flex items-center justify-center h-full text-textMuted p-8">
+                <div className="text-center space-y-2 max-w-md">
+                  <p className="text-sm font-medium text-text">Routines manager is a UI prototype only</p>
+                  <p className="text-xs">
+                    Stored procedure / function introspection is not implemented in the backend.
+                    Demo PL/pgSQL definitions were previously hard-coded in the frontend.
+                  </p>
+                </div>
+              </div>
             ) : activeTab.type === 'roles' ? (
-              <RolesManager connectionId={activeConnection?.id || ''} dbType={activeConnection?.db_type || 'postgres'} />
+              <div className="flex items-center justify-center h-full text-textMuted p-8">
+                <div className="text-center space-y-2 max-w-md">
+                  <p className="text-sm font-medium text-text">Roles / privileges manager is a UI prototype only</p>
+                  <p className="text-xs">
+                    No GRANT/REVOKE catalog queries are implemented. Demo users/roles were hard-coded.
+                  </p>
+                </div>
+              </div>
             ) : activeTab.type === 'builder' ? (
               <VisualQueryBuilder
                 tables={tables}
@@ -807,11 +1066,36 @@ export const App: React.FC = () => {
         <footer className="h-7 bg-[#0A0A0B] px-3 flex items-center justify-between text-[11px] text-textMuted select-none shrink-0 z-20 border-t border-border/30">
           <div className="flex items-center space-x-3">
             {safeModeEnabled && (
-              <span className="flex items-center space-x-1 text-accent">
+              <button
+                onClick={() => setSafeModeEnabled(false)}
+                className="flex items-center space-x-1 text-accent hover:opacity-80"
+                title="Click to disable Safe Mode"
+              >
                 <Shield className="w-3 h-3" />
                 <span className="text-[10px]">Safe Mode</span>
-              </span>
+              </button>
             )}
+            {!safeModeEnabled && (
+              <button
+                onClick={() => setSafeModeEnabled(true)}
+                className="flex items-center space-x-1 text-warning hover:opacity-80"
+                title="Click to enable Safe Mode"
+              >
+                <Shield className="w-3 h-3" />
+                <span className="text-[10px]">Safe Mode Off</span>
+              </button>
+            )}
+            <button onClick={handleOpenErd} className="hover:text-text text-[10px]">ERD</button>
+            <button onClick={handleOpenHealth} className="hover:text-text text-[10px]">Health</button>
+            <button onClick={() => setIsAuditModalOpen(true)} className="hover:text-text text-[10px]">Audit</button>
+            <button onClick={() => setIsPiiConfigModalOpen(true)} className="hover:text-text text-[10px]">PII</button>
+            <button
+              onClick={() => setIsSchemaDiffModalOpen(true)}
+              className="hover:text-text text-[10px]"
+              title="UI prototype only"
+            >
+              Schema Diff*
+            </button>
           </div>
 
           <div className="flex items-center space-x-3">
@@ -858,10 +1142,27 @@ export const App: React.FC = () => {
         isOpen={isConnModalOpen}
         initialDbKind={selectedDbKind}
         onClose={() => setIsConnModalOpen(false)}
-        onSave={(connData) => {
-          const newConn: ConnectionConfig = { ...connData, id: `conn-${Date.now()}`, is_connected: true };
-          setConnections(prev => [...prev, newConn]);
-          setActiveConnection(newConn);
+        onSave={async (connData, password) => {
+          if (!isEngineSupported(connData.db_type)) {
+            alert(
+              `Engine "${connData.db_type}" is not supported by the backend yet.\n\nSupported: PostgreSQL, MySQL/MariaDB, SQLite, CockroachDB, Redshift.`
+            );
+            return;
+          }
+          const newConn: ConnectionConfig = {
+            ...connData,
+            id: `conn-${Date.now()}`,
+            is_connected: false,
+          };
+          if (password) {
+            try {
+              await saveDbPassword(newConn.id, password);
+            } catch (err) {
+              console.warn('Failed to store password in OS keychain:', err);
+            }
+          }
+          setConnections((prev) => [...prev, newConn]);
+          await handleWelcomeConnect(newConn, password);
         }}
       />
 
@@ -869,11 +1170,30 @@ export const App: React.FC = () => {
 
       <ExportModal isOpen={isExportModalOpen} onClose={() => setIsExportModalOpen(false)} tableName={activeTab.tableName || 'products'} onExport={handleExportData} />
 
-      <ImportModal isOpen={isImportModalOpen} onClose={() => setIsImportModalOpen(false)} onImportSuccess={(file, count) => executeSqlQuery(`-- Imported ${count} rows from ${file}`)} />
+      <ImportModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        connectionId={activeConnection?.id}
+        tableName={activeTab?.tableName}
+        onImportSuccess={(file, count) => {
+          if (activeTab?.tableName) {
+            executeSqlQuery(`SELECT * FROM ${activeTab.tableName} LIMIT 1000;`);
+          }
+          console.info(`Imported ${count} rows from ${file}`);
+        }}
+      />
 
       <AuditLoggerModal isOpen={isAuditModalOpen} onClose={() => setIsAuditModalOpen(false)} />
       <SchemaDiffModal isOpen={isSchemaDiffModalOpen} onClose={() => setIsSchemaDiffModalOpen(false)} />
-      <PiiMaskingConfig isOpen={isPiiConfigModalOpen} onClose={() => setIsPiiConfigModalOpen(false)} />
+      <PiiMaskingConfig
+        isOpen={isPiiConfigModalOpen}
+        onClose={() => setIsPiiConfigModalOpen(false)}
+        rules={piiRules}
+        onSaveRules={(rules) => {
+          setPiiRules(rules);
+          localStorage.setItem('devdash_pii_rules', JSON.stringify(rules));
+        }}
+      />
 
       {/* Settings & Preferences Modal */}
       <SettingsModal
