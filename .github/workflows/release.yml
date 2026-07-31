@@ -42,8 +42,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v1.0.0
-          releaseName: 'DevDash v1.0.0'
-          releaseBody: 'Official Release of DevDash Native Desktop Database GUI Client'
-          releaseDraft: false
+          tagName: ${{ github.ref_name }}
+          releaseName: 'DevDash ${{ github.ref_name }}'
+          releaseBody: 'DevDash native desktop database GUI client release.'
+          releaseDraft: true
           prerelease: false

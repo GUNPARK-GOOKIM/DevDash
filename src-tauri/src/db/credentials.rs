@@ -1,29 +1,45 @@
 // Native OS Keychain and Secret Manager credential isolation store
-use keyring::Entry; // Import Entry struct from keyring crate for OS keychain operations
+use keyring::Entry;
 
-// Service name identifier used for registering secrets in OS Keychain
-const SERVICE_NAME: &str = "devdash_app"; // Constant defining key scope namespace
+const SERVICE_NAME: &str = "devdash_app";
 
-// Save database password securely in host system's native credential store
-pub fn save_password(connection_id: &str, password: &str) -> Result<(), String> { // Function to store password securely
-    let entry = Entry::new(SERVICE_NAME, connection_id).map_err(|e| e.to_string())?; // Initialize OS keychain entry for connection ID
-    entry.set_password(password).map_err(|e| e.to_string())?; // Store password string in OS keychain
-    Ok(()) // Return success result
-} // End of save_password function
+pub fn save_password(connection_id: &str, password: &str) -> Result<(), String> {
+    let entry = Entry::new(SERVICE_NAME, connection_id).map_err(|e| e.to_string())?;
+    entry.set_password(password).map_err(|e| e.to_string())?;
+    Ok(())
+}
 
-// Retrieve stored database password securely from host system keychain
-pub fn get_password(connection_id: &str) -> Result<String, String> { // Function to fetch password securely
-    let entry = Entry::new(SERVICE_NAME, connection_id).map_err(|e| e.to_string())?; // Retrieve OS keychain entry for connection ID
-    let secret = entry.get_password().map_err(|e| e.to_string())?; // Fetch stored password string
-    Ok(secret) // Return password string result
-} // End of get_password function
+pub fn get_password(connection_id: &str) -> Result<String, String> {
+    let entry = Entry::new(SERVICE_NAME, connection_id).map_err(|e| e.to_string())?;
+    let secret = entry.get_password().map_err(|e| e.to_string())?;
+    Ok(secret)
+}
 
-// Delete stored database credential from host system keychain
-pub fn delete_password(connection_id: &str) -> Result<(), String> { // Function to remove password from keychain
-    let entry = Entry::new(SERVICE_NAME, connection_id).map_err(|e| e.to_string())?; // Find OS keychain entry for connection ID
-    entry.delete_credential().map_err(|e| e.to_string())?; // Delete secret from OS keychain using delete_credential
-    Ok(()) // Return success result
-} // End of delete_password function
+pub fn delete_password(connection_id: &str) -> Result<(), String> {
+    let entry = Entry::new(SERVICE_NAME, connection_id).map_err(|e| e.to_string())?;
+    entry.delete_credential().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Generic secret storage (e.g. AI API keys) under namespaced account keys.
+pub fn save_secret(account: &str, secret: &str) -> Result<(), String> {
+    if account.trim().is_empty() {
+        return Err("Secret account key cannot be empty".to_string());
+    }
+    let entry = Entry::new(SERVICE_NAME, account).map_err(|e| e.to_string())?;
+    entry.set_password(secret).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn get_secret(account: &str) -> Result<String, String> {
+    let entry = Entry::new(SERVICE_NAME, account).map_err(|e| e.to_string())?;
+    entry.get_password().map_err(|e| e.to_string())
+}
+
+pub fn delete_secret(account: &str) -> Result<(), String> {
+    let entry = Entry::new(SERVICE_NAME, account).map_err(|e| e.to_string())?;
+    entry.delete_credential().map_err(|e| e.to_string())
+}
 
 #[cfg(test)] // Conditional compilation attribute for unit test module
 mod tests { // Declare internal unit tests module

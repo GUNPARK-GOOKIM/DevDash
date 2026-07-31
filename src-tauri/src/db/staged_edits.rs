@@ -1,116 +1,205 @@
 // Transactional staged edit compiler and execution engine
-use serde::{Deserialize, Serialize}; // Import Serde traits for JSON deserialization
-use serde_json::Value; // Import Serde JSON Value enum
-use sqlx::AnyPool; // Import AnyPool from sqlx root (correct for 0.8)
+use crate::db::identifiers::{quote_ident, quote_table, sql_literal, validate_simple_identifier};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sqlx::AnyPool;
 
-// Single cell change descriptor struct inside a staged row edit
-#[derive(Debug, Serialize, Deserialize, Clone)] // Derive standard traits for JSON payload parsing
-pub struct StagedCellChange { // Struct definition for staged cell edit
-    pub column_name: String, // Target column name string
-    pub new_value: Value, // Modified cell value to commit
-} // End of StagedCellChange struct definition
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StagedCellChange {
+    pub column_name: String,
+    pub new_value: Value,
+}
 
-// Single row modification payload struct
-#[derive(Debug, Serialize, Deserialize, Clone)] // Derive standard traits for JSON parsing
-pub struct StagedRowEdit { // Struct definition for single row staged change
-    pub pk_value: Value, // Primary key value identifying target row
-    pub changes: Vec<StagedCellChange>, // List of column cell modifications for this row
-} // End of StagedRowEdit struct definition
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StagedRowEdit {
+    pub pk_value: Value,
+    pub changes: Vec<StagedCellChange>,
+}
 
-// Build dynamic SQL UPDATE query string for a single row staged edit
-pub fn build_update_statement(table: &str, pk_col: &str, edit: &StagedRowEdit) -> Result<String, String> {
+/// Build a single-row UPDATE. Identifiers are validated; values are escaped as SQL literals.
+/// `mysql_style` selects backtick vs double-quote identifiers (MySQL needs backticks by default).
+pub fn build_update_statement(
+    table: &str,
+    pk_col: &str,
+    edit: &StagedRowEdit,
+    mysql_style: bool,
+) -> Result<String, String> {
     if edit.changes.is_empty() {
         return Err("No column changes provided for staged edit".to_string());
     }
 
-    let set_clauses: Vec<String> = edit.changes.iter().map(|change| {
-        let val_str = match &change.new_value {
-            Value::String(s) => format!("'{}'", s.replace('\'', "''")),
-            Value::Null => "NULL".to_string(),
-            other => other.to_string(),
-        };
-        format!("{} = {}", change.column_name, val_str)
-    }).collect();
+    let quoted_table = quote_table(table, mysql_style)?;
+    for change in &edit.changes {
+        validate_simple_identifier(&change.column_name)?;
+    }
 
-    // Construct WHERE clause supporting single PK, SQLite rowid, or composite multi-column PKs
+    let set_clauses: Vec<String> = edit
+        .changes
+        .iter()
+        .map(|change| {
+            format!(
+                "{} = {}",
+                quote_ident(&change.column_name, mysql_style),
+                sql_literal(&change.new_value)
+            )
+        })
+        .collect();
+
     let where_clause = match &edit.pk_value {
         Value::Object(obj) => {
-            let clauses: Vec<String> = obj.iter().map(|(k, v)| {
-                let v_str = match v {
-                    Value::String(s) => format!("'{}'", s.replace('\'', "''")),
-                    Value::Null => "NULL".to_string(),
-                    other => other.to_string(),
-                };
-                format!("{} = {}", k, v_str)
-            }).collect();
+            let mut clauses = Vec::new();
+            for (k, v) in obj {
+                validate_simple_identifier(k)?;
+                clauses.push(format!(
+                    "{} = {}",
+                    quote_ident(k, mysql_style),
+                    sql_literal(v)
+                ));
+            }
+            if clauses.is_empty() {
+                return Err("Composite primary key object is empty".to_string());
+            }
             clauses.join(" AND ")
         }
         Value::String(s) => {
+            // Frontend may JSON.stringify composite PKs
             if s.starts_with('{') && s.ends_with('}') {
                 if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(s) {
-                    let clauses: Vec<String> = obj.iter().map(|(k, v)| {
-                        let v_str = match v {
-                            Value::String(str_val) => format!("'{}'", str_val.replace('\'', "''")),
-                            Value::Null => "NULL".to_string(),
-                            other => other.to_string(),
-                        };
-                        format!("{} = {}", k, v_str)
-                    }).collect();
+                    let mut clauses = Vec::new();
+                    for (k, v) in obj {
+                        validate_simple_identifier(&k)?;
+                        clauses.push(format!(
+                            "{} = {}",
+                            quote_ident(&k, mysql_style),
+                            sql_literal(&v)
+                        ));
+                    }
+                    if clauses.is_empty() {
+                        return Err("Composite primary key object is empty".to_string());
+                    }
                     clauses.join(" AND ")
                 } else {
-                    format!("{} = '{}'", pk_col, s.replace('\'', "''"))
+                    validate_simple_identifier(pk_col)?;
+                    format!(
+                        "{} = {}",
+                        quote_ident(pk_col, mysql_style),
+                        sql_literal(&Value::String(s.clone()))
+                    )
                 }
             } else {
-                format!("{} = '{}'", pk_col, s.replace('\'', "''"))
+                validate_simple_identifier(pk_col)?;
+                format!(
+                    "{} = {}",
+                    quote_ident(pk_col, mysql_style),
+                    sql_literal(&Value::String(s.clone()))
+                )
             }
         }
-        other => format!("{} = {}", pk_col, other.to_string()),
+        other => {
+            validate_simple_identifier(pk_col)?;
+            format!(
+                "{} = {}",
+                quote_ident(pk_col, mysql_style),
+                sql_literal(other)
+            )
+        }
     };
 
-    let sql = format!(
+    Ok(format!(
         "UPDATE {} SET {} WHERE {};",
-        table,
+        quoted_table,
         set_clauses.join(", "),
         where_clause
-    );
-
-    Ok(sql)
+    ))
 }
 
 // Apply a batch of staged row edits atomically within a single database transaction
-pub async fn apply_staged_edits( // Async function to commit batch edits
-    pool: &AnyPool, // Active connection pool reference
-    table: &str, // Name of target database table
-    pk_col: &str, // Primary key column name identifying rows
-    edits: Vec<StagedRowEdit>, // Vector of staged row edits to commit
-) -> Result<u64, String> { // Return total affected row count or error string
-    let mut tx = pool.begin().await.map_err(|e| format!("Failed to start transaction: {}", e))?; // Begin database transaction
-    let mut total_updated: u64 = 0; // Initialize counter for total updated rows
+pub async fn apply_staged_edits(
+    pool: &AnyPool,
+    table: &str,
+    pk_col: &str,
+    edits: Vec<StagedRowEdit>,
+    mysql_style: bool,
+) -> Result<u64, String> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("Failed to start transaction: {}", e))?;
+    let mut total_updated: u64 = 0;
 
-    for edit in edits { // Iterate through each staged row edit payload
-        let sql = build_update_statement(table, pk_col, &edit)?; // Build parameterized UPDATE query string for edit
-        let result = sqlx::query(&sql).execute(&mut *tx).await.map_err(|e| format!("Failed to update row: {}", e))?; // Execute query within transaction
-        total_updated += result.rows_affected(); // Accumulate updated rows count
-    } // End of edits iteration loop
+    for edit in edits {
+        let sql = build_update_statement(table, pk_col, &edit, mysql_style)?;
+        let result = sqlx::query(&sql)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to update row: {}", e))?;
+        total_updated += result.rows_affected();
+    }
 
-    tx.commit().await.map_err(|e| format!("Failed to commit transaction: {}", e))?; // Commit transaction atomically
-    Ok(total_updated) // Return total rows updated count
-} // End of apply_staged_edits function
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit transaction: {}", e))?;
+    Ok(total_updated)
+}
 
 #[cfg(test)] // Conditional compilation attribute for unit tests
 mod tests { // Declare internal unit testing module
     use super::*; // Import parent module items into test scope
     use serde_json::json; // Import json macro for creating test Values
 
-    #[test] // Mark test function for build_update_statement validation
-    fn test_build_update_statement_sql() { // Unit test function verifying SQL update generation
-        let edit = StagedRowEdit { // Construct mock StagedRowEdit struct
-            pk_value: json!(42), // Set primary key value to 42
-            changes: vec![ // Define cell changes vector
-                StagedCellChange { column_name: "name".to_string(), new_value: json!("Akshat") }, // Change name column
-            ], // End of changes vector
-        }; // End of edit struct
-        let sql = build_update_statement("users", "id", &edit).unwrap(); // Generate UPDATE SQL statement
-        assert_eq!(sql, "UPDATE users SET name = 'Akshat' WHERE id = 42;"); // Assert generated SQL matches expected query string
-    } // End of test function
-} // End of tests module
+    #[test]
+    fn test_build_update_statement_sql() {
+        let edit = StagedRowEdit {
+            pk_value: json!(42),
+            changes: vec![StagedCellChange {
+                column_name: "name".to_string(),
+                new_value: json!("Akshat"),
+            }],
+        };
+        let sql = build_update_statement("users", "id", &edit, false).unwrap();
+        assert_eq!(
+            sql,
+            "UPDATE \"users\" SET \"name\" = 'Akshat' WHERE \"id\" = 42;"
+        );
+    }
+
+    #[test]
+    fn test_mysql_style_backticks() {
+        let edit = StagedRowEdit {
+            pk_value: json!(1),
+            changes: vec![StagedCellChange {
+                column_name: "name".to_string(),
+                new_value: json!("x"),
+            }],
+        };
+        let sql = build_update_statement("users", "id", &edit, true).unwrap();
+        assert_eq!(sql, "UPDATE `users` SET `name` = 'x' WHERE `id` = 1;");
+    }
+
+    #[test]
+    fn test_rejects_malicious_column_name() {
+        let edit = StagedRowEdit {
+            pk_value: json!(1),
+            changes: vec![StagedCellChange {
+                column_name: "name=1; DROP TABLE users;--".to_string(),
+                new_value: json!("x"),
+            }],
+        };
+        assert!(build_update_statement("users", "id", &edit, false).is_err());
+    }
+
+    #[test]
+    fn test_composite_pk_json_string() {
+        let edit = StagedRowEdit {
+            pk_value: json!("{\"tenant_id\":1,\"id\":2}"),
+            changes: vec![StagedCellChange {
+                column_name: "status".to_string(),
+                new_value: json!("active"),
+            }],
+        };
+        let sql = build_update_statement("orders", "id", &edit, false).unwrap();
+        assert!(sql.contains("\"tenant_id\" = 1"));
+        assert!(sql.contains("\"id\" = 2"));
+        assert!(sql.contains("\"status\" = 'active'"));
+    }
+}

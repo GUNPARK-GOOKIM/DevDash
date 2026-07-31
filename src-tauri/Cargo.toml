@@ -29,6 +29,7 @@ pbkdf2 = "0.12" # Key derivation for passphrase encryption
 hmac = "0.12" # HMAC support for PBKDF2
 sha2 = "0.10" # SHA-256 hashing for PBKDF2
 ssh2 = "0.9" # Native SSH2 protocol library for SSH tunnel port forwarding
+futures-util = "0.3" # StreamExt for sqlx row streaming
 
 # Build configuration dependencies
 [build-dependencies] # Build dependencies section

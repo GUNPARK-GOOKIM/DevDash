@@ -24,12 +24,14 @@ use crate::db::shortcut_config::{
     update_shortcut_binding as update_shortcut, ShortcutConfig,
 }; // Import shortcut config manager
 use crate::db::csv_import::{
-    execute_csv_import, preview_csv_file, ImportExecutionResult, ImportPreviewPayload,
-}; // Import CSV import engine
+    execute_csv_import, execute_csv_import_content, preview_csv_file, ImportExecutionResult,
+    ImportPreviewPayload,
+};
 use crate::db::encrypted_export::{
     export_connections_and_queries, import_connections_and_queries, ExportPayload,
 }; // Import AES-256 encrypted export engine
-use crate::db::ssh_tunnel::{SshConfigPayload, SshTunnelManager, SshTunnelStatus}; // Import SSH tunnel manager and types
+use crate::db::ssh_tunnel::{SshConfigPayload, SshTunnelManager}; // Import SSH tunnel manager and types
+use crate::db::audit::{self, AuditEntry}; // Import audit trail logger
 use std::sync::Arc; // Import Arc for atomic reference sharing
 use tauri::State; // Import State extractor type from tauri crate
 use std::collections::HashMap; // Import HashMap for tracking active query handles
@@ -56,10 +58,26 @@ pub fn get_db_password(connection_id: String) -> Result<String, String> { // Com
 } // End of get_db_password command
 
 // IPC Command: Delete stored database password from OS Keychain
-#[tauri::command] // Tauri command macro annotation
-pub fn delete_db_password(connection_id: String) -> Result<(), String> { // Command handler function signature
-    credentials::delete_password(&connection_id) // Call credentials module delete password function
-} // End of delete_db_password command
+#[tauri::command]
+pub fn delete_db_password(connection_id: String) -> Result<(), String> {
+    credentials::delete_password(&connection_id)
+}
+
+// IPC Command: Save arbitrary secret (AI API keys, etc.) in OS keychain
+#[tauri::command]
+pub fn save_secret(account: String, secret: String) -> Result<(), String> {
+    credentials::save_secret(&account, &secret)
+}
+
+#[tauri::command]
+pub fn get_secret(account: String) -> Result<String, String> {
+    credentials::get_secret(&account)
+}
+
+#[tauri::command]
+pub fn delete_secret(account: String) -> Result<(), String> {
+    credentials::delete_secret(&account)
+}
 
 // IPC Command: Parse JSON cell string into structured tree
 #[tauri::command]
@@ -95,7 +113,7 @@ pub async fn structure_add_column(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let pool = state.connection_manager.get_pool(&connection_id)?;
-    let sql = build_add_column_sql(&payload, engine);
+    let sql = build_add_column_sql(&payload, engine)?;
     execute_structure_sql(&pool, &sql).await
 }
 
@@ -108,7 +126,7 @@ pub async fn structure_drop_column(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let pool = state.connection_manager.get_pool(&connection_id)?;
-    let sql = build_drop_column_sql(&payload, engine);
+    let sql = build_drop_column_sql(&payload, engine)?;
     execute_structure_sql(&pool, &sql).await
 }
 
@@ -272,14 +290,25 @@ pub async fn connect_database_config(
 }
 
 // IPC Command: Establish connection pool to target database
-#[tauri::command] // Tauri command macro annotation
-pub async fn connect_database( // Async command handler function
-    connection_id: String, // Connection ID identifier
-    connection_url: String, // Connection URI string
-    state: State<'_, AppState>, // Extracted global AppState handle
-) -> Result<(), String> { // Command return signature
-    state.connection_manager.connect(&connection_id, &connection_url).await // Call connection manager connect method
-} // End of connect_database command
+#[tauri::command]
+pub async fn connect_database(
+    connection_id: String,
+    connection_url: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // Legacy URL-only connect: infer a coarse dialect from the scheme for quoting later
+    let db_type = if connection_url.starts_with("mysql") {
+        "mysql"
+    } else if connection_url.starts_with("sqlite") {
+        "sqlite"
+    } else {
+        "postgres"
+    };
+    state
+        .connection_manager
+        .connect(&connection_id, &connection_url, db_type)
+        .await
+}
 
 // IPC Command: Disconnect and remove a database connection pool
 #[tauri::command] // Tauri command macro annotation
@@ -369,7 +398,7 @@ pub async fn run_sql_query( // Async command handler function
         active.remove(&query_id);
     }
 
-    // Auto-log query in query_history storage
+    // Auto-log query in query_history storage and append-only audit trail
     match &result {
         Ok(payload) => {
             let row_count = if !payload.rows.is_empty() {
@@ -381,12 +410,20 @@ pub async fn run_sql_query( // Async command handler function
                 .storage
                 .log_query_history(&sql, &connection_id, payload.execution_time_ms as f64, row_count, None)
                 .await;
+            let _ = audit::log_action(
+                &connection_id,
+                "QUERY",
+                &sql,
+                payload.affected_rows,
+                "SUCCESS",
+            );
         }
         Err(err_msg) => {
             let _ = state
                 .storage
                 .log_query_history(&sql, &connection_id, 0.0, 0, Some(err_msg))
                 .await;
+            let _ = audit::log_action(&connection_id, "QUERY", &sql, 0, "FAILED");
         }
     }
 
@@ -497,7 +534,49 @@ pub async fn import_csv_data(
     state: State<'_, AppState>,
 ) -> Result<ImportExecutionResult, String> {
     let pool = state.connection_manager.get_pool(&connection_id)?;
-    execute_csv_import(&pool, &table_name, std::path::Path::new(&file_path)).await
+    let db_type = state
+        .connection_manager
+        .get_db_type(&connection_id)
+        .unwrap_or_else(|_| "postgres".to_string());
+    let mysql_style = crate::db::pool::ConnectionManager::is_mysql_style(&db_type);
+    execute_csv_import(
+        &pool,
+        &table_name,
+        std::path::Path::new(&file_path),
+        mysql_style,
+    )
+    .await
+}
+
+// IPC Command: Import CSV from in-memory content (browser FileReader path)
+#[tauri::command]
+pub async fn import_csv_content(
+    connection_id: String,
+    table_name: String,
+    csv_content: String,
+    state: State<'_, AppState>,
+) -> Result<ImportExecutionResult, String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let db_type = state
+        .connection_manager
+        .get_db_type(&connection_id)
+        .unwrap_or_else(|_| "postgres".to_string());
+    let mysql_style = crate::db::pool::ConnectionManager::is_mysql_style(&db_type);
+    let result = execute_csv_import_content(&pool, &table_name, &csv_content, mysql_style).await;
+    if let Ok(ref r) = result {
+        let _ = audit::log_action(
+            &connection_id,
+            "CSV_IMPORT",
+            &format!("IMPORT CSV into {} ({} inserted)", table_name, r.inserted_count),
+            r.inserted_count as u64,
+            if r.failed_count == 0 {
+                "SUCCESS"
+            } else {
+                "PARTIAL"
+            },
+        );
+    }
+    result
 }
 
 // IPC Command: Export connections and queries to AES-256 encrypted JSON file
@@ -562,26 +641,64 @@ pub async fn commit_staged_row_edits( // Async command handler function
     edits: Vec<StagedRowEdit>, // Vector of staged row edits to commit
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<u64, String> { // Command return signature
-    let pool = state.connection_manager.get_pool(&connection_id)?; // Lookup cached connection pool instance
-    apply_staged_edits(&pool, &table_name, &pk_column, edits).await // Call apply_staged_edits function asynchronously
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let db_type = state
+        .connection_manager
+        .get_db_type(&connection_id)
+        .unwrap_or_else(|_| "postgres".to_string());
+    let mysql_style = crate::db::pool::ConnectionManager::is_mysql_style(&db_type);
+    let result = apply_staged_edits(&pool, &table_name, &pk_column, edits, mysql_style).await;
+    match &result {
+        Ok(count) => {
+            let _ = audit::log_action(
+                &connection_id,
+                "STAGED_COMMIT",
+                &format!("COMMIT staged edits on {}", table_name),
+                *count,
+                "SUCCESS",
+            );
+        }
+        Err(err) => {
+            let _ = audit::log_action(
+                &connection_id,
+                "STAGED_COMMIT",
+                &format!("COMMIT staged edits on {} failed: {}", table_name, err),
+                0,
+                "FAILED",
+            );
+        }
+    }
+    result
 } // End of commit_staged_row_edits command
 
+// IPC Command: Read recent append-only audit log entries
+#[tauri::command]
+pub fn get_audit_log(limit: Option<usize>) -> Result<Vec<AuditEntry>, String> {
+    let cap = limit.unwrap_or(200).min(2000);
+    audit::read_audit_entries(&audit::default_audit_dir(), cap)
+}
+
 // IPC Command: Export table data in specified format (CSV, JSON, SQL)
-#[tauri::command] // Tauri command macro annotation
-pub async fn export_table_data( // Async command handler function
-    connection_id: String, // Connection ID identifier
-    table_name: String, // Target table name
-    format: String, // Export format string ("csv", "json", "sql")
-    state: State<'_, AppState>, // Extracted global AppState handle
-) -> Result<String, String> { // Command return string result
-    let pool = state.connection_manager.get_pool(&connection_id)?; // Lookup cached pool
-    match format.to_lowercase().as_str() { // Match on format string
-        "csv" => export::export_csv(&pool, &table_name, true).await, // Export as CSV with headers
-        "json" => export::export_json(&pool, &table_name).await, // Export as JSON array
-        "sql" => export::export_sql_dump(&pool, &table_name).await, // Export as SQL dump
-        _ => Err(format!("Unsupported export format: {}", format)), // Return error for unknown format
-    } // End format match
-} // End of export_table_data command
+#[tauri::command]
+pub async fn export_table_data(
+    connection_id: String,
+    table_name: String,
+    format: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let db_type = state
+        .connection_manager
+        .get_db_type(&connection_id)
+        .unwrap_or_else(|_| "postgres".to_string());
+    let mysql_style = crate::db::pool::ConnectionManager::is_mysql_style(&db_type);
+    match format.to_lowercase().as_str() {
+        "csv" => export::export_csv(&pool, &table_name, true, mysql_style).await,
+        "json" => export::export_json(&pool, &table_name, mysql_style).await,
+        "sql" => export::export_sql_dump(&pool, &table_name, mysql_style).await,
+        _ => Err(format!("Unsupported export format: {}", format)),
+    }
+}
 
 // IPC Command: Save query bound to active workspace project path
 #[tauri::command] // Tauri command macro annotation

@@ -23,6 +23,7 @@ pub struct QueryResultPayload { // Struct definition for query result response
 } // End of QueryResultPayload struct definition
 
 // Convert dynamic sqlx AnyRow column cell value into generic serde_json::Value
+// Note: sqlx::Any only decodes a limited set of types (not chrono DateTime).
 pub fn decode_any_cell(row: &AnyRow, index: usize) -> Value {
     // Try string representation first as most database values convert to string easily
     if let Ok(val) = row.try_get::<String, _>(index) {
@@ -41,42 +42,95 @@ pub fn decode_any_cell(row: &AnyRow, index: usize) -> Value {
         json!(val)
     } else if let Ok(val) = row.try_get::<bool, _>(index) {
         Value::Bool(val)
-    } else if let Ok(val) = row.try_get::<chrono::NaiveDateTime, _>(index) {
-        Value::String(val.to_string())
-    } else if let Ok(val) = row.try_get::<chrono::DateTime<chrono::Utc>, _>(index) {
-        Value::String(val.to_rfc3339())
+    } else if let Ok(val) = row.try_get::<Vec<u8>, _>(index) {
+        // Binary / BLOB — surface as base64 so the UI can inspect without loss
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        Value::String(STANDARD.encode(val))
     } else {
         Value::Null
     }
 }
 
+/// Returns true when the statement is expected to return a result set.
+fn expects_result_set(sql: &str) -> bool {
+    let trimmed = sql.trim_start();
+    // Strip leading SQL comments (single-line)
+    let mut s = trimmed;
+    loop {
+        if s.starts_with("--") {
+            if let Some(pos) = s.find('\n') {
+                s = s[pos + 1..].trim_start();
+                continue;
+            }
+            return false;
+        }
+        if s.starts_with("/*") {
+            if let Some(pos) = s.find("*/") {
+                s = s[pos + 2..].trim_start();
+                continue;
+            }
+            return false;
+        }
+        break;
+    }
+    let upper = s.to_uppercase();
+    upper.starts_with("SELECT")
+        || upper.starts_with("WITH")
+        || upper.starts_with("SHOW")
+        || upper.starts_with("DESCRIBE")
+        || upper.starts_with("DESC ")
+        || upper.starts_with("EXPLAIN")
+        || upper.starts_with("PRAGMA")
+        || upper.starts_with("VALUES")
+}
+
 // Execute arbitrary dynamic SQL string against connection pool and return formatted payload
-pub async fn execute_dynamic_query(pool: &AnyPool, sql: &str) -> Result<QueryResultPayload, String> { // Dynamic query executor function
-    let start_time = Instant::now(); // Record current timestamp to measure query duration
-    let rows: Vec<AnyRow> = sqlx::query(sql) // Prepare dynamic SQL query struct with explicit type
-        .fetch_all(pool) // Execute query asynchronously fetching all result rows
-        .await // Await database response
-        .map_err(|e| format!("Query execution failed: {}", e))?; // Map sqlx error to readable string
+pub async fn execute_dynamic_query(pool: &AnyPool, sql: &str) -> Result<QueryResultPayload, String> {
+    let start_time = Instant::now();
 
-    let mut columns = Vec::new(); // Vector to store generated column headers
-    let mut result_rows = Vec::new(); // Matrix vector to store encoded JSON row values
+    // DML/DDL statements (INSERT/UPDATE/DELETE/CREATE/...) should use execute(),
+    // not fetch_all(). Using fetch_all on non-SELECT queries fails on most drivers.
+    if !expects_result_set(sql) {
+        let result = sqlx::query(sql)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Query execution failed: {}", e))?;
 
-    if let Some(first_row) = rows.first() { // Inspect first row to build column header schema if results exist
-        for col in first_row.columns() { // Iterate over all columns in row schema
-            columns.push(ColumnHeader { // Add column header entry
-                name: col.name().to_string(), // Extract column name string
-                type_name: col.type_info().name().to_string(), // Extract type info name string
-            }); // End of column push
-        } // End of column loop
-    } // End of schema inspection block
+        return Ok(QueryResultPayload {
+            columns: vec![ColumnHeader {
+                name: "affected_rows".to_string(),
+                type_name: "INTEGER".to_string(),
+            }],
+            rows: vec![vec![json!(result.rows_affected())]],
+            execution_time_ms: start_time.elapsed().as_millis() as u64,
+            affected_rows: result.rows_affected(),
+        });
+    }
 
-    for row in &rows { // Iterate through each returned dynamic database row
-        let mut row_values = Vec::new(); // Initialize array for current row cell values
-        for i in 0..row.columns().len() { // Loop over column indices
-            row_values.push(decode_any_cell(row, i)); // Decode cell value and append to row array
-        } // End of column index loop
-        result_rows.push(row_values); // Push completed row array into result matrix
-    } // End of row processing loop
+    let rows: Vec<AnyRow> = sqlx::query(sql)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Query execution failed: {}", e))?;
+
+    let mut columns = Vec::new();
+    let mut result_rows = Vec::new();
+
+    if let Some(first_row) = rows.first() {
+        for col in first_row.columns() {
+            columns.push(ColumnHeader {
+                name: col.name().to_string(),
+                type_name: col.type_info().name().to_string(),
+            });
+        }
+    }
+
+    for row in &rows {
+        let mut row_values = Vec::new();
+        for i in 0..row.columns().len() {
+            row_values.push(decode_any_cell(row, i));
+        }
+        result_rows.push(row_values);
+    }
 
     let execution_time_ms = start_time.elapsed().as_millis() as u64;
     let affected_rows = rows.len() as u64;
@@ -128,7 +182,7 @@ pub async fn stream_dynamic_query<R: tauri::Runtime>(
     sql: &str,
     chunk_size: usize,
 ) -> Result<QueryResultPayload, String> {
-    use sqlx::futures::StreamExt;
+    use futures_util::StreamExt;
     use tauri::Emitter;
 
     let start_time = Instant::now();
@@ -210,3 +264,42 @@ mod tests { // Declare internal unit testing module
         assert_eq!(col.type_name, "INTEGER"); // Assert type_name field matches expected value
     } // End of test function
 } // End of tests module
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use sqlx::any::AnyPoolOptions;
+
+    #[tokio::test]
+    async fn test_dml_and_select_on_sqlite() {
+        sqlx::any::install_default_drivers();
+        // Single connection: in-memory SQLite is not shared across pool connections.
+        let pool = AnyPoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect");
+
+        let create = execute_dynamic_query(
+            &pool,
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
+        )
+        .await
+        .expect("create");
+        assert_eq!(create.columns[0].name, "affected_rows");
+
+        let insert = execute_dynamic_query(
+            &pool,
+            "INSERT INTO users (id, name) VALUES (1, 'Ada');",
+        )
+        .await
+        .expect("insert");
+        assert_eq!(insert.affected_rows, 1);
+
+        let select = execute_dynamic_query(&pool, "SELECT id, name FROM users;")
+            .await
+            .expect("select");
+        assert_eq!(select.rows.len(), 1);
+        assert_eq!(select.rows[0][1], serde_json::json!("Ada"));
+    }
+}

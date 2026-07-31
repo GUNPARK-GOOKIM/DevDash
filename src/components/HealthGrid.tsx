@@ -1,6 +1,7 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { AlertTriangle, Clock } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { getLiveDatabaseMetrics, DatabaseLiveMetrics, isTauriAvailable } from '../services/tauriBridge';
 
 interface HealthGridProps {
   connectionId: string;
@@ -58,55 +59,60 @@ const CircularGauge: React.FC<{
   );
 };
 
-// Mock data generators
-const generateCpuData = () => {
-  const now = new Date();
-  return Array.from({ length: 60 }, (_, i) => {
-    const t = new Date(now.getTime() - (59 - i) * 60000);
-    return {
-      time: `${t.getHours().toString().padStart(2, '0')}:${t.getMinutes().toString().padStart(2, '0')}`,
-      value: Math.max(5, Math.min(95, 30 + Math.random() * 40 + (i > 45 ? 20 : 0))),
-    };
-  });
-};
-
-const slowQueries = [
-  { sql: "SELECT user_id, email, (SELECT count(*) FROM orders WHERE orders.user_id = users.id) a order_count FROM users WHERE orders.created_at < NOW() - INTERVAL '1 year' LIMIT 100;", duration: 850, calls: 16 },
-  { sql: "SELECT user_id, email, (SELECT count(*) FROM orders WHERE orders.user_id = users.id) a order_count FROM users WHERE created_at < NOW() - INTERVAL '1 year' LIMIT 100;", duration: 720, calls: 2 },
-  { sql: "SELECT user_id, email, (SELECT count(*) FROM orders WHERE orders.user_id = users.id) a order_count FROM users WHERE created_at < NOW() - INTERVAL '1 year' LIMIT 100;", duration: 650, calls: 8 },
-  { sql: "SELECT user_id, email, (SELECT count(*) FROM orders WHERE orders.user_id = users.id) a order_count FROM users WHERE created_at < NOW() - INTERVAL '1 year' LIMIT 100;", duration: 600, calls: 3 },
-];
+function mapEngine(dbType: string): 'postgres' | 'mysql' | 'sqlite' | null {
+  const t = dbType.toLowerCase();
+  if (t === 'postgres' || t === 'postgresql' || t === 'cockroachdb' || t === 'redshift') return 'postgres';
+  if (t === 'mysql' || t === 'mariadb') return 'mysql';
+  if (t === 'sqlite') return 'sqlite';
+  return null;
+}
 
 export const HealthGrid: React.FC<HealthGridProps> = ({ connectionId, dbType }) => {
-  const [cpuData, setCpuData] = useState(generateCpuData);
-  const [activeConns, setActiveConns] = useState(280);
-  const [maxConns] = useState(1000);
-  const [ramPercent, setRamPercent] = useState(77);
-  const [cacheHitRate, setCacheHitRate] = useState(76);
+  const engine = mapEngine(dbType);
+  const [metrics, setMetrics] = useState<DatabaseLiveMetrics | null>(null);
+  const [history, setHistory] = useState<{ time: string; value: number }[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const [expandedQuery, setExpandedQuery] = useState<number | null>(null);
-  const [tableLocks, setTableLocks] = useState<{ table: string; lockType: string; duration: string }[]>([]);
 
-  const isSupported = dbType === 'postgres' || dbType === 'mysql';
+  const fetchMetrics = async () => {
+    if (!engine || !connectionId) return;
+    if (!isTauriAvailable()) {
+      setError('Live metrics require the native Tauri desktop app. No simulated telemetry is shown.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const data = await getLiveDatabaseMetrics(connectionId, engine);
+      setMetrics(data);
+      setError(null);
+      const now = new Date();
+      const label = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+      setHistory((prev) => {
+        const next = [...prev, { time: label, value: Number(data.cache_hit_ratio.toFixed(1)) }];
+        return next.slice(-60);
+      });
+    } catch (err: any) {
+      setError(String(err?.message || err || 'Failed to fetch metrics'));
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  // Auto refresh every 5 seconds
   useEffect(() => {
-    if (!isSupported) return;
-    const interval = setInterval(() => {
-      setCpuData(generateCpuData());
-      setActiveConns(prev => Math.max(200, Math.min(900, prev + Math.floor(Math.random() * 40 - 20))));
-      setRamPercent(prev => Math.max(40, Math.min(95, prev + Math.floor(Math.random() * 6 - 3))));
-      setCacheHitRate(prev => Math.max(60, Math.min(99, prev + Math.floor(Math.random() * 4 - 2))));
-    }, 5000);
+    if (!engine || !connectionId) return;
+    fetchMetrics();
+    const interval = setInterval(fetchMetrics, 5000);
     return () => clearInterval(interval);
-  }, [isSupported]);
+  }, [connectionId, engine]);
 
-  if (!isSupported) {
+  if (!engine) {
     return (
       <div className="flex items-center justify-center h-full text-textMuted">
         <div className="text-center space-y-2">
           <AlertTriangle className="w-10 h-10 mx-auto text-warning/50" />
           <p className="text-sm">Health Grid is not supported for {dbType.toUpperCase()} connections.</p>
-          <p className="text-xs text-textMuted">Available for PostgreSQL and MySQL only.</p>
+          <p className="text-xs text-textMuted">Available for PostgreSQL, MySQL/MariaDB, and SQLite.</p>
         </div>
       </div>
     );
@@ -124,72 +130,99 @@ export const HealthGrid: React.FC<HealthGridProps> = ({ connectionId, dbType }) 
     return 'text-error';
   };
 
-  // Cache hit sparkline data
-  const sparkData = Array.from({ length: 12 }, (_, i) => ({
-    v: Math.max(60, Math.min(99, cacheHitRate + Math.floor(Math.random() * 10 - 5))),
-  }));
+  const activeConns = metrics?.active_connections ?? 0;
+  const cacheHitRate = metrics?.cache_hit_ratio ?? 0;
+  const slowQueries = metrics?.slow_queries ?? [];
+  const tableSizes = metrics?.table_sizes ?? [];
+  // Cap gauge to a sensible max for display; DB max_connections is not always available
+  const maxConns = Math.max(activeConns * 2, 100);
 
   return (
     <div className="h-full overflow-auto p-4">
       <div className="flex items-center space-x-2 mb-4">
         <h2 className="text-sm font-semibold text-text">Health Grid</h2>
-        <span className="text-[10px] bg-surface2 text-textMuted px-1.5 py-0.5 rounded">⟳ 5s</span>
+        <span className="text-[10px] bg-surface2 text-textMuted px-1.5 py-0.5 rounded">live · 5s</span>
+        {metrics && (
+          <span className="text-[10px] text-textMuted">
+            round-trip {metrics.response_time_ms.toFixed(1)}ms
+          </span>
+        )}
+        <button
+          onClick={fetchMetrics}
+          className="ml-auto p-1 rounded hover:bg-surface2 text-textMuted hover:text-text"
+          title="Refresh metrics"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+        </button>
       </div>
 
+      {error && (
+        <div className="mb-3 p-3 rounded-lg border border-warning/30 bg-warning/10 text-warning text-xs">
+          {error}
+        </div>
+      )}
+
       <div className="grid grid-cols-3 gap-3">
-        {/* Card 1: CPU Load */}
+        {/* Card 1: Cache hit history (real samples over time) */}
         <div className="bento-card p-4">
-          <h3 className="text-xs font-medium text-textMuted mb-1">System CPU Load ({dbType === 'postgres' ? 'PostgreSQL' : 'MySQL'})</h3>
-          <p className="text-[10px] text-textMuted mb-2">Last-hour usage</p>
+          <h3 className="text-xs font-medium text-textMuted mb-1">
+            Cache Hit Ratio Trend ({dbType})
+          </h3>
+          <p className="text-[10px] text-textMuted mb-2">Sampled every 5s from live metrics</p>
           <div className="h-32">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={cpuData}>
-                <XAxis dataKey="time" tick={{ fontSize: 9, fill: '#6B6B70' }} interval={14} />
-                <YAxis domain={[0, 100]} tick={{ fontSize: 9, fill: '#6B6B70' }} width={30} />
-                <Tooltip
-                  contentStyle={{ background: '#1A1A1C', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 6, fontSize: 11 }}
-                  labelStyle={{ color: '#E8E8EA' }}
-                />
-                <Line type="monotone" dataKey="value" stroke="#6366F1" strokeWidth={1.5} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
+            {history.length === 0 ? (
+              <div className="h-full flex items-center justify-center text-xs text-textMuted">Waiting for samples…</div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={history}>
+                  <XAxis dataKey="time" tick={{ fontSize: 9, fill: '#6B6B70' }} interval="preserveStartEnd" />
+                  <YAxis domain={[0, 100]} tick={{ fontSize: 9, fill: '#6B6B70' }} width={30} />
+                  <Tooltip
+                    contentStyle={{ background: '#1A1A1C', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 6, fontSize: 11 }}
+                    labelStyle={{ color: '#E8E8EA' }}
+                  />
+                  <Line type="monotone" dataKey="value" stroke="#6366F1" strokeWidth={1.5} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </div>
 
         {/* Card 2: Active Connections */}
         <div className="bento-card p-4 flex flex-col items-center justify-center relative">
           <h3 className="text-xs font-medium text-textMuted mb-3">Active Connections</h3>
-          <CircularGauge value={activeConns} max={maxConns} label={`${activeConns} / ${maxConns}`} colorStops={connGaugeColors} />
+          <CircularGauge
+            value={activeConns}
+            max={maxConns}
+            label={`${activeConns} active`}
+            colorStops={connGaugeColors}
+          />
         </div>
 
-        {/* Card 3: RAM Utilization */}
+        {/* Card 3: Query latency / response */}
         <div className="bento-card p-4 flex flex-col items-center justify-center relative">
-          <h3 className="text-xs font-medium text-textMuted mb-3">RAM Utilization</h3>
-          <CircularGauge value={ramPercent} max={100} label="" unit="memory" colorStops={connGaugeColors} />
+          <h3 className="text-xs font-medium text-textMuted mb-3">Metrics Query Latency</h3>
+          <CircularGauge
+            value={Math.min(metrics?.response_time_ms ?? 0, 500)}
+            max={500}
+            label={`${(metrics?.response_time_ms ?? 0).toFixed(1)}ms`}
+            colorStops={connGaugeColors}
+          />
         </div>
 
-        {/* Card 4: Table Locks */}
+        {/* Card 4: Table sizes (real) */}
         <div className="bento-card p-4">
-          <div className="flex items-center space-x-2 mb-2">
-            <h3 className="text-xs font-medium text-textMuted">Table Locks</h3>
-            {tableLocks.length > 0 && (
-              <span className="flex items-center space-x-1 text-[10px] bg-warning/20 text-warning px-1.5 py-0.5 rounded">
-                <AlertTriangle className="w-3 h-3" />
-                <span>{tableLocks.length}</span>
-              </span>
-            )}
-          </div>
-          {tableLocks.length === 0 ? (
+          <h3 className="text-xs font-medium text-textMuted mb-2">Largest Tables</h3>
+          {tableSizes.length === 0 ? (
             <div className="flex items-center justify-center h-28 text-textMuted text-xs">
-              No active locks detected
+              No table size data available
             </div>
           ) : (
-            <div className="space-y-1">
-              {tableLocks.map((lock, i) => (
-                <div key={i} className="flex items-center justify-between text-xs bg-surface/50 rounded px-2 py-1.5">
-                  <span className="text-text font-medium">{lock.table}</span>
-                  <span className="text-warning">{lock.lockType}</span>
-                  <span className="text-textMuted">{lock.duration}</span>
+            <div className="space-y-1 max-h-36 overflow-auto">
+              {tableSizes.map((t) => (
+                <div key={t.table_name} className="flex items-center justify-between text-xs bg-surface/50 rounded px-2 py-1.5">
+                  <span className="text-text font-medium font-mono truncate">{t.table_name}</span>
+                  <span className="text-textMuted shrink-0 ml-2">{t.size_pretty}</span>
                 </div>
               ))}
             </div>
@@ -198,47 +231,51 @@ export const HealthGrid: React.FC<HealthGridProps> = ({ connectionId, dbType }) 
 
         {/* Card 5: Slowest Queries */}
         <div className="bento-card p-4 col-span-1">
-          <h3 className="text-xs font-medium text-textMuted mb-2">Slowest Queries (Last 24h)</h3>
-          <div className="space-y-1 overflow-auto max-h-40">
-            <div className="grid grid-cols-[1fr_60px_40px] text-[10px] text-textMuted font-medium px-1 mb-1">
-              <span>Query</span>
-              <span>Duration</span>
-              <span>Call...</span>
+          <h3 className="text-xs font-medium text-textMuted mb-2">Slowest Queries</h3>
+          {slowQueries.length === 0 ? (
+            <div className="flex items-center justify-center h-28 text-textMuted text-xs text-center px-2">
+              No slow-query data from this engine (requires pg_stat_statements / equivalent).
             </div>
-            {slowQueries.map((q, i) => (
-              <div key={i}>
-                <button
-                  onClick={() => setExpandedQuery(expandedQuery === i ? null : i)}
-                  className="w-full grid grid-cols-[1fr_60px_40px] items-center text-[11px] px-1 py-1 hover:bg-surface/50 rounded transition-colors text-left"
-                >
-                  <span className="text-text truncate font-mono text-[10px]">
-                    {expandedQuery === i ? '' : '● '}
-                    {q.sql.slice(0, 80)}...
-                  </span>
-                  <span className={`${durationColor(q.duration)} font-medium`}>{q.duration}ms</span>
-                  <span className="text-textMuted">{q.calls}</span>
-                </button>
-                {expandedQuery === i && (
-                  <div className="bg-surface rounded p-2 mt-1 mb-1 text-[10px] font-mono text-text/80 whitespace-pre-wrap break-all">
-                    {q.sql}
-                  </div>
-                )}
+          ) : (
+            <div className="space-y-1 overflow-auto max-h-40">
+              <div className="grid grid-cols-[1fr_60px_40px] text-[10px] text-textMuted font-medium px-1 mb-1">
+                <span>Query</span>
+                <span>Duration</span>
+                <span>Calls</span>
               </div>
-            ))}
-          </div>
+              {slowQueries.map((q, i) => (
+                <div key={i}>
+                  <button
+                    onClick={() => setExpandedQuery(expandedQuery === i ? null : i)}
+                    className="w-full grid grid-cols-[1fr_60px_40px] items-center text-[11px] px-1 py-1 hover:bg-surface/50 rounded transition-colors text-left"
+                  >
+                    <span className="text-text truncate font-mono text-[10px]">
+                      {q.query.slice(0, 80)}
+                      {q.query.length > 80 ? '…' : ''}
+                    </span>
+                    <span className={`${durationColor(q.duration_ms)} font-medium`}>
+                      {Math.round(q.duration_ms)}ms
+                    </span>
+                    <span className="text-textMuted">{q.calls}</span>
+                  </button>
+                  {expandedQuery === i && (
+                    <div className="bg-surface rounded p-2 mt-1 mb-1 text-[10px] font-mono text-text/80 whitespace-pre-wrap break-all">
+                      {q.query}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Card 6: Buffer Pool Cache Hit Rate */}
         <div className="bento-card p-4 flex flex-col items-center justify-center relative">
-          <h3 className="text-xs font-medium text-textMuted mb-3">Buffer Pool Cache Hit Rate</h3>
-          <CircularGauge value={cacheHitRate} max={100} label="" colorStops={connGaugeColors} />
-          <div className="w-full h-8 mt-2">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={sparkData}>
-                <Line type="monotone" dataKey="v" stroke="#6366F1" strokeWidth={1} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
+          <h3 className="text-xs font-medium text-textMuted mb-3">Buffer / Cache Hit Rate</h3>
+          <CircularGauge value={cacheHitRate} max={100} label="" unit="%" colorStops={connGaugeColors} />
+          <p className="text-[10px] text-textMuted mt-2">
+            QPS sample: {metrics?.queries_per_second?.toFixed(1) ?? '0.0'} (delta sampler not implemented)
+          </p>
         </div>
       </div>
     </div>

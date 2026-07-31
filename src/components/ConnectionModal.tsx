@@ -193,27 +193,18 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
                   onChange={(e) => handleDriverChange(e.target.value as DbKind)}
                   className="w-full bg-[#0F0F10] border border-white/10 rounded px-3 py-1.5 text-text outline-none focus:ring-2 focus:ring-accent/50 cursor-pointer"
                 >
-                  <optgroup label="Relational Databases">
+                  <optgroup label="Supported (native sqlx drivers)">
                     <option value="postgres">PostgreSQL</option>
                     <option value="mysql">MySQL</option>
                     <option value="mariadb">MariaDB</option>
                     <option value="sqlite">SQLite</option>
-                    <option value="mssql">SQL Server (MSSQL)</option>
-                    <option value="oracle">Oracle</option>
-                    <option value="duckdb">DuckDB</option>
-                  </optgroup>
-                  <optgroup label="Cloud & Warehouse">
-                    <option value="cockroachdb">CockroachDB</option>
-                    <option value="redshift">Amazon Redshift</option>
-                    <option value="snowflake">Snowflake</option>
-                    <option value="clickhouse">ClickHouse</option>
-                  </optgroup>
-                  <optgroup label="NoSQL & Key-Value">
-                    <option value="redis">Redis</option>
-                    <option value="mongodb">MongoDB</option>
-                    <option value="cassandra">Cassandra</option>
+                    <option value="cockroachdb">CockroachDB (Postgres wire)</option>
+                    <option value="redshift">Amazon Redshift (Postgres wire)</option>
                   </optgroup>
                 </select>
+                <p className="mt-1 text-[10px] text-textMuted">
+                  MSSQL, Oracle, Snowflake, Redis, MongoDB, DuckDB and others are not implemented in the backend.
+                </p>
               </div>
 
               {!isFileBased && (

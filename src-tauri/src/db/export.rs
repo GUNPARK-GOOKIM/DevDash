@@ -22,12 +22,17 @@ pub struct ExportConfig { // Struct for export parameters
 } // End of ExportConfig struct
 
 // Fetch all rows from a table and convert to JSON value arrays
-async fn fetch_table_data(pool: &AnyPool, table_name: &str) -> Result<(Vec<String>, Vec<Vec<Value>>), String> { // Fetch function
-    let sql = format!("SELECT * FROM {}", table_name); // Build SELECT query string
-    let rows: Vec<AnyRow> = sqlx::query(&sql) // Prepare dynamic query
-        .fetch_all(pool) // Execute and fetch all rows
-        .await // Await database response
-        .map_err(|e| format!("Export fetch failed: {}", e))?; // Map error to string
+async fn fetch_table_data(
+    pool: &AnyPool,
+    table_name: &str,
+    mysql_style: bool,
+) -> Result<(Vec<String>, Vec<Vec<Value>>), String> {
+    let quoted = crate::db::identifiers::quote_table(table_name, mysql_style)?;
+    let sql = format!("SELECT * FROM {}", quoted);
+    let rows: Vec<AnyRow> = sqlx::query(&sql)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Export fetch failed: {}", e))?;
 
     let mut col_names = Vec::new(); // Column names vector
     let mut data_rows = Vec::new(); // Data rows matrix vector
@@ -61,8 +66,13 @@ async fn fetch_table_data(pool: &AnyPool, table_name: &str) -> Result<(Vec<Strin
 } // End fetch_table_data function
 
 // Export table data to CSV format string
-pub async fn export_csv(pool: &AnyPool, table_name: &str, include_headers: bool) -> Result<String, String> { // CSV export function
-    let (cols, rows) = fetch_table_data(pool, table_name).await?; // Fetch table data
+pub async fn export_csv(
+    pool: &AnyPool,
+    table_name: &str,
+    include_headers: bool,
+    mysql_style: bool,
+) -> Result<String, String> {
+    let (cols, rows) = fetch_table_data(pool, table_name, mysql_style).await?;
     let mut output = String::new(); // Initialize output buffer string
 
     if include_headers { // Check if headers should be included
@@ -86,8 +96,12 @@ pub async fn export_csv(pool: &AnyPool, table_name: &str, include_headers: bool)
 } // End export_csv function
 
 // Export table data to JSON array format string
-pub async fn export_json(pool: &AnyPool, table_name: &str) -> Result<String, String> { // JSON export function
-    let (cols, rows) = fetch_table_data(pool, table_name).await?; // Fetch table data
+pub async fn export_json(
+    pool: &AnyPool,
+    table_name: &str,
+    mysql_style: bool,
+) -> Result<String, String> {
+    let (cols, rows) = fetch_table_data(pool, table_name, mysql_style).await?;
     let mut json_rows = Vec::new(); // Initialize JSON objects vector
 
     for row in &rows { // Iterate through data rows
@@ -104,25 +118,46 @@ pub async fn export_json(pool: &AnyPool, table_name: &str) -> Result<String, Str
 } // End export_json function
 
 // Export table data to SQL INSERT dump format string
-pub async fn export_sql_dump(pool: &AnyPool, table_name: &str) -> Result<String, String> { // SQL dump export function
-    let (cols, rows) = fetch_table_data(pool, table_name).await?; // Fetch table data
-    let mut output = String::new(); // Initialize output buffer string
-    let col_list = cols.join(", "); // Join column names for INSERT header
+pub async fn export_sql_dump(
+    pool: &AnyPool,
+    table_name: &str,
+    mysql_style: bool,
+) -> Result<String, String> {
+    let (cols, rows) = fetch_table_data(pool, table_name, mysql_style).await?;
+    let mut output = String::new();
+    let quoted_table = crate::db::identifiers::quote_table(table_name, mysql_style)?;
+    let quoted_cols: Vec<String> = cols
+        .iter()
+        .map(|c| crate::db::identifiers::quote_ident(c, mysql_style))
+        .collect();
+    let col_list = quoted_cols.join(", ");
 
-    for row in &rows { // Iterate through data rows
-        let vals: Vec<String> = row.iter().map(|v| { // Map each cell to SQL literal
-            match v { // Match on value type
-                Value::String(s) => format!("'{}'", s.replace('\'', "''")), // Escape single quotes in strings
-                Value::Null => "NULL".to_string(), // SQL NULL literal
-                Value::Bool(b) => if *b { "TRUE".to_string() } else { "FALSE".to_string() }, // SQL boolean literal
-                other => other.to_string(), // Direct number conversion
-            } // End match
-        }).collect(); // Collect SQL literal strings
-        output.push_str(&format!("INSERT INTO {} ({}) VALUES ({});\n", table_name, col_list, vals.join(", "))); // Format INSERT statement
-    } // End row loop
+    for row in &rows {
+        let vals: Vec<String> = row
+            .iter()
+            .map(|v| match v {
+                Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+                Value::Null => "NULL".to_string(),
+                Value::Bool(b) => {
+                    if *b {
+                        "TRUE".to_string()
+                    } else {
+                        "FALSE".to_string()
+                    }
+                }
+                other => other.to_string(),
+            })
+            .collect();
+        output.push_str(&format!(
+            "INSERT INTO {} ({}) VALUES ({});\n",
+            quoted_table,
+            col_list,
+            vals.join(", ")
+        ));
+    }
 
-    Ok(output) // Return SQL dump string
-} // End export_sql_dump function
+    Ok(output)
+}
 
 // Parse CSV string and return as structured data
 pub fn parse_csv(csv_data: &str, has_headers: bool) -> Result<(Vec<String>, Vec<Vec<String>>), String> { // CSV parser function

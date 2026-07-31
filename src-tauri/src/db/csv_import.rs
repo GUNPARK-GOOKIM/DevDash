@@ -55,13 +55,35 @@ pub fn preview_csv_file(file_path: &Path) -> Result<ImportPreviewPayload, String
     })
 }
 
-pub async fn execute_csv_import(
+fn csv_cell_literal(val: &str) -> String {
+    let trimmed = val.trim();
+    if trimmed.is_empty() {
+        return "NULL".to_string();
+    }
+    if let Ok(num) = trimmed.parse::<i64>() {
+        return num.to_string();
+    }
+    if let Ok(num) = trimmed.parse::<f64>() {
+        return num.to_string();
+    }
+    if trimmed.eq_ignore_ascii_case("true") {
+        return "TRUE".to_string();
+    }
+    if trimmed.eq_ignore_ascii_case("false") {
+        return "FALSE".to_string();
+    }
+    format!("'{}'", trimmed.replace('\'', "''"))
+}
+
+async fn execute_csv_reader<R: std::io::Read>(
     pool: &AnyPool,
     table_name: &str,
-    file_path: &Path,
+    reader: &mut csv::Reader<R>,
+    mysql_style: bool,
 ) -> Result<ImportExecutionResult, String> {
-    let file = File::open(file_path).map_err(|e| format!("Failed to open CSV file: {}", e))?;
-    let mut reader = csv::ReaderBuilder::new().from_reader(file);
+    use crate::db::identifiers::{quote_ident, quote_table, validate_simple_identifier};
+
+    let quoted_table = quote_table(table_name, mysql_style)?;
 
     let headers = reader
         .headers()
@@ -70,14 +92,13 @@ pub async fn execute_csv_import(
         .map(|s| s.to_string())
         .collect::<Vec<_>>();
 
+    for h in &headers {
+        validate_simple_identifier(h).map_err(|e| format!("Invalid CSV header '{}': {}", h, e))?;
+    }
+
     let cols_clause = headers
         .iter()
-        .map(|h| format!("\"{}\"", h))
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    let _placeholders = (1..=headers.len())
-        .map(|idx| format!("${}", idx))
+        .map(|h| quote_ident(h, mysql_style))
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -89,54 +110,44 @@ pub async fn execute_csv_import(
         match record_res {
             Ok(record) => {
                 let row_values: Vec<String> = record.iter().map(|s| s.to_string()).collect();
+                if row_values.len() != headers.len() {
+                    failed_rows.push(FailedRowReport {
+                        row_index: row_num,
+                        raw_data: row_values,
+                        reason: format!(
+                            "Column count mismatch: expected {}, got {}",
+                            headers.len(),
+                            record.len()
+                        ),
+                    });
+                    continue;
+                }
 
-                // Format row into SQL query with escaped literals
                 let vals_clause = row_values
                     .iter()
-                    .map(|val| {
-                        let trimmed = val.trim();
-                        if trimmed.is_empty() {
-                            "NULL".to_string()
-                        } else if let Ok(num) = trimmed.parse::<i64>() {
-                            num.to_string()
-                        } else if let Ok(num) = trimmed.parse::<f64>() {
-                            num.to_string()
-                        } else if trimmed.eq_ignore_ascii_case("true") {
-                            "TRUE".to_string()
-                        } else if trimmed.eq_ignore_ascii_case("false") {
-                            "FALSE".to_string()
-                        } else {
-                            format!("'{}'", trimmed.replace('\'', "''"))
-                        }
-                    })
+                    .map(|val| csv_cell_literal(val))
                     .collect::<Vec<_>>()
                     .join(", ");
 
                 let insert_sql = format!(
-                    "INSERT INTO \"{}\" ({}) VALUES ({});",
-                    table_name, cols_clause, vals_clause
+                    "INSERT INTO {} ({}) VALUES ({});",
+                    quoted_table, cols_clause, vals_clause
                 );
 
                 match pool.execute(insert_sql.as_str()).await {
-                    Ok(_) => {
-                        inserted_count += 1;
-                    }
-                    Err(err) => {
-                        failed_rows.push(FailedRowReport {
-                            row_index: row_num,
-                            raw_data: row_values,
-                            reason: err.to_string(),
-                        });
-                    }
+                    Ok(_) => inserted_count += 1,
+                    Err(err) => failed_rows.push(FailedRowReport {
+                        row_index: row_num,
+                        raw_data: row_values,
+                        reason: err.to_string(),
+                    }),
                 }
             }
-            Err(e) => {
-                failed_rows.push(FailedRowReport {
-                    row_index: row_num,
-                    raw_data: vec![],
-                    reason: e.to_string(),
-                });
-            }
+            Err(e) => failed_rows.push(FailedRowReport {
+                row_index: row_num,
+                raw_data: vec![],
+                reason: e.to_string(),
+            }),
         }
     }
 
@@ -145,6 +156,28 @@ pub async fn execute_csv_import(
         failed_count: failed_rows.len(),
         failed_rows,
     })
+}
+
+pub async fn execute_csv_import(
+    pool: &AnyPool,
+    table_name: &str,
+    file_path: &Path,
+    mysql_style: bool,
+) -> Result<ImportExecutionResult, String> {
+    let file = File::open(file_path).map_err(|e| format!("Failed to open CSV file: {}", e))?;
+    let mut reader = csv::ReaderBuilder::new().from_reader(file);
+    execute_csv_reader(pool, table_name, &mut reader, mysql_style).await
+}
+
+/// Import CSV content provided as a string (used when the UI only has FileReader bytes).
+pub async fn execute_csv_import_content(
+    pool: &AnyPool,
+    table_name: &str,
+    csv_content: &str,
+    mysql_style: bool,
+) -> Result<ImportExecutionResult, String> {
+    let mut reader = csv::ReaderBuilder::new().from_reader(csv_content.as_bytes());
+    execute_csv_reader(pool, table_name, &mut reader, mysql_style).await
 }
 
 #[cfg(test)]
@@ -190,7 +223,9 @@ mod tests {
         assert_eq!(preview.total_rows_estimated, 1000);
 
         // 2. Import execution test
-        let result = execute_csv_import(&pool, "users", &csv_file).await.unwrap();
+        let result = execute_csv_import(&pool, "users", &csv_file, false)
+            .await
+            .unwrap();
         assert_eq!(result.inserted_count, 999);
         assert_eq!(result.failed_count, 1);
         assert_eq!(result.failed_rows[0].row_index, 500);
