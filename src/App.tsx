@@ -173,21 +173,34 @@ export const App: React.FC = () => {
 
   // === CONNECTIONS (PERSISTED) ===
   const [connections, setConnections] = useState<ConnectionConfig[]>(() => {
+    const defaultTestDb: ConnectionConfig = {
+      id: 'conn-test-db',
+      name: 'DevDash Test DB (SQLite)',
+      db_type: 'sqlite',
+      host: 'localhost',
+      port: 0,
+      user: 'local',
+      database: 'e:\\devdash\\devdash_test.db',
+      is_connected: false,
+    };
     const saved = localStorage.getItem('devdash_connections');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          // Strictly purge demo connections
-          return parsed.filter((c: any) =>
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const clean = parsed.filter((c: any) =>
             c.id !== 'conn-1' && c.id !== 'conn-2' && c.id !== 'conn-3' &&
             c.name !== 'production_db_app_main' && c.name !== 'local_test_db' &&
             c.name !== 'staging_cache' && c.name !== 'POSTGRES Connection'
           );
+          if (!clean.some((c: any) => c.id === 'conn-test-db')) {
+            return [defaultTestDb, ...clean];
+          }
+          return clean;
         }
       } catch { }
     }
-    return [];
+    return [defaultTestDb];
   });
   const [activeConnection, setActiveConnection] = useState<ConnectionConfig | null>(null);
 
@@ -349,7 +362,21 @@ export const App: React.FC = () => {
   const [stagedChanges, setStagedChanges] = useState<StagedChange[]>(() => {
     const saved = localStorage.getItem('devdash_staged_changes');
     if (saved) {
-      try { return JSON.parse(saved); } catch { }
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          // Clean legacy mock items so staging tab starts empty unless real edits are staged
+          const clean = parsed.filter(
+            (c: any) =>
+              !c.diffDescription?.includes('$25') &&
+              !c.diffDescription?.includes('$24.99') &&
+              !c.diffDescription?.includes('stock: 48') &&
+              !c.diffDescription?.includes('$60') &&
+              !c.diffDescription?.includes('$10')
+          );
+          return clean;
+        }
+      } catch { }
     }
     return [];
   });

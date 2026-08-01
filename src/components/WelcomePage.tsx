@@ -39,17 +39,28 @@ const DB_META: Record<DbKind, { color: string; label: string; icon: string; port
   turso:       { color: '#4FF8D2', label: 'Turso',        icon: '🚀', port: 0,     category: 'relational' },
 };
 
-// Engines the Rust backend can actually open today
-const MOST_USED_DBS: DbKind[] = ['postgres', 'mysql', 'sqlite', 'mariadb', 'cockroachdb', 'redshift'];
+const ALL_DBS: DbKind[] = [
+  'postgres', 'mysql', 'sqlite', 'mariadb', 'cockroachdb', 'redshift',
+  'mssql', 'oracle', 'snowflake', 'duckdb', 'bigquery', 'turso',
+  'redis', 'mongodb', 'cassandra', 'clickhouse'
+];
+
+const NATIVE_DBS: DbKind[] = ['postgres', 'mysql', 'sqlite', 'mariadb', 'cockroachdb', 'redshift'];
+const RELATIONAL_DBS: DbKind[] = ['postgres', 'mysql', 'sqlite', 'mariadb', 'cockroachdb', 'redshift', 'mssql', 'oracle', 'snowflake', 'duckdb', 'bigquery', 'turso'];
+const NOSQL_CACHE_DBS: DbKind[] = ['redis', 'mongodb', 'cassandra', 'clickhouse'];
 
 const CATEGORY_DBS: Record<string, DbKind[]> = {
-  most_used: MOST_USED_DBS,
-  relational: ['postgres', 'mysql', 'sqlite', 'mariadb', 'cockroachdb', 'redshift'],
+  all: ALL_DBS,
+  relational: RELATIONAL_DBS,
+  nosql_cache: NOSQL_CACHE_DBS,
+  supported: NATIVE_DBS,
 };
 
 const CATEGORIES = [
-  { id: 'most_used', label: '[ Supported ]' },
+  { id: 'all', label: '[ All Databases ]' },
   { id: 'relational', label: '[ Relational (SQL) ]' },
+  { id: 'nosql_cache', label: '[ NoSQL & Caching ]' },
+  { id: 'supported', label: '[ Native Engines ]' },
 ];
 
 // Interactive Spotlight + 3D Tilt Card Component
@@ -150,7 +161,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
 }) => {
   const [search, setSearch] = useState('');
   const [isSearchFocused, setIsSearchFocused] = useState(false);
-  const [activeCategory, setActiveCategory] = useState('most_used');
+  const [activeCategory, setActiveCategory] = useState('all');
   const [deleteConfirm, setDeleteConfirm] = useState<ConnectionConfig | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -164,7 +175,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
   );
 
   // Filter DB cards by active category
-  const filteredDbCards = CATEGORY_DBS[activeCategory] || MOST_USED_DBS;
+  const filteredDbCards = CATEGORY_DBS[activeCategory] || ALL_DBS;
 
   // Stagger container variants
   const containerVariants: Variants = {

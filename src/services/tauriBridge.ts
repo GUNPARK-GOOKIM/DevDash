@@ -110,7 +110,14 @@ export const getDatabaseTables = async (
   connectionId: string,
   dbKind: string
 ): Promise<TableItem[]> => {
-  if (!isTauriAvailable()) return [];
+  if (!isTauriAvailable()) {
+    return [
+      { name: 'users', table_type: 'table' },
+      { name: 'products', table_type: 'table' },
+      { name: 'orders', table_type: 'table' },
+      { name: 'categories', table_type: 'table' },
+    ];
+  }
 
   try {
     return await invoke<TableItem[]>('get_database_tables', {
@@ -128,7 +135,43 @@ export const getTableColumns = async (
   dbKind: string,
   tableName: string
 ): Promise<ColumnItem[]> => {
-  if (!isTauriAvailable()) return [];
+  if (!isTauriAvailable()) {
+    if (tableName === 'users') {
+      return [
+        { name: 'id', data_type: 'INTEGER', is_nullable: false, is_primary_key: true },
+        { name: 'username', data_type: 'TEXT', is_nullable: false, is_primary_key: false },
+        { name: 'email', data_type: 'TEXT', is_nullable: false, is_primary_key: false },
+        { name: 'role', data_type: 'TEXT', is_nullable: true, is_primary_key: false },
+        { name: 'status', data_type: 'TEXT', is_nullable: true, is_primary_key: false },
+        { name: 'created_at', data_type: 'TIMESTAMP', is_nullable: true, is_primary_key: false },
+      ];
+    }
+    if (tableName === 'products') {
+      return [
+        { name: 'id', data_type: 'INTEGER', is_nullable: false, is_primary_key: true },
+        { name: 'category_id', data_type: 'INTEGER', is_nullable: true, is_primary_key: false },
+        { name: 'name', data_type: 'TEXT', is_nullable: false, is_primary_key: false },
+        { name: 'price', data_type: 'REAL', is_nullable: false, is_primary_key: false },
+        { name: 'stock', data_type: 'INTEGER', is_nullable: true, is_primary_key: false },
+        { name: 'is_active', data_type: 'INTEGER', is_nullable: true, is_primary_key: false },
+      ];
+    }
+    if (tableName === 'orders') {
+      return [
+        { name: 'id', data_type: 'INTEGER', is_nullable: false, is_primary_key: true },
+        { name: 'user_id', data_type: 'INTEGER', is_nullable: false, is_primary_key: false },
+        { name: 'product_id', data_type: 'INTEGER', is_nullable: false, is_primary_key: false },
+        { name: 'quantity', data_type: 'INTEGER', is_nullable: true, is_primary_key: false },
+        { name: 'total_amount', data_type: 'REAL', is_nullable: false, is_primary_key: false },
+        { name: 'order_date', data_type: 'TIMESTAMP', is_nullable: true, is_primary_key: false },
+      ];
+    }
+    return [
+      { name: 'id', data_type: 'INTEGER', is_nullable: false, is_primary_key: true },
+      { name: 'name', data_type: 'TEXT', is_nullable: false, is_primary_key: false },
+      { name: 'description', data_type: 'TEXT', is_nullable: true, is_primary_key: false },
+    ];
+  }
 
   try {
     return await invoke<ColumnItem[]>('get_table_columns', {
@@ -167,16 +210,64 @@ export const runSqlQuery = async (
   sql: string
 ): Promise<QueryResultPayload> => {
   if (!isTauriAvailable()) {
-    // Return mock payload for browser mode
+    const lower = sql.toLowerCase();
+    if (lower.includes('from users')) {
+      return {
+        columns: [
+          { name: 'id', type_name: 'INTEGER' },
+          { name: 'username', type_name: 'TEXT' },
+          { name: 'email', type_name: 'TEXT' },
+          { name: 'role', type_name: 'TEXT' },
+          { name: 'status', type_name: 'TEXT' },
+        ],
+        rows: [
+          [1, 'alice_dev', 'alice@devdash.io', 'admin', 'active'],
+          [2, 'bob_lead', 'bob@devdash.io', 'lead_engineer', 'active'],
+          [3, 'charlie_qa', 'charlie@devdash.io', 'qa_engineer', 'active'],
+          [4, 'david_pm', 'david@devdash.io', 'product_manager', 'inactive'],
+          [5, 'eva_security', 'eva@devdash.io', 'security_auditor', 'active'],
+        ],
+        execution_time_ms: 8,
+        affected_rows: 5,
+      };
+    }
+    if (lower.includes('from orders')) {
+      return {
+        columns: [
+          { name: 'id', type_name: 'INTEGER' },
+          { name: 'user_id', type_name: 'INTEGER' },
+          { name: 'product_id', type_name: 'INTEGER' },
+          { name: 'quantity', type_name: 'INTEGER' },
+          { name: 'total_amount', type_name: 'REAL' },
+        ],
+        rows: [
+          [101, 1, 1, 2, 99.98],
+          [102, 2, 2, 1, 299.99],
+          [103, 3, 4, 3, 106.50],
+          [104, 4, 5, 1, 89.00],
+          [105, 5, 3, 2, 240.00],
+        ],
+        execution_time_ms: 10,
+        affected_rows: 5,
+      };
+    }
     return {
       columns: [
         { name: 'id', type_name: 'INTEGER' },
-        { name: 'statement', type_name: 'TEXT' },
-        { name: 'status', type_name: 'VARCHAR' },
+        { name: 'name', type_name: 'TEXT' },
+        { name: 'price', type_name: 'REAL' },
+        { name: 'stock', type_name: 'INTEGER' },
+        { name: 'is_active', type_name: 'INTEGER' },
       ],
-      rows: [[1, sql, 'EXECUTED (BROWSER MOCK)']],
-      execution_time_ms: 12,
-      affected_rows: 1,
+      rows: [
+        [1, 'DevDash Pro Desktop License', 49.99, 500, 1],
+        [2, 'DevDash Enterprise Server', 299.99, 50, 1],
+        [3, 'Postgres High-Availability Cluster', 120.00, 20, 1],
+        [4, 'Redis In-Memory Cache Node', 35.50, 100, 1],
+        [5, 'SOC2 Compliance Audit Reporter', 89.00, 150, 1],
+      ],
+      execution_time_ms: 9,
+      affected_rows: 5,
     };
   }
 
@@ -499,12 +590,106 @@ export const deleteSecret = async (account: string): Promise<void> => {
   }
 };
 
+async function webAesEncrypt(payloadObj: any, passphrase: string): Promise<string> {
+  const enc = new TextEncoder();
+  const jsonBytes = enc.encode(JSON.stringify(payloadObj));
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(passphrase),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveKey']
+  );
+
+  const key = await crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt,
+      iterations: 100000,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: nonce },
+    key,
+    jsonBytes
+  );
+
+  const toB64 = (arr: Uint8Array) => btoa(String.fromCharCode(...arr));
+  return JSON.stringify({
+    salt_b64: toB64(salt),
+    nonce_b64: toB64(nonce),
+    ciphertext_b64: toB64(new Uint8Array(ciphertext)),
+    kdf_iters: 100000,
+  });
+}
+
+async function webAesDecrypt(encryptedJsonStr: string, passphrase: string): Promise<any> {
+  const enc = new TextEncoder();
+  const fileObj = JSON.parse(encryptedJsonStr);
+  const fromB64 = (b64: string) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+
+  const salt = fromB64(fileObj.salt_b64);
+  const nonce = fromB64(fileObj.nonce_b64);
+  const ciphertext = fromB64(fileObj.ciphertext_b64);
+  const iters = fileObj.kdf_iters || 100000;
+
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(passphrase),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveKey']
+  );
+
+  const key = await crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt,
+      iterations: iters,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+
+  const decryptedBytes = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: nonce },
+    key,
+    ciphertext
+  );
+
+  const dec = new TextDecoder();
+  return JSON.parse(dec.decode(decryptedBytes));
+}
+
 export const exportConnectionsToText = async (
   connectionIds?: string[],
   passphrase?: string
 ): Promise<string> => {
   if (!isTauriAvailable()) {
-    throw new Error('Native Tauri app is required for encrypted profile exports');
+    const saved = localStorage.getItem('devdash_connections');
+    const allConns = saved ? JSON.parse(saved) : [];
+    const filtered = connectionIds
+      ? allConns.filter((c: any) => connectionIds.includes(c.id))
+      : allConns;
+    const payload = {
+      connections: filtered,
+      saved_queries: [],
+      exported_at: new Date().toISOString(),
+      version: '1.0',
+    };
+    return await webAesEncrypt(payload, passphrase || '');
   }
   return await invoke<string>('export_connections_to_text', {
     connectionIds: connectionIds || null,
@@ -517,7 +702,19 @@ export const importConnectionsFromText = async (
   passphrase?: string
 ): Promise<any> => {
   if (!isTauriAvailable()) {
-    throw new Error('Native Tauri app is required for encrypted profile imports');
+    const payload = await webAesDecrypt(encryptedPayload, passphrase || '');
+    if (payload?.connections && Array.isArray(payload.connections)) {
+      const saved = localStorage.getItem('devdash_connections');
+      const existing = saved ? JSON.parse(saved) : [];
+      const merged = [...existing];
+      for (const newConn of payload.connections) {
+        if (!merged.some((c: any) => c.id === newConn.id || c.name === newConn.name)) {
+          merged.push(newConn);
+        }
+      }
+      localStorage.setItem('devdash_connections', JSON.stringify(merged));
+    }
+    return payload;
   }
   return await invoke<any>('import_connections_from_text', {
     encryptedPayload,
