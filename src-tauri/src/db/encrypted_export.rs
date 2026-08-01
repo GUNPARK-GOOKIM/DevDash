@@ -183,6 +183,62 @@ pub async fn import_connections_and_queries(
     Ok(payload)
 }
 
+pub async fn export_connections_to_string(
+    storage: &AppStorage,
+    connection_ids: Option<Vec<String>>,
+    passphrase: &str,
+) -> Result<String, String> {
+    let all_conns = storage.list_connection_profiles().await?;
+    let filtered_conns = if let Some(ids) = connection_ids {
+        all_conns.into_iter().filter(|c| ids.contains(&c.id)).collect()
+    } else {
+        all_conns
+    };
+    let saved_queries = storage.list_all_queries().await?;
+
+    let payload = ExportPayload {
+        connections: filtered_conns,
+        saved_queries,
+        exported_at: chrono::Utc::now().to_rfc3339(),
+        version: "1.0".to_string(),
+    };
+
+    let encrypted = encrypt_export_payload(&payload, passphrase)?;
+    serde_json::to_string(&encrypted)
+        .map_err(|e| format!("Failed to serialize encrypted payload: {}", e))
+}
+
+pub async fn import_connections_from_string(
+    storage: &AppStorage,
+    encrypted_str: &str,
+    passphrase: &str,
+) -> Result<ExportPayload, String> {
+    let encrypted_file: EncryptedExportFile = serde_json::from_str(encrypted_str.trim())
+        .map_err(|e| format!("Invalid encrypted payload format: {}", e))?;
+
+    let payload = decrypt_export_payload(&encrypted_file, passphrase)?;
+
+    for conn in &payload.connections {
+        let _ = storage
+            .save_connection_profile(
+                &conn.name,
+                &conn.db_type,
+                &conn.host,
+                conn.port,
+                &conn.user,
+                &conn.database,
+                conn.project_path.as_deref(),
+            )
+            .await;
+    }
+
+    for q in &payload.saved_queries {
+        let _ = storage.save_query(&q.name, &q.sql_content, &q.project_path).await;
+    }
+
+    Ok(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

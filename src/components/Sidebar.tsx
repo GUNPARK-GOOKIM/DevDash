@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { ConnectionConfig, TableItem } from '../types';
-import { Database, Table, Plus, Search, Server, FolderGit2, CheckCircle2, Home, LogOut, Trash2, AlertTriangle, X } from 'lucide-react';
+import { Database, Table, Plus, Search, Server, FolderGit2, CheckCircle2, Home, LogOut, Trash2, AlertTriangle, X, Share2 } from 'lucide-react';
 
 interface SidebarProps {
   connections: ConnectionConfig[];
@@ -12,6 +12,7 @@ interface SidebarProps {
   onOpenNewConnectionModal: () => void;
   onDisconnect?: () => void;
   onDeleteConnection?: (id: string) => void;
+  onShareConnection?: (conn: ConnectionConfig) => void;
   currentProjectPath: string;
 }
 
@@ -24,6 +25,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenNewConnectionModal,
   onDisconnect,
   onDeleteConnection,
+  onShareConnection,
   currentProjectPath,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
@@ -130,6 +132,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 </div>
                 <div className="flex items-center space-x-1">
                   {isSelected && <CheckCircle2 className="w-3.5 h-3.5 text-accent shrink-0" />}
+                  {onShareConnection && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onShareConnection(conn);
+                      }}
+                      className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-accent/20 text-textMuted hover:text-accent transition-all shrink-0"
+                      title={`Share ${conn.name} securely`}
+                    >
+                      <Share2 className="w-3 h-3" />
+                    </button>
+                  )}
                   {onDeleteConnection && (
                     <button
                       onClick={(e) => {

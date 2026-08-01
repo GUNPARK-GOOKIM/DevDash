@@ -28,7 +28,8 @@ use crate::db::csv_import::{
     ImportPreviewPayload,
 };
 use crate::db::encrypted_export::{
-    export_connections_and_queries, import_connections_and_queries, ExportPayload,
+    export_connections_and_queries, export_connections_to_string, import_connections_and_queries,
+    import_connections_from_string, ExportPayload,
 }; // Import AES-256 encrypted export engine
 use crate::db::ssh_tunnel::{SshConfigPayload, SshTunnelManager}; // Import SSH tunnel manager and types
 use crate::db::audit::{self, AuditEntry}; // Import audit trail logger
@@ -597,6 +598,26 @@ pub async fn import_encrypted_data(
     state: State<'_, AppState>,
 ) -> Result<ExportPayload, String> {
     import_connections_and_queries(&state.storage, std::path::Path::new(&import_path), &passphrase).await
+}
+
+// IPC Command: Export connections and queries as AES-256 encrypted text string
+#[tauri::command]
+pub async fn export_connections_to_text(
+    connection_ids: Option<Vec<String>>,
+    passphrase: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    export_connections_to_string(&state.storage, connection_ids, &passphrase).await
+}
+
+// IPC Command: Import connections and queries from AES-256 encrypted text string
+#[tauri::command]
+pub async fn import_connections_from_text(
+    encrypted_payload: String,
+    passphrase: String,
+    state: State<'_, AppState>,
+) -> Result<ExportPayload, String> {
+    import_connections_from_string(&state.storage, &encrypted_payload, &passphrase).await
 }
 
 // IPC Command: Protocol-level query cancellation (pg_cancel_backend / KILL QUERY)

@@ -96,6 +96,8 @@ pub fn run() { // Entry point library run function for Tauri application
             commands::import_csv_content,
             commands::export_encrypted_data,
             commands::import_encrypted_data,
+            commands::export_connections_to_text,
+            commands::import_connections_from_text,
             commands::get_audit_log,
             commands::save_secret,
             commands::get_secret,

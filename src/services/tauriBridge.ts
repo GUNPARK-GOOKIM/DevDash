@@ -499,3 +499,30 @@ export const deleteSecret = async (account: string): Promise<void> => {
   }
 };
 
+export const exportConnectionsToText = async (
+  connectionIds?: string[],
+  passphrase?: string
+): Promise<string> => {
+  if (!isTauriAvailable()) {
+    throw new Error('Native Tauri app is required for encrypted profile exports');
+  }
+  return await invoke<string>('export_connections_to_text', {
+    connectionIds: connectionIds || null,
+    passphrase: passphrase || '',
+  });
+};
+
+export const importConnectionsFromText = async (
+  encryptedPayload: string,
+  passphrase?: string
+): Promise<any> => {
+  if (!isTauriAvailable()) {
+    throw new Error('Native Tauri app is required for encrypted profile imports');
+  }
+  return await invoke<any>('import_connections_from_text', {
+    encryptedPayload,
+    passphrase: passphrase || '',
+  });
+};
+
+

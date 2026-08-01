@@ -26,6 +26,8 @@ import { MockDataGenerator } from './components/MockDataGenerator';
 import { AuditLoggerModal } from './components/AuditLoggerModal';
 import { SchemaDiffModal } from './components/SchemaDiffModal';
 import { PiiMaskingConfig } from './components/PiiMaskingConfig';
+import { SecureShareModal } from './components/SecureShareModal';
+import { SecureImportModal } from './components/SecureImportModal';
 import {
   ConnectionConfig,
   DbKind,
@@ -42,7 +44,7 @@ import {
 import {
   X, Plus, Terminal, Table as TableIcon, Layers, Download, Upload,
   GitBranch, Activity, Network, Shield, Clock, Wand2, Search, Sparkles, Settings,
-  Database, Cpu,
+  Database, Cpu, Share2,
 } from 'lucide-react';
 import { Tooltip } from './components/Tooltip';
 import {
@@ -366,6 +368,9 @@ export const App: React.FC = () => {
   const [isConnModalOpen, setIsConnModalOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isSecureShareModalOpen, setIsSecureShareModalOpen] = useState(false);
+  const [isSecureImportModalOpen, setIsSecureImportModalOpen] = useState(false);
+  const [shareTargetConnId, setShareTargetConnId] = useState<string | undefined>(undefined);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
   const [isSchemaDiffModalOpen, setIsSchemaDiffModalOpen] = useState(false);
   const [isPiiConfigModalOpen, setIsPiiConfigModalOpen] = useState(false);
@@ -825,6 +830,10 @@ export const App: React.FC = () => {
         }}
         onDisconnect={() => { setActiveConnection(null); setShowWelcome(true); }}
         onDeleteConnection={handleDeleteConnection}
+        onShareConnection={(conn) => {
+          setShareTargetConnId(conn.id);
+          setIsSecureShareModalOpen(true);
+        }}
         currentProjectPath={currentProjectPath}
       />
 
@@ -848,14 +857,37 @@ export const App: React.FC = () => {
             aiConfig={aiConfig}
           />
 
-          {/* Right: Settings icon */}
-          <button
-            onClick={() => setIsSettingsOpen(true)}
-            className="text-textMuted hover:text-text transition-colors p-1.5 rounded-lg hover:bg-surface2"
-            title="Preferences & Settings (Cmd+,)"
-          >
-            <Settings className="w-4 h-4" />
-          </button>
+          {/* Right: Actions & Settings icons */}
+          <div className="flex items-center space-x-1">
+            <button
+              onClick={() => {
+                setShareTargetConnId(undefined);
+                setIsSecureShareModalOpen(true);
+              }}
+              className="text-textMuted hover:text-text transition-colors p-1.5 rounded-lg hover:bg-surface2 flex items-center space-x-1 text-xs"
+              title="Share Connections via Encrypted Text / QR Code"
+            >
+              <Share2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Share</span>
+            </button>
+
+            <button
+              onClick={() => setIsSecureImportModalOpen(true)}
+              className="text-textMuted hover:text-text transition-colors p-1.5 rounded-lg hover:bg-surface2 flex items-center space-x-1 text-xs"
+              title="Import Shared Connection Payload"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Import Shared</span>
+            </button>
+
+            <button
+              onClick={() => setIsSettingsOpen(true)}
+              className="text-textMuted hover:text-text transition-colors p-1.5 rounded-lg hover:bg-surface2"
+              title="Preferences & Settings (Cmd+,)"
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* TAB BAR */}
@@ -1192,6 +1224,26 @@ export const App: React.FC = () => {
         onSaveRules={(rules) => {
           setPiiRules(rules);
           localStorage.setItem('devdash_pii_rules', JSON.stringify(rules));
+        }}
+      />
+
+      <SecureShareModal
+        isOpen={isSecureShareModalOpen}
+        onClose={() => setIsSecureShareModalOpen(false)}
+        connections={connections}
+        initialSelectedId={shareTargetConnId}
+      />
+
+      <SecureImportModal
+        isOpen={isSecureImportModalOpen}
+        onClose={() => setIsSecureImportModalOpen(false)}
+        onImportSuccess={async () => {
+          try {
+            const saved = localStorage.getItem('devdash_connections');
+            if (saved) {
+              setConnections(JSON.parse(saved));
+            }
+          } catch { /* ignore */ }
         }}
       />
 
