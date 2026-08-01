@@ -59,6 +59,27 @@
   border-radius: 8px;
 }
 
+/* Mobile & Touch Utilities */
+@media (max-width: 768px) {
+  .touch-scroll {
+    -webkit-overflow-scrolling: touch;
+    overflow-y: auto;
+  }
+
+  button, input, select, textarea {
+    touch-action: manipulation;
+  }
+
+  /* Safe Area Insets for iOS Notch / Dynamic Island */
+  .safe-area-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 16px);
+  }
+
+  .safe-area-top {
+    padding-top: env(safe-area-inset-top, 16px);
+  }
+}
+
 /* Row Hover Micro-interaction */
 .grid-row-transition {
   transition: background-color 120ms ease;

@@ -28,6 +28,8 @@ import { SchemaDiffModal } from './components/SchemaDiffModal';
 import { PiiMaskingConfig } from './components/PiiMaskingConfig';
 import { SecureShareModal } from './components/SecureShareModal';
 import { SecureImportModal } from './components/SecureImportModal';
+import { useIsMobile } from './hooks/useMediaQuery';
+import { MobileViewport } from './components/mobile/MobileViewport';
 import {
   ConnectionConfig,
   DbKind,
@@ -66,6 +68,7 @@ import {
 
 export const App: React.FC = () => {
   const currentProjectPath = 'local';
+  const isMobile = useIsMobile();
 
   // === SETTINGS STATE ===
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -876,6 +879,83 @@ export const App: React.FC = () => {
           onGeneralSettingsChange={handleGeneralSettingsChange}
         />
       </div>
+    );
+  }
+
+  if (isMobile) {
+    return (
+      <MobileViewport
+        connections={connections}
+        activeConnection={activeConnection}
+        tables={tables}
+        stagedCount={stagedChanges.length}
+        onSelectConnection={async (conn) => {
+          await handleWelcomeConnect(conn);
+        }}
+        onSelectTable={handleOpenTableTab}
+        onOpenNewConnectionModal={() => {
+          setSelectedDbKind(undefined);
+          setIsConnModalOpen(true);
+        }}
+        onShareConnection={(conn) => {
+          setShareTargetConnId(conn.id);
+          setIsSecureShareModalOpen(true);
+        }}
+        onOpenImportShared={() => setIsSecureImportModalOpen(true)}
+        onOpenSettings={() => setIsSettingsOpen(true)}
+      >
+        {/* Essential Mobile Workspace View */}
+        <div className="flex flex-col h-full overflow-hidden p-2 space-y-2">
+          {/* Active Table Title / Quick Filter */}
+          <div className="flex items-center justify-between px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg shrink-0">
+            <span className="text-xs font-semibold text-slate-200 truncate">
+              {activeTab.tableName ? `Table: ${activeTab.tableName}` : activeTab.title}
+            </span>
+            <span className="text-[10px] text-indigo-400 font-mono px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/20">
+              {activeConnection?.db_type || 'sqlite'}
+            </span>
+          </div>
+
+          {/* Virtual Data Grid / Query View */}
+          <div className="flex-1 overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
+            {activeTab.type === 'browser' ? (
+              <TableGrid
+                tableName={activeTab.tableName || 'users'}
+                columns={columns}
+                rows={displayRows}
+                pkInfo={pkInfo}
+                stagedEdits={stagedEdits}
+                onStageEdit={handleStageEdit}
+                onApplyEdits={() => setActiveTabId('tab-staging')}
+                onResetEdits={() => setStagedEdits([])}
+                currentPage={currentPage}
+                onPageChange={setCurrentPage}
+                isLoading={false}
+                piiRules={piiRules}
+              />
+            ) : (
+              <SqlEditor
+                initialSql={activeTab.sql || ''}
+                onRunQuery={handleRunQueryWithSafeMode}
+                queryResult={queryResult}
+                isLoading={false}
+                onSaveQuery={(name, sql) => {
+                  setSavedQueries((prev) => [
+                    ...prev,
+                    {
+                      id: `sq-${Date.now()}`,
+                      name,
+                      sql_content: sql,
+                      project_path: currentProjectPath,
+                      created_at: new Date().toISOString(),
+                    },
+                  ]);
+                }}
+              />
+            )}
+          </div>
+        </div>
+      </MobileViewport>
     );
   }
 
