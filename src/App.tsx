@@ -358,6 +358,20 @@ export const App: React.FC = () => {
     localStorage.setItem('devdash_active_tab_id', activeTabId);
   }, [activeTabId]);
 
+  // Auto-fetch tables when activeConnection is set but tables list is empty
+  useEffect(() => {
+    if (activeConnection?.id && tables.length === 0) {
+      (async () => {
+        try {
+          const list = await getDatabaseTables(activeConnection.id, activeConnection.db_type);
+          if (list && list.length > 0) {
+            setTables(list);
+          }
+        } catch { /* ignore */ }
+      })();
+    }
+  }, [activeConnection?.id, activeConnection?.db_type, tables.length]);
+
   // === STAGED CHANGES (PERSISTED) ===
   const [stagedChanges, setStagedChanges] = useState<StagedChange[]>(() => {
     const saved = localStorage.getItem('devdash_staged_changes');
@@ -478,8 +492,16 @@ export const App: React.FC = () => {
       const payload = await runSqlQuery(connId, sql);
       setQueryResult(payload);
 
-      // Convert rows payload to objects if column descriptors match
+      // Convert rows payload to objects and sync columns state
       if (payload.columns && payload.rows) {
+        const mappedCols: ColumnItem[] = payload.columns.map((col: any) => ({
+          name: col.name,
+          data_type: col.type_name || col.data_type || 'TEXT',
+          is_nullable: true,
+          is_primary_key: col.name === 'id',
+        }));
+        setColumns(mappedCols);
+
         const objRows = payload.rows.map(r => {
           const obj: Record<string, any> = {};
           payload.columns.forEach((col, idx) => {
@@ -665,6 +687,24 @@ export const App: React.FC = () => {
       }
     }
   }, [tabs, activeConnection, executeSqlQuery]);
+
+  // Auto-fetch columns and rows when active browser tab changes or reloads
+  useEffect(() => {
+    const currentTab = tabs.find((t) => t.id === activeTabId);
+    if (currentTab?.type === 'browser' && currentTab?.tableName && activeConnection) {
+      (async () => {
+        try {
+          const [fetchedCols, fetchedPk] = await Promise.all([
+            getTableColumns(activeConnection.id, activeConnection.db_type, currentTab.tableName!),
+            getPkAnalysis(activeConnection.id, activeConnection.db_type, currentTab.tableName!),
+          ]);
+          if (fetchedCols && fetchedCols.length > 0) setColumns(fetchedCols);
+          if (fetchedPk) setPkInfo(fetchedPk);
+          executeSqlQuery(`SELECT * FROM ${currentTab.tableName} LIMIT 1000;`);
+        } catch { /* ignore */ }
+      })();
+    }
+  }, [activeTabId, activeConnection?.id]);
 
   const handleOpenNewQueryTab = useCallback(() => {
     const newId = `tab-${Date.now()}`;
