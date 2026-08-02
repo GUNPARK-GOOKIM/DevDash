@@ -1,7 +1,10 @@
-import React, { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
-import { ConnectionConfig, TableItem } from '../types';
-import { Database, Table, Plus, Search, Server, FolderGit2, CheckCircle2, Home, LogOut, Trash2, AlertTriangle, X, Share2 } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { ConnectionConfig, TableItem, objectKey, isViewObject } from '../types';
+import {
+  Table, Plus, Search, Server, FolderGit2, CheckCircle2, Home, Trash2,
+  AlertTriangle, Share2, ChevronRight, ChevronDown, Eye, Layers, Box,
+} from 'lucide-react';
 
 interface SidebarProps {
   connections: ConnectionConfig[];
@@ -14,6 +17,14 @@ interface SidebarProps {
   onDeleteConnection?: (id: string) => void;
   onShareConnection?: (conn: ConnectionConfig) => void;
   currentProjectPath: string;
+  /** Currently open browser object key (qualified name) for highlight */
+  activeObjectKey?: string;
+}
+
+interface SchemaGroup {
+  schema: string;
+  tables: TableItem[];
+  views: TableItem[];
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -27,31 +38,75 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDeleteConnection,
   onShareConnection,
   currentProjectPath,
+  activeObjectKey,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<ConnectionConfig | null>(null);
+  const [expandedSchemas, setExpandedSchemas] = useState<Record<string, boolean>>({});
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
 
-  // UX5: 100ms Debounce for real-time filter search
   useEffect(() => {
-    const handler = setTimeout(() => {
-      setDebouncedSearch(searchTerm);
-    }, 100);
+    const handler = setTimeout(() => setDebouncedSearch(searchTerm), 100);
     return () => clearTimeout(handler);
   }, [searchTerm]);
+
+  // Auto-expand all schemas when table list changes (first load / reconnect)
+  useEffect(() => {
+    const schemas = new Set(tables.map((t) => t.schema || 'main'));
+    setExpandedSchemas((prev) => {
+      const next = { ...prev };
+      schemas.forEach((s) => {
+        if (next[s] === undefined) next[s] = true;
+      });
+      return next;
+    });
+    setExpandedFolders((prev) => {
+      const next = { ...prev };
+      schemas.forEach((s) => {
+        if (next[`${s}:tables`] === undefined) next[`${s}:tables`] = true;
+        if (next[`${s}:views`] === undefined) next[`${s}:views`] = true;
+      });
+      return next;
+    });
+  }, [tables]);
 
   const isConnMatch = (name: string) => {
     if (!debouncedSearch) return true;
     return name.toLowerCase().includes(debouncedSearch.toLowerCase());
   };
 
-  const isTableMatch = (name: string) => {
+  const matchesSearch = (t: TableItem) => {
     if (!debouncedSearch) return true;
-    return name.toLowerCase().includes(debouncedSearch.toLowerCase());
+    const q = debouncedSearch.toLowerCase();
+    return (
+      t.name.toLowerCase().includes(q) ||
+      (t.schema || '').toLowerCase().includes(q) ||
+      (t.qualified_name || '').toLowerCase().includes(q) ||
+      (t.table_type || '').toLowerCase().includes(q)
+    );
   };
 
-  // Reconnect: show brief connecting state, then invoke real parent handler
+  const schemaGroups: SchemaGroup[] = useMemo(() => {
+    const map = new Map<string, SchemaGroup>();
+    for (const t of tables) {
+      if (!matchesSearch(t)) continue;
+      const schema = t.schema || 'main';
+      if (!map.has(schema)) {
+        map.set(schema, { schema, tables: [], views: [] });
+      }
+      const g = map.get(schema)!;
+      if (isViewObject(t)) g.views.push(t);
+      else g.tables.push(t);
+    }
+    return Array.from(map.values()).sort((a, b) => a.schema.localeCompare(b.schema));
+  }, [tables, debouncedSearch]);
+
+  const tableCount = tables.filter((t) => !isViewObject(t)).length;
+  const viewCount = tables.filter((t) => isViewObject(t)).length;
+  const multiSchema = schemaGroups.length > 1;
+
   const handleConnClick = (conn: ConnectionConfig) => {
     if (activeConnection?.id === conn.id) return;
     setConnectingId(conn.id);
@@ -60,9 +115,37 @@ export const Sidebar: React.FC<SidebarProps> = ({
     });
   };
 
+  const toggleSchema = (schema: string) => {
+    setExpandedSchemas((prev) => ({ ...prev, [schema]: !prev[schema] }));
+  };
+
+  const toggleFolder = (key: string) => {
+    setExpandedFolders((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const renderObjectButton = (t: TableItem, kind: 'table' | 'view') => {
+    const key = objectKey(t);
+    const isActive = activeObjectKey === key;
+    const Icon = kind === 'view' ? Eye : Table;
+    return (
+      <button
+        key={key}
+        onClick={() => onSelectTable(key)}
+        className={`w-full flex items-center space-x-2 px-2 py-1 rounded text-[12px] font-sans transition-all text-left ${
+          isActive
+            ? 'bg-accent/15 text-accent font-medium'
+            : 'text-text hover:text-text hover:bg-surface2'
+        }`}
+        title={key}
+      >
+        <Icon className={`w-3.5 h-3.5 shrink-0 ${kind === 'view' ? 'text-sky-400' : 'text-textMuted'}`} />
+        <span className="truncate font-mono text-[12px]">{t.name}</span>
+      </button>
+    );
+  };
+
   return (
-    <aside className="w-60 glass-sidebar flex flex-col h-full z-10 select-none font-sans text-text">
-      {/* TablePlus style compact header with DevDash Logo */}
+    <aside className="w-64 glass-sidebar flex flex-col h-full z-10 select-none font-sans text-text">
       <div className="h-11 px-3 flex items-center justify-between bg-transparent border-b border-border shrink-0">
         <div className="flex items-center space-x-2">
           <img src="/logo.png" alt="DevDash" className="w-6 h-6 object-contain rounded-full" />
@@ -77,7 +160,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
       </div>
 
-      {/* Project Folder Indicator */}
       <div className="px-3 py-1.5 bg-transparent border-b border-border flex items-center space-x-1.5 text-[11px] text-textMuted shrink-0">
         <FolderGit2 className="w-3.5 h-3.5 text-accent shrink-0" />
         <span className="truncate font-sans text-[11px]" title={currentProjectPath}>
@@ -85,7 +167,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </span>
       </div>
 
-      {/* Connection Picker inside Bento Card */}
+      {/* Connections */}
       <div className="m-2 p-2 bento-card flex flex-col shrink-0">
         <div className="text-[10px] font-semibold text-textMuted uppercase tracking-wider mb-1.5 px-1 font-sans">
           Connections
@@ -95,14 +177,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
             const isSelected = activeConnection?.id === conn.id;
             const isConnecting = connectingId === conn.id;
             const matched = isConnMatch(conn.name);
-
-            // UX6: status color dot mapping
             let dotColor = 'bg-gray-500';
-            if (isSelected) {
-              dotColor = 'bg-success';
-            } else if (isConnecting) {
-              dotColor = 'bg-warning animate-pulse';
-            }
+            if (isSelected) dotColor = 'bg-success';
+            else if (isConnecting) dotColor = 'bg-warning animate-pulse';
 
             return (
               <motion.div
@@ -118,7 +195,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 onClick={() => handleConnClick(conn)}
               >
                 <div className="flex items-center space-x-2 truncate">
-                  {/* Status dot with live pulse ring when selected */}
                   {isSelected ? (
                     <div className="relative flex h-2.5 w-2.5 items-center justify-center shrink-0">
                       <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
@@ -163,47 +239,142 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
 
-      {/* Search and Tables List inside Bento Card */}
+      {/* Schema Object Explorer */}
       <div className="flex-1 m-2 mt-0 p-2 bento-card flex flex-col min-h-0">
-        {/* Table Quick Filter */}
         <div className="mb-2 shrink-0">
           <div className="relative">
             <Search className="w-3.5 h-3.5 text-textMuted absolute left-2 top-2" />
             <input
               type="text"
-              placeholder="Filter items..."
+              placeholder="Filter schemas, tables, views…"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full bg-base border border-border rounded px-2 pl-7 py-1 text-[13px] text-text placeholder-textMuted outline-none focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-2 font-sans"
             />
           </div>
+          <div className="flex items-center space-x-2 mt-1.5 px-1 text-[10px] text-textMuted">
+            <span className="flex items-center space-x-1">
+              <Table className="w-3 h-3" />
+              <span>{tableCount} tables</span>
+            </span>
+            <span className="flex items-center space-x-1">
+              <Eye className="w-3 h-3 text-sky-400" />
+              <span>{viewCount} views</span>
+            </span>
+            {multiSchema && (
+              <span className="flex items-center space-x-1">
+                <Layers className="w-3 h-3 text-accent" />
+                <span>{schemaGroups.length} schemas</span>
+              </span>
+            )}
+          </div>
         </div>
 
-        {/* Tables Explorer */}
         <div className="flex-1 overflow-y-auto px-0.5">
-          <div className="px-1 py-1 text-[10px] font-semibold text-textMuted uppercase tracking-wider font-sans mb-1">
-            Tables ({tables.length})
-          </div>
-          <div className="space-y-0.5">
-            {tables.map((tbl) => {
-              const matched = isTableMatch(tbl.name);
-              return (
-                <button
-                  key={tbl.name}
-                  onClick={() => onSelectTable(tbl.name)}
-                  className="w-full flex items-center space-x-2 px-2 py-1 rounded text-[13px] font-sans text-text hover:text-text hover:bg-surface2 transition-all text-left"
-                  style={{ opacity: matched ? 1 : 0.3 }}
-                >
-                  <Table className="w-3.5 h-3.5 text-textMuted shrink-0" />
-                  <span className="truncate">{tbl.name}</span>
-                </button>
-              );
-            })}
-          </div>
+          {!activeConnection && (
+            <div className="px-2 py-6 text-center text-[11px] text-textMuted">
+              Connect to a database to browse objects
+            </div>
+          )}
+          {activeConnection && tables.length === 0 && (
+            <div className="px-2 py-6 text-center text-[11px] text-textMuted">
+              No tables or views found
+            </div>
+          )}
+
+          {schemaGroups.map((group) => {
+            const schemaOpen = expandedSchemas[group.schema] !== false;
+            const tablesKey = `${group.schema}:tables`;
+            const viewsKey = `${group.schema}:views`;
+            const tablesOpen = expandedFolders[tablesKey] !== false;
+            const viewsOpen = expandedFolders[viewsKey] !== false;
+
+            return (
+              <div key={group.schema} className="mb-1">
+                {/* Schema header — always show when multi-schema or non-main */}
+                {(multiSchema || group.schema !== 'main') && (
+                  <button
+                    onClick={() => toggleSchema(group.schema)}
+                    className="w-full flex items-center space-x-1 px-1 py-1 rounded text-[11px] font-semibold text-textMuted hover:bg-surface2/60 hover:text-text uppercase tracking-wider"
+                  >
+                    {schemaOpen ? (
+                      <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+                    ) : (
+                      <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+                    )}
+                    <Box className="w-3.5 h-3.5 text-accent shrink-0" />
+                    <span className="truncate font-mono normal-case tracking-normal text-[12px]">
+                      {group.schema}
+                    </span>
+                    <span className="text-[10px] opacity-60 font-normal">
+                      ({group.tables.length + group.views.length})
+                    </span>
+                  </button>
+                )}
+
+                <AnimatePresence initial={false}>
+                  {schemaOpen && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.15 }}
+                      className="overflow-hidden"
+                    >
+                      <div className={multiSchema || group.schema !== 'main' ? 'pl-2' : ''}>
+                        {/* Tables folder */}
+                        {group.tables.length > 0 && (
+                          <div>
+                            <button
+                              onClick={() => toggleFolder(tablesKey)}
+                              className="w-full flex items-center space-x-1 px-1 py-0.5 rounded text-[10px] font-semibold text-textMuted uppercase tracking-wider hover:text-text"
+                            >
+                              {tablesOpen ? (
+                                <ChevronDown className="w-3 h-3" />
+                              ) : (
+                                <ChevronRight className="w-3 h-3" />
+                              )}
+                              <span>Tables ({group.tables.length})</span>
+                            </button>
+                            {tablesOpen && (
+                              <div className="space-y-0.5 pl-1">
+                                {group.tables.map((t) => renderObjectButton(t, 'table'))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Views folder */}
+                        {group.views.length > 0 && (
+                          <div className="mt-1">
+                            <button
+                              onClick={() => toggleFolder(viewsKey)}
+                              className="w-full flex items-center space-x-1 px-1 py-0.5 rounded text-[10px] font-semibold text-textMuted uppercase tracking-wider hover:text-text"
+                            >
+                              {viewsOpen ? (
+                                <ChevronDown className="w-3 h-3" />
+                              ) : (
+                                <ChevronRight className="w-3 h-3" />
+                              )}
+                              <span>Views ({group.views.length})</span>
+                            </button>
+                            {viewsOpen && (
+                              <div className="space-y-0.5 pl-1">
+                                {group.views.map((t) => renderObjectButton(t, 'view'))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      {/* Back to Home / Disconnect */}
       {onDisconnect && (
         <div className="m-2 mt-0 shrink-0">
           <button
@@ -217,11 +388,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       )}
 
-      {/* Delete Confirmation Modal */}
       {deleteConfirm && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="bg-surface border border-border rounded-xl shadow-2xl w-[380px] overflow-hidden">
-            {/* Header */}
             <div className="px-5 pt-5 pb-3 flex items-start space-x-3">
               <div className="w-10 h-10 rounded-xl bg-error/15 flex items-center justify-center shrink-0">
                 <AlertTriangle className="w-5 h-5 text-error" />
@@ -229,24 +398,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div className="flex-1 min-w-0">
                 <h3 className="text-sm font-semibold text-text mb-1">Delete Connection</h3>
                 <p className="text-xs text-textMuted leading-relaxed">
-                  Are you sure you want to remove <strong className="text-text">{deleteConfirm.name}</strong>?
-                  This will delete the saved connection details. Your actual database will <strong className="text-text">not</strong> be affected.
+                  Remove <strong className="text-text">{deleteConfirm.name}</strong>? The database itself is not
+                  affected.
                 </p>
               </div>
             </div>
-
-            {/* Connection details */}
             <div className="mx-5 mb-4 px-3 py-2 rounded-lg bg-base border border-border/50 text-[11px] text-textMuted space-y-0.5">
-              <div><span className="text-text/60">Type:</span> {deleteConfirm.db_type}</div>
-              <div><span className="text-text/60">Host:</span> {deleteConfirm.host}:{deleteConfirm.port}</div>
-              <div><span className="text-text/60">Database:</span> {deleteConfirm.database}</div>
+              <div>
+                <span className="text-text/60">Type:</span> {deleteConfirm.db_type}
+              </div>
+              <div>
+                <span className="text-text/60">Host:</span> {deleteConfirm.host}:{deleteConfirm.port}
+              </div>
+              <div>
+                <span className="text-text/60">Database:</span> {deleteConfirm.database}
+              </div>
             </div>
-
-            {/* Actions */}
             <div className="px-5 pb-5 flex items-center justify-end space-x-2">
               <button
                 onClick={() => setDeleteConfirm(null)}
-                className="px-4 py-2 rounded-lg text-xs font-medium text-text bg-surface2 hover:bg-surface2/80 transition-colors"
+                className="px-4 py-2 rounded-lg text-xs font-medium text-text bg-surface2 hover:bg-surface2/80"
               >
                 Cancel
               </button>
@@ -255,7 +426,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   onDeleteConnection?.(deleteConfirm.id);
                   setDeleteConfirm(null);
                 }}
-                className="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-error hover:bg-error/90 transition-colors"
+                className="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-error hover:bg-error/90"
               >
                 Delete Connection
               </button>

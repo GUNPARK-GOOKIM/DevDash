@@ -7,7 +7,10 @@ interface ExportModalProps {
   isOpen: boolean;
   onClose: () => void;
   tableName: string;
-  onExport: (format: ExportFormat) => void;
+  onExport: (format: ExportFormat, scope: 'full' | 'page') => void | Promise<void>;
+  /** Active filter to pass to full-table server export */
+  activeFilter?: string;
+  supportsFullExport?: boolean;
 }
 
 export const ExportModal: React.FC<ExportModalProps> = ({
@@ -15,18 +18,22 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   onClose,
   tableName,
   onExport,
+  activeFilter,
+  supportsFullExport = true,
 }) => {
   const [selectedFormat, setSelectedFormat] = useState<ExportFormat>('csv');
+  const [scope, setScope] = useState<'full' | 'page'>('full');
+  const [busy, setBusy] = useState(false);
 
   if (!isOpen) return null;
 
-  const formatOptions: { id: ExportFormat; label: string; sub: string; icon: React.ReactNode }[] = [
+  const formatOptions: { id: ExportFormat; label: string; sub: string; icon: React.ReactNode; disabled?: boolean }[] = [
     { id: 'csv', label: 'CSV', sub: 'Excel / Sheets', icon: <FileSpreadsheet className="w-5 h-5 text-emerald-400" /> },
     { id: 'json', label: 'JSON', sub: 'Web / API Array', icon: <Code className="w-5 h-5 text-amber-400" /> },
     { id: 'sql', label: 'SQL Dump', sub: 'INSERT Statements', icon: <FileText className="w-5 h-5 text-purple-400" /> },
     { id: 'jsonl', label: 'JSON Lines', sub: 'Streaming / BigData', icon: <FileCode className="w-5 h-5 text-sky-400" /> },
     { id: 'markdown', label: 'Markdown', sub: 'GFM Markdown Table', icon: <Layers className="w-5 h-5 text-pink-400" /> },
-    { id: 'parquet', label: 'Parquet', sub: 'Apache Binary', icon: <Download className="w-5 h-5 text-indigo-400" /> },
+    { id: 'parquet', label: 'Parquet', sub: 'Not implemented', icon: <Download className="w-5 h-5 text-slate-600" />, disabled: true },
   ];
 
   return (
@@ -48,19 +55,22 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           </button>
         </div>
 
-        {/* Format Selection Grid */}
-        <div className="p-5 space-y-3">
+        <div className="p-5 space-y-4">
           <label className="text-xs text-slate-400 font-medium block">Choose Export Format:</label>
 
           <div className="grid grid-cols-3 gap-3">
             {formatOptions.map((opt) => (
               <div
                 key={opt.id}
-                onClick={() => setSelectedFormat(opt.id)}
-                className={`flex flex-col items-center justify-center p-3 rounded-lg border cursor-pointer transition-all space-y-1.5 ${
-                  selectedFormat === opt.id
-                    ? 'bg-indigo-950/60 border-indigo-500 text-indigo-200 shadow-md'
-                    : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                onClick={() => {
+                  if (!opt.disabled) setSelectedFormat(opt.id);
+                }}
+                className={`flex flex-col items-center justify-center p-3 rounded-lg border transition-all space-y-1.5 ${
+                  opt.disabled
+                    ? 'bg-slate-950/40 border-slate-900 text-slate-600 cursor-not-allowed opacity-60'
+                    : selectedFormat === opt.id
+                    ? 'bg-indigo-950/60 border-indigo-500 text-indigo-200 shadow-md cursor-pointer'
+                    : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200 cursor-pointer'
                 }`}
               >
                 {opt.icon}
@@ -69,9 +79,41 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               </div>
             ))}
           </div>
+
+          {supportsFullExport && ['csv', 'json', 'sql'].includes(selectedFormat) && (
+            <div className="space-y-2">
+              <label className="text-xs text-slate-400 font-medium block">Scope:</label>
+              <div className="flex space-x-2">
+                <button
+                  onClick={() => setScope('full')}
+                  className={`flex-1 py-1.5 rounded text-xs border ${
+                    scope === 'full'
+                      ? 'bg-indigo-950/50 border-indigo-500 text-indigo-200'
+                      : 'border-slate-700 text-slate-400'
+                  }`}
+                >
+                  Full table (server)
+                </button>
+                <button
+                  onClick={() => setScope('page')}
+                  className={`flex-1 py-1.5 rounded text-xs border ${
+                    scope === 'page'
+                      ? 'bg-indigo-950/50 border-indigo-500 text-indigo-200'
+                      : 'border-slate-700 text-slate-400'
+                  }`}
+                >
+                  Current page only
+                </button>
+              </div>
+              {scope === 'full' && activeFilter && (
+                <p className="text-[10px] text-slate-500 font-mono truncate" title={activeFilter}>
+                  Filter: {activeFilter}
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Footer Actions */}
         <div className="px-5 py-3.5 bg-slate-950 border-t border-slate-800 flex items-center justify-end space-x-2">
           <button
             onClick={onClose}
@@ -80,14 +122,22 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             Cancel
           </button>
           <button
-            onClick={() => {
-              onExport(selectedFormat);
-              onClose();
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await onExport(selectedFormat, scope);
+                onClose();
+              } catch (err) {
+                alert(String(err));
+              } finally {
+                setBusy(false);
+              }
             }}
-            className="px-4 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs flex items-center space-x-1.5 shadow-lg shadow-indigo-600/30 transition-all"
+            className="px-4 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs flex items-center space-x-1.5 shadow-lg shadow-indigo-600/30 transition-all disabled:opacity-50"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Download {selectedFormat.toUpperCase()}</span>
+            <span>{busy ? 'Exporting…' : `Download ${selectedFormat.toUpperCase()}`}</span>
           </button>
         </div>
       </div>

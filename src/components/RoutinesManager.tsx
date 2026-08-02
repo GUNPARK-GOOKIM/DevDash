@@ -1,13 +1,11 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import {
-  Code2, Play, FileCode, Trash2, Search, ChevronRight, ChevronDown,
-  Edit3, Copy, Plus, Zap, ToggleLeft, ToggleRight, Database,
-  ArrowRight, Clock, AlertTriangle, CheckCircle2, Braces, Settings2, X,
+  Code2, Play, Search, Copy, Plus, Zap, RefreshCw, AlertCircle,
+  Braces, CheckCircle2, XCircle,
 } from 'lucide-react';
+import { runSqlQuery } from '../services/tauriBridge';
 
-// ─── Types ──────────────────────────────────────────────────────────
 type RoutineType = 'function' | 'procedure' | 'trigger';
-type RoutineLanguage = 'plpgsql' | 'sql' | 'plpython3u' | 'plv8' | 'tsql' | 'mysql';
 
 interface RoutineParameter {
   name: string;
@@ -20,27 +18,21 @@ interface RoutineDefinition {
   name: string;
   schema: string;
   type: RoutineType;
-  language: RoutineLanguage;
+  language: string;
   returnType?: string;
   parameters: RoutineParameter[];
   body: string;
   owner: string;
-  created: string;
-  modified: string;
-  isStrict: boolean;
-  volatility?: 'VOLATILE' | 'STABLE' | 'IMMUTABLE';
-  securityDefiner?: boolean;
   triggerTable?: string;
   triggerEvent?: string;
-  triggerTiming?: 'BEFORE' | 'AFTER' | 'INSTEAD OF';
+  triggerTiming?: string;
 }
 
 interface ExecutionResult {
   success: boolean;
   output: string;
   executionTimeMs: number;
-  returnValue?: string;
-  notices?: string[];
+  error?: string;
 }
 
 interface RoutinesManagerProps {
@@ -49,187 +41,305 @@ interface RoutinesManagerProps {
   onExecuteSql?: (sql: string) => void;
 }
 
-// ─── Routine Type Colors ────────────────────────────────────────────
 const routineColors: Record<RoutineType, { bg: string; text: string; icon: React.ReactNode }> = {
   function: { bg: 'bg-indigo-500/15 border-indigo-500/30', text: 'text-indigo-400', icon: <Braces className="w-3 h-3" /> },
   procedure: { bg: 'bg-emerald-500/15 border-emerald-500/30', text: 'text-emerald-400', icon: <Code2 className="w-3 h-3" /> },
   trigger: { bg: 'bg-amber-500/15 border-amber-500/30', text: 'text-amber-400', icon: <Zap className="w-3 h-3" /> },
 };
 
-// ─── Main Component ─────────────────────────────────────────────────
-export const RoutinesManager: React.FC<RoutinesManagerProps> = ({ connectionId, dbType, onExecuteSql }) => {
+function parsePgArgs(args: string): RoutineParameter[] {
+  if (!args?.trim()) return [];
+  // e.g. "p_id integer, OUT p_msg text DEFAULT NULL"
+  return args.split(',').map((part) => {
+    const tokens = part.trim().split(/\s+/);
+    let mode: RoutineParameter['mode'] = 'IN';
+    let start = 0;
+    if (tokens[0] && ['IN', 'OUT', 'INOUT', 'VARIADIC'].includes(tokens[0].toUpperCase())) {
+      mode = tokens[0].toUpperCase() as RoutineParameter['mode'];
+      start = 1;
+    }
+    const name = tokens[start] || 'arg';
+    const dataType = tokens.slice(start + 1).join(' ').replace(/DEFAULT.*/i, '').trim() || 'unknown';
+    const defMatch = part.match(/DEFAULT\s+(.+)$/i);
+    return { name, dataType, mode, default: defMatch?.[1]?.trim() };
+  });
+}
+
+function col(columns: { name: string }[], name: string, row: any[]): unknown {
+  const idx = columns.findIndex((c) => c.name.toLowerCase() === name.toLowerCase());
+  return idx >= 0 ? row[idx] : undefined;
+}
+
+export const RoutinesManager: React.FC<RoutinesManagerProps> = ({
+  connectionId,
+  dbType,
+  onExecuteSql,
+}) => {
   const [searchFilter, setSearchFilter] = useState('');
-  const [selectedRoutine, setSelectedRoutine] = useState<string | null>(null);
-  const [activeSection, setActiveSection] = useState<'definition' | 'execute' | 'dependencies'>('definition');
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [activeSection, setActiveSection] = useState<'definition' | 'execute'>('definition');
   const [paramValues, setParamValues] = useState<Record<string, string>>({});
   const [lastResult, setLastResult] = useState<ExecutionResult | null>(null);
+  const [routines, setRoutines] = useState<RoutineDefinition[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [executing, setExecuting] = useState(false);
 
-  // ─── Demo Routines ────────────────────────────────────────────
-  const [routines] = useState<RoutineDefinition[]>([
-    {
-      name: 'calculate_order_total',
-      schema: 'public',
-      type: 'function',
-      language: 'plpgsql',
-      returnType: 'NUMERIC(12,2)',
-      parameters: [
-        { name: 'p_order_id', dataType: 'INTEGER', mode: 'IN' },
-        { name: 'p_include_tax', dataType: 'BOOLEAN', mode: 'IN', default: 'true' },
-      ],
-      body: `DECLARE
-  v_subtotal NUMERIC(12,2);
-  v_tax_rate NUMERIC(4,2) := 0.08;
-  v_total NUMERIC(12,2);
-BEGIN
-  SELECT COALESCE(SUM(quantity * unit_price), 0)
-  INTO v_subtotal
-  FROM order_items
-  WHERE order_id = p_order_id;
+  const loadRoutines = useCallback(async () => {
+    if (!connectionId) {
+      setError('No active connection');
+      setRoutines([]);
+      return;
+    }
+    const kind = dbType.toLowerCase();
+    if (kind === 'sqlite') {
+      setRoutines([]);
+      setError('SQLite does not support stored procedures / functions. Use triggers via CREATE TRIGGER in the SQL console.');
+      return;
+    }
 
-  IF p_include_tax THEN
-    v_total := v_subtotal * (1 + v_tax_rate);
-  ELSE
-    v_total := v_subtotal;
-  END IF;
+    setLoading(true);
+    setError(null);
+    try {
+      const collected: RoutineDefinition[] = [];
 
-  RETURN v_total;
-END;`,
-      owner: 'app_user',
-      created: '2026-03-15T10:30:00Z',
-      modified: '2026-07-20T14:22:00Z',
-      isStrict: false,
-      volatility: 'STABLE',
-      securityDefiner: false,
-    },
-    {
-      name: 'upsert_user_profile',
-      schema: 'public',
-      type: 'procedure',
-      language: 'plpgsql',
-      parameters: [
-        { name: 'p_user_id', dataType: 'INTEGER', mode: 'IN' },
-        { name: 'p_email', dataType: 'VARCHAR(255)', mode: 'IN' },
-        { name: 'p_display_name', dataType: 'VARCHAR(100)', mode: 'IN' },
-        { name: 'p_result_msg', dataType: 'TEXT', mode: 'OUT' },
-      ],
-      body: `BEGIN
-  INSERT INTO user_profiles (user_id, email, display_name, updated_at)
-  VALUES (p_user_id, p_email, p_display_name, NOW())
-  ON CONFLICT (user_id)
-  DO UPDATE SET
-    email = EXCLUDED.email,
-    display_name = EXCLUDED.display_name,
-    updated_at = NOW();
+      if (kind === 'postgres' || kind === 'postgresql' || kind === 'cockroachdb' || kind === 'redshift') {
+        const fnSql = `
+          SELECT
+            n.nspname AS schema_name,
+            p.proname AS name,
+            CASE p.prokind WHEN 'p' THEN 'procedure' WHEN 'f' THEN 'function' WHEN 'a' THEN 'function' ELSE 'function' END AS routine_type,
+            l.lanname AS language,
+            COALESCE(pg_get_function_result(p.oid), '') AS return_type,
+            COALESCE(pg_get_function_arguments(p.oid), '') AS args,
+            COALESCE(pg_get_functiondef(p.oid), '') AS body,
+            COALESCE(pg_get_userbyid(p.proowner), '') AS owner
+          FROM pg_proc p
+          JOIN pg_namespace n ON n.oid = p.pronamespace
+          JOIN pg_language l ON l.oid = p.prolang
+          WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+            AND p.prokind IN ('f', 'p', 'a', 'w')
+          ORDER BY n.nspname, p.proname
+          LIMIT 500;
+        `;
+        try {
+          const res = await runSqlQuery(connectionId, fnSql);
+          for (const row of res.rows) {
+            const schema = String(col(res.columns, 'schema_name', row) ?? 'public');
+            const name = String(col(res.columns, 'name', row) ?? '');
+            const type = String(col(res.columns, 'routine_type', row) ?? 'function') as RoutineType;
+            const language = String(col(res.columns, 'language', row) ?? 'sql');
+            const returnType = String(col(res.columns, 'return_type', row) || '');
+            const args = String(col(res.columns, 'args', row) || '');
+            const body = String(col(res.columns, 'body', row) || '');
+            const owner = String(col(res.columns, 'owner', row) || '');
+            collected.push({
+              name,
+              schema,
+              type: type === 'procedure' ? 'procedure' : 'function',
+              language,
+              returnType: returnType || undefined,
+              parameters: parsePgArgs(args),
+              body,
+              owner,
+            });
+          }
+        } catch (e) {
+          // Cockroach/Redshift may lack prokind — try information_schema
+          console.warn('pg_proc query failed, trying information_schema', e);
+        }
 
-  p_result_msg := 'Profile upserted successfully for user ' || p_user_id;
-  COMMIT;
-END;`,
-      owner: 'app_user',
-      created: '2026-04-01T09:00:00Z',
-      modified: '2026-07-28T11:15:00Z',
-      isStrict: true,
-    },
-    {
-      name: 'trg_audit_user_changes',
-      schema: 'public',
-      type: 'trigger',
-      language: 'plpgsql',
-      returnType: 'TRIGGER',
-      parameters: [],
-      body: `BEGIN
-  IF TG_OP = 'INSERT' THEN
-    INSERT INTO audit_log (table_name, operation, row_id, new_data, created_at)
-    VALUES ('users', 'INSERT', NEW.id, row_to_json(NEW), NOW());
-  ELSIF TG_OP = 'UPDATE' THEN
-    INSERT INTO audit_log (table_name, operation, row_id, old_data, new_data, created_at)
-    VALUES ('users', 'UPDATE', OLD.id, row_to_json(OLD), row_to_json(NEW), NOW());
-  ELSIF TG_OP = 'DELETE' THEN
-    INSERT INTO audit_log (table_name, operation, row_id, old_data, created_at)
-    VALUES ('users', 'DELETE', OLD.id, row_to_json(OLD), NOW());
-  END IF;
-  RETURN NEW;
-END;`,
-      owner: 'postgres',
-      created: '2026-02-10T16:00:00Z',
-      modified: '2026-06-15T08:30:00Z',
-      isStrict: false,
-      triggerTable: 'users',
-      triggerEvent: 'INSERT OR UPDATE OR DELETE',
-      triggerTiming: 'AFTER',
-    },
-    {
-      name: 'get_user_orders_summary',
-      schema: 'public',
-      type: 'function',
-      language: 'sql',
-      returnType: 'TABLE(user_email VARCHAR, total_orders BIGINT, total_spent NUMERIC)',
-      parameters: [
-        { name: 'p_min_orders', dataType: 'INTEGER', mode: 'IN', default: '1' },
-      ],
-      body: `SELECT u.email, COUNT(o.id), SUM(o.total_amount)
-FROM users u
-JOIN orders o ON o.user_id = u.id
-GROUP BY u.email
-HAVING COUNT(o.id) >= p_min_orders
-ORDER BY SUM(o.total_amount) DESC;`,
-      owner: 'app_user',
-      created: '2026-05-22T12:00:00Z',
-      modified: '2026-07-10T09:45:00Z',
-      isStrict: false,
-      volatility: 'STABLE',
-    },
-  ]);
+        const trgSql = `
+          SELECT
+            trigger_schema AS schema_name,
+            trigger_name AS name,
+            event_object_table AS trigger_table,
+            action_timing AS timing,
+            string_agg(event_manipulation, ' OR ') AS events,
+            action_statement AS body
+          FROM information_schema.triggers
+          WHERE trigger_schema NOT IN ('pg_catalog', 'information_schema')
+          GROUP BY trigger_schema, trigger_name, event_object_table, action_timing, action_statement
+          ORDER BY trigger_name
+          LIMIT 200;
+        `;
+        try {
+          const trg = await runSqlQuery(connectionId, trgSql);
+          for (const row of trg.rows) {
+            collected.push({
+              name: String(col(trg.columns, 'name', row) ?? ''),
+              schema: String(col(trg.columns, 'schema_name', row) ?? 'public'),
+              type: 'trigger',
+              language: 'plpgsql',
+              parameters: [],
+              body: String(col(trg.columns, 'body', row) || ''),
+              owner: '',
+              triggerTable: String(col(trg.columns, 'trigger_table', row) || ''),
+              triggerEvent: String(col(trg.columns, 'events', row) || ''),
+              triggerTiming: String(col(trg.columns, 'timing', row) || ''),
+            });
+          }
+        } catch {
+          /* optional */
+        }
+      } else if (kind === 'mysql' || kind === 'mariadb') {
+        const sql = `
+          SELECT
+            ROUTINE_SCHEMA AS schema_name,
+            ROUTINE_NAME AS name,
+            LOWER(ROUTINE_TYPE) AS routine_type,
+            COALESCE(EXTERNAL_LANGUAGE, 'SQL') AS language,
+            COALESCE(DTD_IDENTIFIER, '') AS return_type,
+            COALESCE(ROUTINE_DEFINITION, '') AS body,
+            COALESCE(DEFINER, '') AS owner
+          FROM information_schema.ROUTINES
+          WHERE ROUTINE_SCHEMA = DATABASE()
+          ORDER BY ROUTINE_NAME
+          LIMIT 500;
+        `;
+        const res = await runSqlQuery(connectionId, sql);
+        for (const row of res.rows) {
+          const rtype = String(col(res.columns, 'routine_type', row) || 'function');
+          collected.push({
+            name: String(col(res.columns, 'name', row) ?? ''),
+            schema: String(col(res.columns, 'schema_name', row) ?? ''),
+            type: rtype.includes('proc') ? 'procedure' : 'function',
+            language: String(col(res.columns, 'language', row) || 'sql'),
+            returnType: String(col(res.columns, 'return_type', row) || '') || undefined,
+            parameters: [],
+            body: String(col(res.columns, 'body', row) || ''),
+            owner: String(col(res.columns, 'owner', row) || ''),
+          });
+        }
+
+        try {
+          const trg = await runSqlQuery(
+            connectionId,
+            `SELECT TRIGGER_SCHEMA AS schema_name, TRIGGER_NAME AS name, EVENT_OBJECT_TABLE AS trigger_table,
+                    ACTION_TIMING AS timing, EVENT_MANIPULATION AS events, ACTION_STATEMENT AS body
+             FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE() LIMIT 200;`
+          );
+          for (const row of trg.rows) {
+            collected.push({
+              name: String(col(trg.columns, 'name', row) ?? ''),
+              schema: String(col(trg.columns, 'schema_name', row) ?? ''),
+              type: 'trigger',
+              language: 'sql',
+              parameters: [],
+              body: String(col(trg.columns, 'body', row) || ''),
+              owner: '',
+              triggerTable: String(col(trg.columns, 'trigger_table', row) || ''),
+              triggerEvent: String(col(trg.columns, 'events', row) || ''),
+              triggerTiming: String(col(trg.columns, 'timing', row) || ''),
+            });
+          }
+        } catch {
+          /* optional */
+        }
+      } else {
+        setError(`Routines introspection is not supported for engine "${dbType}".`);
+      }
+
+      setRoutines(collected);
+      setSelectedKey((prev) => {
+        if (prev && collected.some((r) => `${r.schema}.${r.name}:${r.type}` === prev)) {
+          return prev;
+        }
+        if (collected.length > 0) {
+          return `${collected[0].schema}.${collected[0].name}:${collected[0].type}`;
+        }
+        return null;
+      });
+    } catch (err) {
+      setError(String(err));
+      setRoutines([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [connectionId, dbType]);
+
+  useEffect(() => {
+    loadRoutines();
+  }, [loadRoutines]);
 
   const filteredRoutines = useMemo(() => {
     if (!searchFilter) return routines;
-    return routines.filter(r =>
-      r.name.toLowerCase().includes(searchFilter.toLowerCase()) ||
-      r.type.toLowerCase().includes(searchFilter.toLowerCase())
+    const q = searchFilter.toLowerCase();
+    return routines.filter(
+      (r) => r.name.toLowerCase().includes(q) || r.type.toLowerCase().includes(q) || r.schema.toLowerCase().includes(q)
     );
   }, [routines, searchFilter]);
 
-  const selected = useMemo(() => routines.find(r => r.name === selectedRoutine), [routines, selectedRoutine]);
+  const selected = useMemo(
+    () => routines.find((r) => `${r.schema}.${r.name}:${r.type}` === selectedKey),
+    [routines, selectedKey]
+  );
 
   const generateCallSql = useCallback(() => {
-    if (!selected) return '';
-    const inParams = selected.parameters.filter(p => p.mode === 'IN' || p.mode === 'INOUT');
-    const args = inParams.map(p => {
-      const val = paramValues[p.name];
-      if (val !== undefined && val !== '') return val;
-      if (p.default) return p.default;
-      return p.dataType.toLowerCase().includes('int') ? '0' : "''";
-    }).join(', ');
+    if (!selected || selected.type === 'trigger') return '';
+    const inParams = selected.parameters.filter((p) => p.mode === 'IN' || p.mode === 'INOUT');
+    const args = inParams
+      .map((p) => {
+        const val = paramValues[p.name];
+        if (val !== undefined && val !== '') return val;
+        if (p.default) return p.default;
+        return p.dataType.toLowerCase().includes('int') || p.dataType.toLowerCase().includes('numeric')
+          ? '0'
+          : "''";
+      })
+      .join(', ');
 
-    if (selected.type === 'procedure') return `CALL ${selected.schema}.${selected.name}(${args});`;
-    return `SELECT * FROM ${selected.schema}.${selected.name}(${args});`;
+    const fq = `${selected.schema}.${selected.name}`;
+    if (selected.type === 'procedure') return `CALL ${fq}(${args});`;
+    return `SELECT * FROM ${fq}(${args});`;
   }, [selected, paramValues]);
 
-  const copyToClipboard = useCallback((text: string) => {
-    navigator.clipboard.writeText(text);
-  }, []);
+  const handleExecute = useCallback(async () => {
+    if (!selected || selected.type === 'trigger') return;
+    const sql = generateCallSql();
+    if (onExecuteSql) {
+      onExecuteSql(sql);
+      setLastResult({
+        success: true,
+        output: `Dispatched to SQL console:\n${sql}`,
+        executionTimeMs: 0,
+      });
+      return;
+    }
+    setExecuting(true);
+    try {
+      const res = await runSqlQuery(connectionId, sql);
+      const preview = res.rows
+        .slice(0, 20)
+        .map((r) => r.map((c) => (c === null ? 'NULL' : String(c))).join(' | '))
+        .join('\n');
+      setLastResult({
+        success: true,
+        output: preview || `(${res.affected_rows} rows affected)`,
+        executionTimeMs: res.execution_time_ms,
+      });
+    } catch (err) {
+      setLastResult({
+        success: false,
+        output: '',
+        executionTimeMs: 0,
+        error: String(err),
+      });
+    } finally {
+      setExecuting(false);
+    }
+  }, [selected, generateCallSql, onExecuteSql, connectionId]);
 
-  const handleExecute = useCallback(() => {
-    setLastResult({
-      success: true,
-      output: selected?.type === 'function'
-        ? `Returned: 1,247.50\n(1 row, execution time: 2.4ms)`
-        : `CALL completed successfully.\nOUT: Profile upserted successfully for user 101`,
-      executionTimeMs: selected?.type === 'function' ? 2.4 : 5.1,
-      returnValue: selected?.type === 'function' ? '1247.50' : undefined,
-      notices: ['NOTICE: Profile record created/updated'],
-    });
-  }, [selected]);
-
-  // ─── Group by type ────────────────────────────────────────────
   const groupedRoutines = useMemo(() => {
     const groups: Record<RoutineType, RoutineDefinition[]> = { function: [], procedure: [], trigger: [] };
-    filteredRoutines.forEach(r => groups[r.type].push(r));
+    filteredRoutines.forEach((r) => groups[r.type].push(r));
     return groups;
   }, [filteredRoutines]);
 
+  const keyOf = (r: RoutineDefinition) => `${r.schema}.${r.name}:${r.type}`;
+
   return (
     <div className="flex flex-col h-full bg-base text-text font-sans select-none">
-      {/* Header */}
       <div className="h-10 bg-surface border-b border-border flex items-center px-4 justify-between shrink-0">
         <div className="flex items-center space-x-2">
           <div className="w-6 h-6 rounded-lg bg-purple-500/20 flex items-center justify-center">
@@ -237,17 +347,38 @@ ORDER BY SUM(o.total_amount) DESC;`,
           </div>
           <h2 className="text-sm font-semibold text-text">Stored Routines & Triggers</h2>
           <span className="text-[10px] text-textMuted bg-surface2 px-2 py-0.5 rounded-full">
-            {routines.filter(r => r.type === 'function').length} fn · {routines.filter(r => r.type === 'procedure').length} proc · {routines.filter(r => r.type === 'trigger').length} trg
+            {routines.filter((r) => r.type === 'function').length} fn ·{' '}
+            {routines.filter((r) => r.type === 'procedure').length} proc ·{' '}
+            {routines.filter((r) => r.type === 'trigger').length} trg
           </span>
         </div>
-        <button className="px-2.5 py-1 bg-accent/15 text-accent border border-accent/30 rounded-lg text-[11px] font-medium hover:bg-accent/25 transition-colors flex items-center space-x-1">
-          <Plus className="w-3 h-3" />
-          <span>New Routine</span>
-        </button>
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={loadRoutines}
+            disabled={loading}
+            className="px-2.5 py-1 bg-surface2 border border-border rounded-lg text-[11px] text-textMuted hover:text-text flex items-center space-x-1"
+          >
+            <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+            <span>Refresh</span>
+          </button>
+          <button
+            onClick={() => onExecuteSql?.('-- Create a new function/procedure here\n')}
+            className="px-2.5 py-1 bg-accent/15 text-accent border border-accent/30 rounded-lg text-[11px] font-medium hover:bg-accent/25 transition-colors flex items-center space-x-1"
+          >
+            <Plus className="w-3 h-3" />
+            <span>New in Console</span>
+          </button>
+        </div>
       </div>
 
+      {error && (
+        <div className="px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-xs text-amber-300 flex items-start space-x-2">
+          <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+          <span>{error}</span>
+        </div>
+      )}
+
       <div className="flex flex-1 overflow-hidden">
-        {/* Left Panel: Routine List */}
         <div className="w-[280px] border-r border-border flex flex-col bg-surface/30 shrink-0">
           <div className="p-2 border-b border-border">
             <div className="relative">
@@ -257,13 +388,19 @@ ORDER BY SUM(o.total_amount) DESC;`,
                 placeholder="Filter routines…"
                 value={searchFilter}
                 onChange={(e) => setSearchFilter(e.target.value)}
-                className="w-full bg-surface2 border border-border rounded-lg pl-8 pr-3 py-1.5 text-xs text-text placeholder:text-textMuted/50 outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/20 transition-all"
+                className="w-full bg-surface2 border border-border rounded-lg pl-8 pr-3 py-1.5 text-xs text-text placeholder:text-textMuted/50 outline-none focus:border-accent/50"
               />
             </div>
           </div>
 
           <div className="flex-1 overflow-auto">
-            {(['function', 'procedure', 'trigger'] as RoutineType[]).map(type => {
+            {loading && routines.length === 0 && (
+              <div className="p-4 text-xs text-textMuted text-center">Loading catalog…</div>
+            )}
+            {!loading && routines.length === 0 && !error && (
+              <div className="p-4 text-xs text-textMuted text-center">No routines found in this database.</div>
+            )}
+            {(['function', 'procedure', 'trigger'] as RoutineType[]).map((type) => {
               const items = groupedRoutines[type];
               if (items.length === 0) return null;
               const colors = routineColors[type];
@@ -272,12 +409,17 @@ ORDER BY SUM(o.total_amount) DESC;`,
                   <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-textMuted bg-surface2/30 border-b border-border/20">
                     {type}s ({items.length})
                   </div>
-                  {items.map(r => (
+                  {items.map((r) => (
                     <button
-                      key={r.name}
-                      onClick={() => { setSelectedRoutine(r.name); setActiveSection('definition'); setLastResult(null); }}
+                      key={keyOf(r)}
+                      onClick={() => {
+                        setSelectedKey(keyOf(r));
+                        setActiveSection('definition');
+                        setLastResult(null);
+                        setParamValues({});
+                      }}
                       className={`w-full px-3 py-2 text-left border-b border-border/20 transition-colors ${
-                        selectedRoutine === r.name ? 'bg-accent/10 border-l-2 border-l-accent' : 'hover:bg-surface2/40'
+                        selectedKey === keyOf(r) ? 'bg-accent/10 border-l-2 border-l-accent' : 'hover:bg-surface2/40'
                       }`}
                     >
                       <div className="flex items-center space-x-2">
@@ -288,9 +430,7 @@ ORDER BY SUM(o.total_amount) DESC;`,
                         <span className={`text-[9px] px-1.5 py-0.5 rounded border ${colors.bg} ${colors.text} font-bold uppercase`}>
                           {r.language}
                         </span>
-                        {r.returnType && (
-                          <span className="text-[9px] text-textMuted font-mono truncate max-w-[120px]">→ {r.returnType}</span>
-                        )}
+                        <span className="text-[9px] text-textMuted font-mono truncate">{r.schema}</span>
                       </div>
                     </button>
                   ))}
@@ -300,199 +440,143 @@ ORDER BY SUM(o.total_amount) DESC;`,
           </div>
         </div>
 
-        {/* Right Panel: Detail View */}
         <div className="flex-1 flex flex-col overflow-hidden">
           {selected ? (
             <>
-              {/* Routine Header */}
               <div className="px-4 py-3 border-b border-border bg-surface/50">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center space-x-2">
                     <span className={routineColors[selected.type].text}>{routineColors[selected.type].icon}</span>
-                    <span className="text-sm font-semibold font-mono text-text">{selected.schema}.{selected.name}</span>
-                    <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded border ${routineColors[selected.type].bg} ${routineColors[selected.type].text}`}>
+                    <span className="text-sm font-semibold font-mono text-text">
+                      {selected.schema}.{selected.name}
+                    </span>
+                    <span
+                      className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded border ${routineColors[selected.type].bg} ${routineColors[selected.type].text}`}
+                    >
                       {selected.type}
                     </span>
                   </div>
-                  <div className="flex items-center space-x-1.5">
-                    <button onClick={() => copyToClipboard(selected.body)} className="p-1.5 rounded-md hover:bg-surface2 text-textMuted hover:text-text transition-colors" title="Copy Body">
-                      <Copy className="w-3.5 h-3.5" />
-                    </button>
-                    <button className="p-1.5 rounded-md hover:bg-surface2 text-textMuted hover:text-text transition-colors" title="Edit">
-                      <Edit3 className="w-3.5 h-3.5" />
-                    </button>
-                    <button className="p-1.5 rounded-md hover:bg-red-500/20 text-textMuted hover:text-red-400 transition-colors" title="Drop">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(selected.body || generateCallSql())}
+                    className="p-1.5 rounded-md hover:bg-surface2 text-textMuted hover:text-text"
+                    title="Copy"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
                 </div>
-
-                {/* Meta info */}
                 <div className="flex items-center space-x-4 mt-2 text-[10px] text-textMuted">
-                  <span>Language: <span className="text-text font-mono">{selected.language}</span></span>
-                  {selected.returnType && <span>Returns: <span className="text-text font-mono">{selected.returnType}</span></span>}
-                  {selected.volatility && <span>Volatility: <span className="text-text">{selected.volatility}</span></span>}
-                  <span>Owner: <span className="text-text">{selected.owner}</span></span>
-                  {selected.securityDefiner && <span className="text-amber-400 font-bold">SECURITY DEFINER</span>}
+                  <span>
+                    Language: <span className="text-text font-mono">{selected.language}</span>
+                  </span>
+                  {selected.returnType && (
+                    <span>
+                      Returns: <span className="text-text font-mono">{selected.returnType}</span>
+                    </span>
+                  )}
+                  {selected.owner && (
+                    <span>
+                      Owner: <span className="text-text">{selected.owner}</span>
+                    </span>
+                  )}
                 </div>
-
-                {/* Trigger meta */}
                 {selected.type === 'trigger' && (
                   <div className="flex items-center space-x-3 mt-1.5 text-[10px]">
-                    <span className="text-textMuted">Table: <span className="text-amber-400 font-mono">{selected.triggerTable}</span></span>
-                    <span className="text-textMuted">Event: <span className="text-text">{selected.triggerEvent}</span></span>
-                    <span className="text-textMuted">Timing: <span className="text-text">{selected.triggerTiming}</span></span>
+                    <span className="text-textMuted">
+                      Table: <span className="text-amber-400 font-mono">{selected.triggerTable}</span>
+                    </span>
+                    <span className="text-textMuted">
+                      Event: <span className="text-text">{selected.triggerEvent}</span>
+                    </span>
+                    <span className="text-textMuted">
+                      Timing: <span className="text-text">{selected.triggerTiming}</span>
+                    </span>
                   </div>
                 )}
-
-                {/* Section Tabs */}
                 <div className="flex items-center space-x-1 mt-3">
-                  {(['definition', 'execute', 'dependencies'] as const).map(section => (
+                  {(['definition', 'execute'] as const).map((sec) => (
                     <button
-                      key={section}
-                      onClick={() => setActiveSection(section)}
-                      className={`px-3 py-1 rounded-md text-[11px] font-medium transition-colors ${
-                        activeSection === section ? 'bg-accent/15 text-accent' : 'text-textMuted hover:text-text hover:bg-surface2/50'
+                      key={sec}
+                      onClick={() => setActiveSection(sec)}
+                      disabled={sec === 'execute' && selected.type === 'trigger'}
+                      className={`px-2.5 py-1 rounded text-[11px] capitalize ${
+                        activeSection === sec
+                          ? 'bg-accent/20 text-accent'
+                          : 'text-textMuted hover:text-text disabled:opacity-30'
                       }`}
                     >
-                      {section.charAt(0).toUpperCase() + section.slice(1)}
+                      {sec}
                     </button>
                   ))}
                 </div>
               </div>
 
-              {/* Section Content */}
-              <div className="flex-1 overflow-auto">
+              <div className="flex-1 overflow-auto p-4">
                 {activeSection === 'definition' && (
-                  <div className="p-4 space-y-4">
-                    {/* Parameters */}
-                    {selected.parameters.length > 0 && (
-                      <div className="bg-surface border border-border rounded-xl p-4">
-                        <h4 className="text-[10px] font-semibold text-textMuted uppercase tracking-wider mb-3">Parameters</h4>
-                        <div className="space-y-1.5">
-                          {selected.parameters.map((p) => (
-                            <div key={p.name} className="flex items-center space-x-3 text-xs">
-                              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
-                                p.mode === 'IN' ? 'bg-emerald-500/15 text-emerald-400' :
-                                p.mode === 'OUT' ? 'bg-sky-500/15 text-sky-400' :
-                                'bg-amber-500/15 text-amber-400'
-                              }`}>{p.mode}</span>
-                              <span className="font-mono text-text font-medium">{p.name}</span>
-                              <span className="text-textMuted font-mono">{p.dataType}</span>
-                              {p.default && <span className="text-textMuted">= <span className="text-purple-400">{p.default}</span></span>}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Body */}
-                    <div className="bg-surface border border-border rounded-xl overflow-hidden">
-                      <div className="px-4 py-2 bg-surface2/30 border-b border-border/50 flex items-center justify-between">
-                        <span className="text-[10px] font-semibold text-textMuted uppercase tracking-wider">Function Body</span>
-                        <button onClick={() => copyToClipboard(selected.body)} className="p-1 rounded hover:bg-surface2 text-textMuted hover:text-text transition-colors" title="Copy">
-                          <Copy className="w-3 h-3" />
-                        </button>
-                      </div>
-                      <pre className="p-4 font-mono text-xs text-text overflow-auto leading-relaxed whitespace-pre-wrap">
-                        {selected.body}
-                      </pre>
-                    </div>
-                  </div>
+                  <pre className="bg-surface2/40 border border-border rounded-lg p-3 text-[11px] font-mono text-text whitespace-pre-wrap overflow-auto max-h-full">
+                    {selected.body || '-- Definition not available from catalog'}
+                  </pre>
                 )}
-
-                {activeSection === 'execute' && (
-                  <div className="p-4 space-y-4">
-                    {/* Parameter Inputs */}
-                    {selected.parameters.filter(p => p.mode === 'IN' || p.mode === 'INOUT').length > 0 && (
-                      <div className="bg-surface border border-border rounded-xl p-4">
-                        <h4 className="text-[10px] font-semibold text-textMuted uppercase tracking-wider mb-3">Input Parameters</h4>
-                        <div className="space-y-2">
-                          {selected.parameters.filter(p => p.mode === 'IN' || p.mode === 'INOUT').map(p => (
-                            <div key={p.name} className="flex items-center space-x-3">
-                              <label className="text-xs font-mono text-text min-w-[160px]">{p.name} <span className="text-textMuted">({p.dataType})</span></label>
-                              <input
-                                type="text"
-                                value={paramValues[p.name] || ''}
-                                onChange={(e) => setParamValues(prev => ({ ...prev, [p.name]: e.target.value }))}
-                                placeholder={p.default || `Enter ${p.dataType}`}
-                                className="flex-1 bg-surface2 border border-border rounded-lg px-3 py-1.5 text-xs font-mono text-text placeholder:text-textMuted/40 outline-none focus:border-accent/50 transition-all"
-                              />
-                            </div>
-                          ))}
+                {activeSection === 'execute' && selected.type !== 'trigger' && (
+                  <div className="space-y-3">
+                    {selected.parameters
+                      .filter((p) => p.mode === 'IN' || p.mode === 'INOUT')
+                      .map((p) => (
+                        <div key={p.name} className="flex items-center space-x-2">
+                          <label className="w-32 text-[11px] font-mono text-textMuted truncate" title={p.name}>
+                            {p.name}
+                          </label>
+                          <span className="text-[10px] text-textMuted w-24 truncate">{p.dataType}</span>
+                          <input
+                            value={paramValues[p.name] ?? ''}
+                            onChange={(e) =>
+                              setParamValues((prev) => ({ ...prev, [p.name]: e.target.value }))
+                            }
+                            placeholder={p.default || `Enter ${p.name}`}
+                            className="flex-1 bg-surface2 border border-border rounded-lg px-3 py-1.5 text-xs font-mono text-text outline-none focus:border-accent/50"
+                          />
                         </div>
-                      </div>
-                    )}
-
-                    {/* Generated SQL */}
-                    <div className="bg-surface border border-border rounded-xl overflow-hidden">
-                      <div className="px-4 py-2 bg-surface2/30 border-b border-border/50 flex items-center justify-between">
-                        <span className="text-[10px] font-semibold text-textMuted uppercase tracking-wider">Generated SQL</span>
-                        <div className="flex items-center space-x-1.5">
-                          <button onClick={() => copyToClipboard(generateCallSql())} className="p-1 rounded hover:bg-surface2 text-textMuted hover:text-text transition-colors">
-                            <Copy className="w-3 h-3" />
-                          </button>
-                          <button
-                            onClick={handleExecute}
-                            className="px-2.5 py-1 bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 rounded-lg text-[11px] font-medium hover:bg-emerald-500/25 transition-colors flex items-center space-x-1"
-                          >
-                            <Play className="w-3 h-3" />
-                            <span>Execute</span>
-                          </button>
-                        </div>
-                      </div>
-                      <pre className="p-4 font-mono text-xs text-indigo-400 overflow-auto">{generateCallSql()}</pre>
-                    </div>
-
-                    {/* Execution Result */}
+                      ))}
+                    <pre className="bg-surface2/40 border border-border rounded-lg p-2 text-[11px] font-mono text-accent">
+                      {generateCallSql()}
+                    </pre>
+                    <button
+                      onClick={handleExecute}
+                      disabled={executing}
+                      className="px-3 py-1.5 bg-accent hover:bg-accentHover text-white rounded text-xs font-semibold flex items-center space-x-1.5"
+                    >
+                      <Play className="w-3.5 h-3.5" />
+                      <span>{executing ? 'Running…' : 'Execute'}</span>
+                    </button>
                     {lastResult && (
-                      <div className={`border rounded-xl overflow-hidden ${lastResult.success ? 'bg-emerald-500/5 border-emerald-500/30' : 'bg-red-500/5 border-red-500/30'}`}>
-                        <div className={`px-4 py-2 border-b ${lastResult.success ? 'border-emerald-500/20' : 'border-red-500/20'} flex items-center space-x-2`}>
-                          {lastResult.success ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> : <AlertTriangle className="w-3.5 h-3.5 text-red-400" />}
-                          <span className={`text-xs font-semibold ${lastResult.success ? 'text-emerald-400' : 'text-red-400'}`}>
-                            {lastResult.success ? 'Execution Successful' : 'Execution Failed'}
+                      <div
+                        className={`p-3 rounded-lg border text-xs font-mono whitespace-pre-wrap ${
+                          lastResult.success
+                            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200'
+                            : 'bg-red-500/10 border-red-500/30 text-red-300'
+                        }`}
+                      >
+                        <div className="flex items-center space-x-1 mb-1">
+                          {lastResult.success ? (
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                          ) : (
+                            <XCircle className="w-3.5 h-3.5" />
+                          )}
+                          <span>
+                            {lastResult.success
+                              ? `OK · ${lastResult.executionTimeMs}ms`
+                              : lastResult.error}
                           </span>
-                          <span className="text-[10px] text-textMuted ml-auto font-mono">{lastResult.executionTimeMs}ms</span>
                         </div>
-                        <pre className="p-4 font-mono text-xs text-text whitespace-pre-wrap">{lastResult.output}</pre>
-                        {lastResult.notices && lastResult.notices.length > 0 && (
-                          <div className="px-4 pb-3 space-y-1">
-                            {lastResult.notices.map((n, i) => (
-                              <div key={i} className="text-[10px] text-amber-400 font-mono">{n}</div>
-                            ))}
-                          </div>
-                        )}
+                        {lastResult.output}
                       </div>
                     )}
-                  </div>
-                )}
-
-                {activeSection === 'dependencies' && (
-                  <div className="p-4 space-y-4">
-                    <div className="bg-surface border border-border rounded-xl p-4">
-                      <h4 className="text-[10px] font-semibold text-textMuted uppercase tracking-wider mb-3">Referenced Tables</h4>
-                      <div className="space-y-1.5">
-                        {selected.body.match(/(?:FROM|JOIN|INTO|UPDATE)\s+(\w+)/gi)?.map((match, idx) => {
-                          const tableName = match.replace(/(?:FROM|JOIN|INTO|UPDATE)\s+/i, '');
-                          return (
-                            <div key={idx} className="flex items-center space-x-2 text-xs">
-                              <Database className="w-3 h-3 text-accent" />
-                              <span className="font-mono text-text">{tableName}</span>
-                            </div>
-                          );
-                        }) || <span className="text-xs text-textMuted">No table references detected</span>}
-                      </div>
-                    </div>
                   </div>
                 )}
               </div>
             </>
           ) : (
-            <div className="flex-1 flex items-center justify-center text-textMuted">
-              <div className="text-center space-y-2">
-                <Code2 className="w-10 h-10 mx-auto opacity-20" />
-                <p className="text-sm">Select a routine to inspect</p>
-              </div>
+            <div className="flex-1 flex items-center justify-center text-xs text-textMuted">
+              Select a routine to inspect its definition
             </div>
           )}
         </div>
