@@ -272,3 +272,16 @@ Here is the exact prioritized roadmap and gap audit to begin with when returning
 25. **GAP 25: Automatic Data Masking & PII Protection Engine (`PiiMaskingConfig.tsx`)** — **[COMPLETED & PASSED]**
     - *Implemented*: Built `PiiMaskingConfig.tsx` supporting customizable pattern rules (`ssn`, `credit_card`, `password`, `phone`) with full masking (`••••••••`), partial email masking, and SHA-256 field hashing. (PASS)
 
+---
+
+## Session 7 — 2026-08-02 (Backend Engine Hardening & Bug Fixes)
+
+### Native Driver Pooling & Type System Upgrades — COMPLETED & PASSED
+- **Native Pools Integration**: `sqlx::AnyPool` crashed on complex types (JSON, Arrays, UUIDs) and schema introspection for Postgres/MySQL because it lacks specialized decoders. We upgraded `pool.rs` to initialize native `sqlx::PgPool` and `sqlx::MySqlPool` alongside the generic fallback.
+- **Introspection Fix (Tables Not Appearing)**: Fixed the critical silent crash where sidebar tables were not appearing. `commands.rs` now routes metadata queries through `fetch_tables_managed` and `fetch_columns_managed` utilizing the native connection pools to correctly parse `information_schema`.
+- **Advanced Type Decoders**: Implemented `decode_pg_cell` and `decode_mysql_cell` in `executor.rs` utilizing native `PgRow` / `MySqlRow` types. Natively handles `JSON`, `JSONB`, `UUID`, arrays (`INT[]`, `FLOAT[]`, etc), `rust_decimal::Decimal` fixed precision types, and all Chrono Date/Time representations.
+
+### ⚠️ Known Limitations & Remaining Bugs
+1. **Frontend Driver List vs Backend Support**: The frontend UI advertises support for 17 database engines (Oracle, SQL Server, BigQuery, Cassandra, ClickHouse, MongoDB, Snowflake, Redis). However, `sqlx` natively only supports PostgreSQL, MySQL, and SQLite. Attempts to connect to Oracle, BigQuery, etc., via the standard TCP SQL pool will be gracefully rejected by `is_supported_engine` in `pool.rs`. Redis and MongoDB are handled via specialized custom viewports, but standard SQL engines like Oracle/SQL Server lack rust driver integration in this build.
+2. **Missing `tiberius` (MSSQL) Integration**: While SQL Server (MSSQL) is mentioned, we removed `tiberius` integration from `pool.rs` due to `sqlx::AnyPool` incompatibilities. MSSQL requires a dedicated pool manager branch similar to Redis.
+3. **Frontend Connection UI Mismatch**: The frontend might still send connection payloads with `db_kind` set to unsupported engines, expecting a connection. The backend handles this by rejecting the request cleanly, but the UI should ideally disable unsupported drivers.

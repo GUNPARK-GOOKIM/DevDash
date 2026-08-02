@@ -25,6 +25,7 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
   const [password, setPassword] = useState('');
   const [database, setDatabase] = useState('postgres');
   const [isReadOnly, setIsReadOnly] = useState(false);
+  const [rawUrl, setRawUrl] = useState('');
 
   // SSH Tunnel State
   const [sshEnabled, setSshEnabled] = useState(false);
@@ -71,25 +72,27 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
     setIsTesting(false);
   };
 
+  const [sslMode, setSslMode] = useState<'prefer' | 'require' | 'verify-full'>('require');
+
   const handleDriverChange = (kind: DbKind) => {
     setDbType(kind);
     switch (kind) {
-      case 'postgres': setPort(5432); setUser('postgres'); setDatabase('postgres'); break;
+      case 'postgres': setPort(5432); setUser('postgres'); setDatabase('neondb'); break;
       case 'mysql': setPort(3306); setUser('root'); setDatabase('mysql'); break;
-      case 'mariadb': setPort(3306); setUser('root'); setDatabase('mariadb'); break;
+      case 'mariadb': setPort(3306); setUser('root'); setDatabase('mysql'); break;
       case 'sqlite': setPort(0); setUser(''); setDatabase('./database.sqlite'); break;
-      case 'duckdb': setPort(0); setUser(''); setDatabase('./database.duckdb'); break;
-      case 'mssql': setPort(1433); setUser('sa'); setDatabase('master'); break;
       case 'cockroachdb': setPort(26257); setUser('root'); setDatabase('defaultdb'); break;
       case 'redshift': setPort(5439); setUser('awsuser'); setDatabase('dev'); break;
+      case 'duckdb': setPort(0); setUser(''); setDatabase('./analytics.duckdb'); break;
+      case 'turso': setPort(0); setUser(''); setDatabase(':memory:'); break;
+      case 'redis': setPort(6379); setUser(''); setDatabase('0'); break;
+      case 'mssql': setPort(1433); setUser('sa'); setDatabase('master'); break;
       case 'oracle': setPort(1521); setUser('system'); setDatabase('ORCL'); break;
       case 'snowflake': setPort(443); setUser('admin'); setDatabase('DEMO_DB'); break;
-      case 'redis': setPort(6379); setUser('default'); setDatabase('0'); break;
       case 'mongodb': setPort(27017); setUser('admin'); setDatabase('test'); break;
       case 'cassandra': setPort(9042); setUser('cassandra'); setDatabase('system'); break;
       case 'clickhouse': setPort(8123); setUser('default'); setDatabase('default'); break;
       case 'bigquery': setPort(0); setUser(''); setDatabase('my-project-id'); break;
-      case 'turso': setPort(0); setUser(''); setDatabase('libsql://my-db.turso.io'); break;
     }
   };
 
@@ -112,6 +115,7 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
         port: Number(port),
         user,
         database,
+        ssl_mode: sslMode,
         is_read_only: isReadOnly,
         ssh_config: sshEnabled
           ? {
@@ -129,6 +133,47 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
   };
 
   const isFileBased = dbType === 'sqlite' || dbType === 'duckdb';
+
+  const parseConnectionString = (urlStr: string) => {
+    setRawUrl(urlStr);
+    if (!urlStr.trim()) return;
+    try {
+      // e.g. postgres://user:pass@host:5432/dbname?sslmode=require
+      const parsed = new URL(urlStr.trim());
+      if (parsed.protocol.startsWith('postgres') || parsed.protocol.startsWith('postgresql')) {
+        setDbType('postgres');
+      } else if (parsed.protocol.startsWith('mysql')) {
+        setDbType('mysql');
+      } else if (parsed.protocol.startsWith('redis')) {
+        setDbType('redis');
+      }
+      if (parsed.hostname) setHost(parsed.hostname);
+      if (parsed.port) {
+        setPort(Number(parsed.port));
+      } else if (parsed.protocol.startsWith('postgres') || parsed.protocol.startsWith('postgresql')) {
+        setPort(5432);
+      } else if (parsed.protocol.startsWith('mysql')) {
+        setPort(3306);
+      } else if (parsed.protocol.startsWith('redis')) {
+        setPort(6379);
+      }
+      if (parsed.username) setUser(decodeURIComponent(parsed.username));
+      if (parsed.password) setPassword(decodeURIComponent(parsed.password));
+      if (parsed.pathname && parsed.pathname.length > 1) {
+        setDatabase(decodeURIComponent(parsed.pathname.substring(1)));
+      }
+      const ssl = parsed.searchParams.get('sslmode');
+      if (ssl === 'require' || ssl === 'prefer' || ssl === 'verify-full') {
+        setSslMode(ssl);
+      }
+      if (parsed.hostname) {
+        const firstSeg = parsed.hostname.split('.')[0];
+        setName(firstSeg ? firstSeg.charAt(0).toUpperCase() + firstSeg.slice(1) : 'Database');
+      }
+    } catch {
+      // Ignore invalid URL formatting while user is typing
+    }
+  };
 
   return (
     <div className="fixed inset-0 bg-[#0F0F10]/80 backdrop-blur-md flex items-center justify-center z-50 animate-fadeIn">
@@ -175,6 +220,20 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
         <form onSubmit={handleSubmit} className="p-4 space-y-3 text-xs">
           {activeTab === 'general' ? (
             <>
+              {/* Quick Paste Connection String Box */}
+              <div className="p-2.5 bg-[#0F0F10] border border-accent/30 rounded-lg space-y-1">
+                <label className="block text-[11px] font-semibold text-accent flex items-center justify-between">
+                  <span>⚡ Paste Connection String / URL (Neon, Supabase, RDS)</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. postgres://user:pass@ep-cool-123.neon.tech/neondb?sslmode=require"
+                  value={rawUrl}
+                  onChange={(e) => parseConnectionString(e.target.value)}
+                  className="w-full bg-[#141416] border border-white/10 rounded px-2.5 py-1 text-text placeholder-textMuted/40 text-[11px] outline-none focus:border-accent"
+                />
+              </div>
+
               <div>
                 <label className="block font-medium text-textMuted mb-1">Connection Name</label>
                 <input
@@ -193,17 +252,20 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
                   onChange={(e) => handleDriverChange(e.target.value as DbKind)}
                   className="w-full bg-[#0F0F10] border border-white/10 rounded px-3 py-1.5 text-text outline-none focus:ring-2 focus:ring-accent/50 cursor-pointer"
                 >
-                  <optgroup label="Supported (native sqlx drivers)">
-                    <option value="postgres">PostgreSQL</option>
+                  <optgroup label="Supported (native compiled drivers)">
+                    <option value="postgres">PostgreSQL (Neon / Supabase / RDS)</option>
                     <option value="mysql">MySQL</option>
                     <option value="mariadb">MariaDB</option>
                     <option value="sqlite">SQLite</option>
                     <option value="cockroachdb">CockroachDB (Postgres wire)</option>
                     <option value="redshift">Amazon Redshift (Postgres wire)</option>
+                    <option value="duckdb">DuckDB (Embedded)</option>
+                    <option value="turso">Turso (SQLite engine)</option>
+                    <option value="redis">Redis (RESP Protocol)</option>
                   </optgroup>
                 </select>
                 <p className="mt-1 text-[10px] text-textMuted">
-                  MSSQL, Oracle, Snowflake, Redis, MongoDB, DuckDB and others are not implemented in the backend.
+                  MSSQL, Oracle, Snowflake, MongoDB, Cassandra, and BigQuery feature UI stubs with driver guidance.
                 </p>
               </div>
 

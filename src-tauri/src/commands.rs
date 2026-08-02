@@ -3,7 +3,7 @@ use crate::db::app_storage::{AppStorage, ConnectionGroup, QueryHistoryItem, Save
 use crate::db::credentials; // Import credentials module for keyring secrets management
 use crate::db::executor::{execute_dynamic_query, QueryResultPayload}; // Import dynamic query execution function and payload struct
 use crate::db::export; // Import export module for CSV, JSON, SQL dump operations
-use crate::db::introspection::{fetch_tables, fetch_columns, analyze_primary_keys, TableInfo, ColumnInfo, PkAnalysis}; // Import introspection functions and structs
+use crate::db::introspection::{fetch_tables, fetch_tables_managed, fetch_columns, fetch_columns_managed, analyze_primary_keys, TableInfo, ColumnInfo, PkAnalysis}; // Import introspection functions and structs
 use crate::db::pool::{ConnectionManager, ConnectionDetails, TestConnectionResult}; // Import ConnectionManager, ConnectionDetails, and TestConnectionResult
 use crate::db::safe_mode::{analyze_sql_safety, SafetyAnalysis}; // Import safe mode analysis function
 use crate::db::staged_edits::{
@@ -41,8 +41,10 @@ use crate::db::transactions::{TransactionManager, TxStatus};
 use crate::db::diagnostics::{run_connection_diagnostics, ConnectionDiagnostics};
 use crate::db::profiler::{profile_query, QueryProfile};
 use crate::db::migrations_log::{self, MigrationRun};
+use crate::db::redis::{self, RedisKeyInfo};
 use std::sync::Arc; // Import Arc for atomic reference sharing
 use tauri::State; // Import State extractor type from tauri crate
+
 use std::collections::HashMap; // Import HashMap for tracking active query handles
 use tokio::sync::Mutex; // Import Mutex for thread-safe query cancellation access
 
@@ -334,35 +336,35 @@ pub async fn disconnect_database( // Async command handler function
 #[tauri::command] // Tauri command macro annotation
 pub async fn get_database_tables( // Async command handler function
     connection_id: String, // Connection ID identifier
-    db_kind: String, // Database engine kind identifier string
+    _db_kind: String, // Database engine kind identifier string
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<Vec<TableInfo>, String> { // Command return signature
-    let pool = state.connection_manager.get_pool(&connection_id)?; // Lookup cached connection pool instance
-    fetch_tables(&pool, &db_kind).await // Call fetch_tables introspection function asynchronously
+    let managed = state.connection_manager.get_managed_connection(&connection_id)?;
+    fetch_tables_managed(&managed).await
 } // End of get_database_tables command
 
 // IPC Command: Fetch column details for a specific table
 #[tauri::command] // Tauri command macro annotation
 pub async fn get_table_columns( // Async command handler function
     connection_id: String, // Connection ID identifier
-    db_kind: String, // Database engine kind string
+    _db_kind: String, // Database engine kind string
     table_name: String, // Target table name string
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<Vec<ColumnInfo>, String> { // Command return signature
-    let pool = state.connection_manager.get_pool(&connection_id)?; // Lookup cached connection pool
-    fetch_columns(&pool, &db_kind, &table_name).await // Call fetch_columns introspection function
+    let managed = state.connection_manager.get_managed_connection(&connection_id)?;
+    fetch_columns_managed(&managed, &table_name).await // Call fetch_columns introspection function
 } // End of get_table_columns command
 
 // IPC Command: Analyze primary key status for editing safety
 #[tauri::command] // Tauri command macro annotation
 pub async fn get_pk_analysis( // Async command handler function
     connection_id: String, // Connection ID identifier
-    db_kind: String, // Database engine kind string
+    _db_kind: String, // Database engine kind string
     table_name: String, // Target table name string
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<PkAnalysis, String> { // Command return signature
-    let pool = state.connection_manager.get_pool(&connection_id)?; // Lookup cached connection pool
-    let columns = fetch_columns(&pool, &db_kind, &table_name).await?; // Fetch column metadata
+    let managed = state.connection_manager.get_managed_connection(&connection_id)?;
+    let columns = fetch_columns_managed(&managed, &table_name).await?; // Fetch column metadata
     Ok(analyze_primary_keys(&columns)) // Analyze and return PK status
 } // End of get_pk_analysis command
 
@@ -412,15 +414,15 @@ pub async fn run_sql_query( // Async command handler function
         }
     }
 
-    let pool = state.connection_manager.get_pool(&connection_id)?; // Lookup cached connection pool instance
+    let managed_conn = state.connection_manager.get_managed_connection(&connection_id)?; // Lookup cached connection pool instance
     
     // Clone connection pool and SQL statement for task execution
-    let pool_clone = pool.clone();
+    let conn_clone = managed_conn.clone();
     let sql_clone = sql.clone();
     
     // Spawn task to run query asynchronously on thread pool
     let handle = tokio::spawn(async move {
-        execute_dynamic_query(&pool_clone, &sql_clone).await
+        execute_dynamic_query(&conn_clone, &sql_clone).await
     });
 
     // Register active query handle
@@ -1151,3 +1153,17 @@ pub fn close_ssh_tunnel(
 ) -> Result<(), String> {
     state.ssh_tunnel_manager.close_tunnel(&connection_id)
 }
+
+// IPC Command: Inspect keys from live Redis instance using RESP protocol
+#[tauri::command]
+pub async fn fetch_redis_keys(
+    host: String,
+    port: u16,
+    password: Option<String>,
+    pattern: Option<String>,
+) -> Result<Vec<RedisKeyInfo>, String> {
+    let mut client = redis::RedisClient::connect(&host, port, password.as_deref()).await?;
+    let pat = pattern.as_deref().unwrap_or("*");
+    client.fetch_keys(pat).await
+}
+

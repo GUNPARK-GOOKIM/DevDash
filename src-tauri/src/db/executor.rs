@@ -85,14 +85,14 @@ fn expects_result_set(sql: &str) -> bool {
 }
 
 // Execute arbitrary dynamic SQL string against connection pool and return formatted payload
-pub async fn execute_dynamic_query(pool: &AnyPool, sql: &str) -> Result<QueryResultPayload, String> {
+pub async fn execute_dynamic_query(managed_conn: &crate::db::pool::ManagedConnection, sql: &str) -> Result<QueryResultPayload, String> {
     let start_time = Instant::now();
 
     // DML/DDL statements (INSERT/UPDATE/DELETE/CREATE/...) should use execute(),
     // not fetch_all(). Using fetch_all on non-SELECT queries fails on most drivers.
     if !expects_result_set(sql) {
         let result = sqlx::query(sql)
-            .execute(pool)
+            .execute(&managed_conn.pool)
             .await
             .map_err(|e| format!("Query execution failed: {}", e))?;
 
@@ -107,8 +107,24 @@ pub async fn execute_dynamic_query(pool: &AnyPool, sql: &str) -> Result<QueryRes
         });
     }
 
+    if let Some(pg_pool) = &managed_conn.pg_pool {
+        let rows = sqlx::query(sql)
+            .fetch_all(pg_pool)
+            .await
+            .map_err(|e| format!("Query execution failed: {}", e))?;
+        return Ok(format_pg_rows(rows, start_time));
+    }
+
+    if let Some(mysql_pool) = &managed_conn.mysql_pool {
+        let rows = sqlx::query(sql)
+            .fetch_all(mysql_pool)
+            .await
+            .map_err(|e| format!("Query execution failed: {}", e))?;
+        return Ok(format_mysql_rows(rows, start_time));
+    }
+
     let rows: Vec<AnyRow> = sqlx::query(sql)
-        .fetch_all(pool)
+        .fetch_all(&managed_conn.pool)
         .await
         .map_err(|e| format!("Query execution failed: {}", e))?;
 
@@ -175,6 +191,224 @@ fn format_fetched_rows(rows: Vec<AnyRow>, start_time: Instant) -> QueryResultPay
         execution_time_ms: start_time.elapsed().as_millis() as u64,
         affected_rows,
     }
+}
+
+fn format_pg_rows(rows: Vec<sqlx::postgres::PgRow>, start_time: Instant) -> QueryResultPayload {
+    let mut columns = Vec::new();
+    let mut result_rows = Vec::new();
+
+    if let Some(first_row) = rows.first() {
+        for col in first_row.columns() {
+            columns.push(ColumnHeader {
+                name: col.name().to_string(),
+                type_name: col.type_info().name().to_string(),
+            });
+        }
+    }
+
+    for row in &rows {
+        let mut row_values = Vec::new();
+        for i in 0..row.columns().len() {
+            row_values.push(decode_pg_cell(row, i));
+        }
+        result_rows.push(row_values);
+    }
+
+    let affected_rows = rows.len() as u64;
+    QueryResultPayload {
+        columns,
+        rows: result_rows,
+        execution_time_ms: start_time.elapsed().as_millis() as u64,
+        affected_rows,
+    }
+}
+
+pub fn decode_pg_cell(row: &sqlx::postgres::PgRow, index: usize) -> Value {
+    // ── Arrays ──
+    if let Ok(val) = row.try_get::<Vec<String>, _>(index) {
+        return json!(val);
+    }
+    if let Ok(val) = row.try_get::<Vec<i32>, _>(index) {
+        return json!(val);
+    }
+    if let Ok(val) = row.try_get::<Vec<i64>, _>(index) {
+        return json!(val);
+    }
+    if let Ok(val) = row.try_get::<Vec<f64>, _>(index) {
+        return json!(val);
+    }
+    if let Ok(val) = row.try_get::<Vec<bool>, _>(index) {
+        return json!(val);
+    }
+    // ── JSONB / JSON ──
+    if let Ok(val) = row.try_get::<serde_json::Value, _>(index) {
+        return val;
+    }
+    // ── UUID ──
+    if let Ok(val) = row.try_get::<uuid::Uuid, _>(index) {
+        return Value::String(val.to_string());
+    }
+    // ── Date/Time types ──
+    if let Ok(val) = row.try_get::<chrono::DateTime<chrono::Utc>, _>(index) {
+        return Value::String(val.to_rfc3339());
+    }
+    if let Ok(val) = row.try_get::<chrono::NaiveDateTime, _>(index) {
+        return Value::String(val.format("%Y-%m-%d %H:%M:%S%.f").to_string());
+    }
+    if let Ok(val) = row.try_get::<chrono::NaiveDate, _>(index) {
+        return Value::String(val.format("%Y-%m-%d").to_string());
+    }
+    if let Ok(val) = row.try_get::<chrono::NaiveTime, _>(index) {
+        return Value::String(val.format("%H:%M:%S%.f").to_string());
+    }
+    // ── Decimal ──
+    if let Ok(val) = row.try_get::<rust_decimal::Decimal, _>(index) {
+        use rust_decimal::prelude::ToPrimitive;
+        if let Some(f) = val.to_f64() {
+            return json!(f);
+        } else {
+            return Value::String(val.to_string());
+        }
+    }
+    // ── Scalars ──
+    if let Ok(val) = row.try_get::<String, _>(index) {
+        if (val.starts_with('{') && val.ends_with('}')) || (val.starts_with('[') && val.ends_with(']')) {
+            if let Ok(json_val) = serde_json::from_str::<Value>(&val) {
+                return json_val;
+            }
+        }
+        return Value::String(val);
+    }
+    if let Ok(val) = row.try_get::<i64, _>(index) {
+        return json!(val);
+    }
+    if let Ok(val) = row.try_get::<i32, _>(index) {
+        return json!(val);
+    }
+    if let Ok(val) = row.try_get::<i16, _>(index) {
+        return json!(val);
+    }
+    if let Ok(val) = row.try_get::<f64, _>(index) {
+        return json!(val);
+    }
+    if let Ok(val) = row.try_get::<f32, _>(index) {
+        return json!(val as f64);
+    }
+    if let Ok(val) = row.try_get::<bool, _>(index) {
+        return Value::Bool(val);
+    }
+    if let Ok(val) = row.try_get::<Vec<u8>, _>(index) {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        return Value::String(STANDARD.encode(val));
+    }
+    // ── Fallback: NULL ──
+    Value::Null
+}
+
+// ── MySQL ──────────────────────────────────────────────────────────────
+
+fn format_mysql_rows(rows: Vec<sqlx::mysql::MySqlRow>, start_time: Instant) -> QueryResultPayload {
+    let mut columns = Vec::new();
+    let mut result_rows = Vec::new();
+
+    if let Some(first_row) = rows.first() {
+        for col in first_row.columns() {
+            columns.push(ColumnHeader {
+                name: col.name().to_string(),
+                type_name: col.type_info().name().to_string(),
+            });
+        }
+    }
+
+    for row in &rows {
+        let mut row_values = Vec::new();
+        for i in 0..row.columns().len() {
+            row_values.push(decode_mysql_cell(row, i));
+        }
+        result_rows.push(row_values);
+    }
+
+    let affected_rows = rows.len() as u64;
+    QueryResultPayload {
+        columns,
+        rows: result_rows,
+        execution_time_ms: start_time.elapsed().as_millis() as u64,
+        affected_rows,
+    }
+}
+
+pub fn decode_mysql_cell(row: &sqlx::mysql::MySqlRow, index: usize) -> Value {
+    // ── JSON ──
+    if let Ok(val) = row.try_get::<serde_json::Value, _>(index) {
+        return val;
+    }
+    // ── Date/Time types ──
+    if let Ok(val) = row.try_get::<chrono::NaiveDateTime, _>(index) {
+        return Value::String(val.format("%Y-%m-%d %H:%M:%S%.f").to_string());
+    }
+    if let Ok(val) = row.try_get::<chrono::NaiveDate, _>(index) {
+        return Value::String(val.format("%Y-%m-%d").to_string());
+    }
+    if let Ok(val) = row.try_get::<chrono::NaiveTime, _>(index) {
+        return Value::String(val.format("%H:%M:%S%.f").to_string());
+    }
+    // ── Decimal ──
+    if let Ok(val) = row.try_get::<rust_decimal::Decimal, _>(index) {
+        use rust_decimal::prelude::ToPrimitive;
+        if let Some(f) = val.to_f64() {
+            return json!(f);
+        } else {
+            return Value::String(val.to_string());
+        }
+    }
+    // ── Scalars ──
+    if let Ok(val) = row.try_get::<String, _>(index) {
+        if (val.starts_with('{') && val.ends_with('}')) || (val.starts_with('[') && val.ends_with(']')) {
+            if let Ok(json_val) = serde_json::from_str::<Value>(&val) {
+                return json_val;
+            }
+        }
+        return Value::String(val);
+    }
+    if let Ok(val) = row.try_get::<i64, _>(index) {
+        return json!(val);
+    }
+    if let Ok(val) = row.try_get::<i32, _>(index) {
+        return json!(val);
+    }
+    if let Ok(val) = row.try_get::<i16, _>(index) {
+        return json!(val);
+    }
+    if let Ok(val) = row.try_get::<i8, _>(index) {
+        return json!(val);
+    }
+    if let Ok(val) = row.try_get::<u64, _>(index) {
+        return json!(val);
+    }
+    if let Ok(val) = row.try_get::<u32, _>(index) {
+        return json!(val);
+    }
+    if let Ok(val) = row.try_get::<u16, _>(index) {
+        return json!(val);
+    }
+    if let Ok(val) = row.try_get::<u8, _>(index) {
+        return json!(val);
+    }
+    if let Ok(val) = row.try_get::<f64, _>(index) {
+        return json!(val);
+    }
+    if let Ok(val) = row.try_get::<f32, _>(index) {
+        return json!(val as f64);
+    }
+    if let Ok(val) = row.try_get::<bool, _>(index) {
+        return Value::Bool(val);
+    }
+    if let Ok(val) = row.try_get::<Vec<u8>, _>(index) {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        return Value::String(STANDARD.encode(val));
+    }
+    // ── Fallback: NULL ──
+    Value::Null
 }
 
 // Chunked stream payload for emitting partial query row blocks
@@ -314,8 +548,15 @@ mod integration_tests {
             .await
             .expect("connect");
 
+        let managed_conn = crate::db::pool::ManagedConnection {
+            pool,
+            pg_pool: None,
+            mysql_pool: None,
+            db_type: "sqlite".to_string(),
+        };
+
         let create = execute_dynamic_query(
-            &pool,
+            &managed_conn,
             "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
         )
         .await
@@ -323,14 +564,14 @@ mod integration_tests {
         assert_eq!(create.columns[0].name, "affected_rows");
 
         let insert = execute_dynamic_query(
-            &pool,
+            &managed_conn,
             "INSERT INTO users (id, name) VALUES (1, 'Ada');",
         )
         .await
         .expect("insert");
         assert_eq!(insert.affected_rows, 1);
 
-        let select = execute_dynamic_query(&pool, "SELECT id, name FROM users;")
+        let select = execute_dynamic_query(&managed_conn, "SELECT id, name FROM users;")
             .await
             .expect("select");
         assert_eq!(select.rows.len(), 1);

@@ -50,7 +50,7 @@ export const testDbConnection = async (
     user: config.user || 'postgres',
     password: password || '',
     database: config.database || 'postgres',
-    ssl_mode: 'prefer',
+    ssl_mode: config.ssl_mode || 'require',
   };
 
   try {
@@ -97,7 +97,7 @@ export const connectDatabase = async (
     user: conn.user,
     password: password || '',
     database: conn.database,
-    ssl_mode: 'prefer',
+    ssl_mode: conn.ssl_mode || 'require',
   };
 
   await invoke('connect_database_config', {
@@ -111,12 +111,14 @@ export const getDatabaseTables = async (
   dbKind: string
 ): Promise<TableItem[]> => {
   if (!isTauriAvailable()) {
+    // Mock data for web browser UI testing
     return [
-      { name: 'users', schema: 'main', table_type: 'BASE TABLE', qualified_name: 'users' },
-      { name: 'products', schema: 'main', table_type: 'BASE TABLE', qualified_name: 'products' },
-      { name: 'orders', schema: 'main', table_type: 'BASE TABLE', qualified_name: 'orders' },
-      { name: 'categories', schema: 'main', table_type: 'BASE TABLE', qualified_name: 'categories' },
-      { name: 'active_users', schema: 'main', table_type: 'VIEW', qualified_name: 'active_users' },
+      { name: 'User', table_type: 'BASE TABLE', schema: 'public' },
+      { name: 'University', table_type: 'BASE TABLE', schema: 'public' },
+      { name: 'FriendRequest', table_type: 'BASE TABLE', schema: 'public' },
+      { name: 'Otp', table_type: 'BASE TABLE', schema: 'public' },
+      { name: 'ProfileVerification', table_type: 'BASE TABLE', schema: 'public' },
+      { name: 'Report', table_type: 'BASE TABLE', schema: 'public' },
     ];
   }
 
@@ -138,7 +140,7 @@ export const getDatabaseTables = async (
             : t.name),
     }));
   } catch (err) {
-    console.warn('Failed to fetch database tables via IPC:', err);
+    console.error('Failed to fetch database tables via IPC:', err);
     return [];
   }
 };
@@ -149,40 +151,11 @@ export const getTableColumns = async (
   tableName: string
 ): Promise<ColumnItem[]> => {
   if (!isTauriAvailable()) {
-    if (tableName === 'users') {
-      return [
-        { name: 'id', data_type: 'INTEGER', is_nullable: false, is_primary_key: true },
-        { name: 'username', data_type: 'TEXT', is_nullable: false, is_primary_key: false },
-        { name: 'email', data_type: 'TEXT', is_nullable: false, is_primary_key: false },
-        { name: 'role', data_type: 'TEXT', is_nullable: true, is_primary_key: false },
-        { name: 'status', data_type: 'TEXT', is_nullable: true, is_primary_key: false },
-        { name: 'created_at', data_type: 'TIMESTAMP', is_nullable: true, is_primary_key: false },
-      ];
-    }
-    if (tableName === 'products') {
-      return [
-        { name: 'id', data_type: 'INTEGER', is_nullable: false, is_primary_key: true },
-        { name: 'category_id', data_type: 'INTEGER', is_nullable: true, is_primary_key: false },
-        { name: 'name', data_type: 'TEXT', is_nullable: false, is_primary_key: false },
-        { name: 'price', data_type: 'REAL', is_nullable: false, is_primary_key: false },
-        { name: 'stock', data_type: 'INTEGER', is_nullable: true, is_primary_key: false },
-        { name: 'is_active', data_type: 'INTEGER', is_nullable: true, is_primary_key: false },
-      ];
-    }
-    if (tableName === 'orders') {
-      return [
-        { name: 'id', data_type: 'INTEGER', is_nullable: false, is_primary_key: true },
-        { name: 'user_id', data_type: 'INTEGER', is_nullable: false, is_primary_key: false },
-        { name: 'product_id', data_type: 'INTEGER', is_nullable: false, is_primary_key: false },
-        { name: 'quantity', data_type: 'INTEGER', is_nullable: true, is_primary_key: false },
-        { name: 'total_amount', data_type: 'REAL', is_nullable: false, is_primary_key: false },
-        { name: 'order_date', data_type: 'TIMESTAMP', is_nullable: true, is_primary_key: false },
-      ];
-    }
+    // Mock columns for web browser UI testing
     return [
-      { name: 'id', data_type: 'INTEGER', is_nullable: false, is_primary_key: true },
-      { name: 'name', data_type: 'TEXT', is_nullable: false, is_primary_key: false },
-      { name: 'description', data_type: 'TEXT', is_nullable: true, is_primary_key: false },
+      { name: 'id', data_type: 'INT8', is_nullable: false, is_primary_key: true },
+      { name: 'username', data_type: 'TEXT', is_nullable: false, is_primary_key: false },
+      { name: 'email', data_type: 'TEXT', is_nullable: false, is_primary_key: false },
     ];
   }
 
@@ -244,73 +217,20 @@ export const runSqlQuery = async (
   queryId?: string
 ): Promise<QueryResultPayload> => {
   if (!isTauriAvailable()) {
-    const lower = sql.toLowerCase();
-    // COUNT(*) helpers for browser-mode pagination demos
-    if (/\bcount\s*\(\s*\*\s*\)/i.test(sql) && !lower.includes('group by')) {
-      return {
-        columns: [{ name: 'count', type_name: 'INTEGER' }],
-        rows: [[42]],
-        execution_time_ms: 2,
-        affected_rows: 1,
-      };
-    }
-    if (lower.includes('from users')) {
-      return {
-        columns: [
-          { name: 'id', type_name: 'INTEGER' },
-          { name: 'username', type_name: 'TEXT' },
-          { name: 'email', type_name: 'TEXT' },
-          { name: 'role', type_name: 'TEXT' },
-          { name: 'status', type_name: 'TEXT' },
-        ],
-        rows: [
-          [1, 'alice_dev', 'alice@devdash.io', 'admin', 'active'],
-          [2, 'bob_lead', 'bob@devdash.io', 'lead_engineer', 'active'],
-          [3, 'charlie_qa', 'charlie@devdash.io', 'qa_engineer', 'active'],
-          [4, 'david_pm', 'david@devdash.io', 'product_manager', 'inactive'],
-          [5, 'eva_security', 'eva@devdash.io', 'security_auditor', 'active'],
-        ],
-        execution_time_ms: 8,
-        affected_rows: 5,
-      };
-    }
-    if (lower.includes('from orders')) {
-      return {
-        columns: [
-          { name: 'id', type_name: 'INTEGER' },
-          { name: 'user_id', type_name: 'INTEGER' },
-          { name: 'product_id', type_name: 'INTEGER' },
-          { name: 'quantity', type_name: 'INTEGER' },
-          { name: 'total_amount', type_name: 'REAL' },
-        ],
-        rows: [
-          [101, 1, 1, 2, 99.98],
-          [102, 2, 2, 1, 299.99],
-          [103, 3, 4, 3, 106.50],
-          [104, 4, 5, 1, 89.00],
-          [105, 5, 3, 2, 240.00],
-        ],
-        execution_time_ms: 10,
-        affected_rows: 5,
-      };
-    }
+    // Return mock data for web browser preview
     return {
       columns: [
-        { name: 'id', type_name: 'INTEGER' },
-        { name: 'name', type_name: 'TEXT' },
-        { name: 'price', type_name: 'REAL' },
-        { name: 'stock', type_name: 'INTEGER' },
-        { name: 'is_active', type_name: 'INTEGER' },
+        { name: 'id', type_name: 'INT8' },
+        { name: 'username', type_name: 'TEXT' },
+        { name: 'email', type_name: 'TEXT' },
       ],
       rows: [
-        [1, 'DevDash Pro Desktop License', 49.99, 500, 1],
-        [2, 'DevDash Enterprise Server', 299.99, 50, 1],
-        [3, 'Postgres High-Availability Cluster', 120.00, 20, 1],
-        [4, 'Redis In-Memory Cache Node', 35.50, 100, 1],
-        [5, 'SOC2 Compliance Audit Reporter', 89.00, 150, 1],
+        [1, 'akshatlakhera', 'akshatlakhera50@gmail.com'],
+        [2, 'chitti', 'chitti@example.com'],
+        [3, 'volt', 'volt@example.com'],
       ],
-      execution_time_ms: 9,
-      affected_rows: 5,
+      execution_time_ms: 15,
+      affected_rows: 3,
     };
   }
 
@@ -435,19 +355,27 @@ export const streamSqlQuery = async (
   }
 };
 
-// ─── Credentials (OS keychain) ───────────────────────────────────────
+// ─── Credentials (OS keychain + Web Fallback) ────────────────────────
+const webPasswordStore = new Map<string, string>();
+
 export const saveDbPassword = async (connectionId: string, password: string): Promise<void> => {
+  webPasswordStore.set(connectionId, password);
+  try { sessionStorage.setItem(`devdash_pwd_${connectionId}`, password); } catch {}
   if (!isTauriAvailable()) return;
   await invoke('save_db_password', { connectionId, password });
 };
 
 export const getDbPassword = async (connectionId: string): Promise<string | null> => {
-  if (!isTauriAvailable()) return null;
-  try {
-    return await invoke<string>('get_db_password', { connectionId });
-  } catch {
-    return null;
+  if (!isTauriAvailable()) {
+    return webPasswordStore.get(connectionId) || sessionStorage.getItem(`devdash_pwd_${connectionId}`) || null;
   }
+  try {
+    const pwd = await invoke<string>('get_db_password', { connectionId });
+    if (pwd) return pwd;
+  } catch {
+    /* fallthrough */
+  }
+  return webPasswordStore.get(connectionId) || sessionStorage.getItem(`devdash_pwd_${connectionId}`) || null;
 };
 
 // ─── Safety / staging ────────────────────────────────────────────────
@@ -608,6 +536,32 @@ export const exportTableData = async (
   });
 };
 
+export interface RedisKeyEntry {
+  key: string;
+  key_type: string;
+  ttl: number;
+  size: number;
+}
+
+/** Fetch live Redis keys via native Rust RESP protocol client */
+export const fetchRedisKeys = async (
+  host: string,
+  port: number,
+  password?: string,
+  pattern?: string
+): Promise<RedisKeyEntry[]> => {
+  if (!isTauriAvailable()) {
+    return [];
+  }
+  return await invoke<RedisKeyEntry[]>('fetch_redis_keys', {
+    host,
+    port,
+    password: password || null,
+    pattern: pattern || '*',
+  });
+};
+
+
 // ─── Live metrics ────────────────────────────────────────────────────
 export interface DatabaseLiveMetrics {
   active_connections: number;
@@ -696,6 +650,9 @@ export const SUPPORTED_ENGINES = new Set([
   'sqlite',
   'cockroachdb',
   'redshift',
+  'duckdb',
+  'turso',
+  'redis',
 ]);
 
 export const isEngineSupported = (dbType: string): boolean =>

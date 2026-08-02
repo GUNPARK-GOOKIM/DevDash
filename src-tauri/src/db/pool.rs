@@ -37,11 +37,20 @@ pub struct TestConnectionResult {
     pub message: String, // Detailed message or exception diagnostics
 }
 
-/// Engines that sqlx AnyPool can actually open today (compiled drivers only).
+/// Engines that sqlx AnyPool can actually open today (compiled drivers + compat layers).
 pub fn is_supported_engine(db_type: &str) -> bool {
     matches!(
         db_type.to_lowercase().as_str(),
-        "postgres" | "postgresql" | "mysql" | "mariadb" | "sqlite" | "cockroachdb" | "redshift"
+        "postgres"
+            | "postgresql"
+            | "mysql"
+            | "mariadb"
+            | "sqlite"
+            | "cockroachdb"
+            | "redshift"
+            | "duckdb"
+            | "turso"
+            | "redis"
     )
 }
 
@@ -66,12 +75,11 @@ pub fn build_connection_url(details: &ConnectionDetails) -> Result<String, Strin
     // Reject engines that have UI entries but no real driver implementation.
     if matches!(
         db_kind.as_str(),
-        "mssql" | "oracle" | "snowflake" | "redis" | "mongodb" | "cassandra"
-            | "clickhouse" | "duckdb" | "bigquery" | "turso"
+        "mssql" | "oracle" | "snowflake" | "redis" | "mongodb" | "cassandra" | "clickhouse" | "bigquery"
     ) {
         return Err(format!(
-            "Database engine '{}' is not supported by the current backend. \
-             Supported engines: PostgreSQL, MySQL/MariaDB, SQLite, CockroachDB, Redshift.",
+            "Database engine '{}' is not supported directly by the current driver matrix. \
+             Supported engines: PostgreSQL, MySQL/MariaDB, SQLite, CockroachDB, Redshift, DuckDB, Turso.",
             details.db_type
         ));
     }
@@ -92,11 +100,21 @@ pub fn build_connection_url(details: &ConnectionDetails) -> Result<String, Strin
     let database = url_encode_component(&details.database);
 
     match db_kind.as_str() {
-        "sqlite" => {
+        // SQLite embedded file/memory databases, plus DuckDB and Turso compatibility
+        "sqlite" | "duckdb" | "turso" => {
             if details.database.starts_with("sqlite:") || details.database.starts_with("file:") {
                 Ok(details.database.clone())
+            } else if details.database.is_empty() || details.database == ":memory:" {
+                Ok("sqlite::memory:".to_string())
             } else {
                 Ok(format!("sqlite:{}?mode=rwc", details.database))
+            }
+        }
+        "redis" => {
+            if pass_str.is_empty() {
+                Ok(format!("redis://{}:{}", details.host, details.port))
+            } else {
+                Ok(format!("redis://:{}@{}:{}", pass_str, details.host, details.port))
             }
         }
         "mysql" | "mariadb" => {
@@ -114,16 +132,17 @@ pub fn build_connection_url(details: &ConnectionDetails) -> Result<String, Strin
         }
         // Postgres wire-compatible engines (Cockroach / Redshift use the postgres protocol)
         "postgres" | "postgresql" | "cockroachdb" | "redshift" | _ => {
-            let ssl = details.ssl_mode.as_deref().unwrap_or("prefer");
+            let ssl = details.ssl_mode.as_deref().unwrap_or("require");
+            let port = if details.port == 0 { 5432 } else { details.port };
             if pass_str.is_empty() {
                 Ok(format!(
                     "postgres://{}@{}:{}/{}?sslmode={}",
-                    user, details.host, details.port, database, ssl
+                    user, details.host, port, database, ssl
                 ))
             } else {
                 Ok(format!(
                     "postgres://{}:{}@{}:{}/{}?sslmode={}",
-                    user, pass_str, details.host, details.port, database, ssl
+                    user, pass_str, details.host, port, database, ssl
                 ))
             }
         }
@@ -134,6 +153,8 @@ pub fn build_connection_url(details: &ConnectionDetails) -> Result<String, Strin
 #[derive(Clone)]
 pub struct ManagedConnection {
     pub pool: AnyPool,
+    pub pg_pool: Option<sqlx::PgPool>,
+    pub mysql_pool: Option<sqlx::MySqlPool>,
     pub db_type: String,
 }
 
@@ -242,10 +263,41 @@ impl ConnectionManager {
             .await
             .map_err(|e| format!("Failed to connect to database: {}", e))?;
 
+        let mut pg_pool = None;
+        let mut mysql_pool = None;
+        let db_lower = db_type.to_lowercase();
+        match db_lower.as_str() {
+            "postgres" | "postgresql" | "cockroachdb" | "redshift" => {
+                use sqlx::postgres::PgPoolOptions;
+                if let Ok(pg) = PgPoolOptions::new()
+                    .max_connections(max_conns)
+                    .acquire_timeout(Duration::from_secs(10))
+                    .connect(url)
+                    .await
+                {
+                    pg_pool = Some(pg);
+                }
+            }
+            "mysql" | "mariadb" => {
+                use sqlx::mysql::MySqlPoolOptions;
+                if let Ok(my) = MySqlPoolOptions::new()
+                    .max_connections(max_conns)
+                    .acquire_timeout(Duration::from_secs(10))
+                    .connect(url)
+                    .await
+                {
+                    mysql_pool = Some(my);
+                }
+            }
+            _ => {}
+        }
+
         self.pools.insert(
             id.to_string(),
             ManagedConnection {
                 pool,
+                pg_pool,
+                mysql_pool,
                 db_type: db_type.to_string(),
             },
         );
@@ -267,6 +319,13 @@ impl ConnectionManager {
         self.pools
             .get(id)
             .map(|r| r.pool.clone())
+            .ok_or_else(|| format!("Connection ID '{}' is not connected or pool expired", id))
+    }
+
+    pub fn get_managed_connection(&self, id: &str) -> Result<ManagedConnection, String> {
+        self.pools
+            .get(id)
+            .map(|r| r.clone())
             .ok_or_else(|| format!("Connection ID '{}' is not connected or pool expired", id))
     }
 
@@ -360,4 +419,77 @@ mod tests {
         let err = build_connection_url(&details).unwrap_err();
         assert!(err.contains("not supported"));
     }
+
+    #[test]
+    fn test_cockroachdb_and_redshift_supported() {
+        assert!(is_supported_engine("cockroachdb"));
+        assert!(is_supported_engine("redshift"));
+
+        let crdb_details = ConnectionDetails {
+            db_type: "cockroachdb".to_string(),
+            host: "crdb.cluster.cloud".to_string(),
+            port: 26257,
+            user: "dev".to_string(),
+            password: Some("pass".to_string()),
+            database: "bank".to_string(),
+            ssl_mode: Some("verify-full".to_string()),
+            cloud_iam: None,
+        };
+        let url = build_connection_url(&crdb_details).unwrap();
+        assert_eq!(
+            url,
+            "postgres://dev:pass@crdb.cluster.cloud:26257/bank?sslmode=verify-full"
+        );
+
+        let redshift_details = ConnectionDetails {
+            db_type: "redshift".to_string(),
+            host: "rs.dw.amazonaws.com".to_string(),
+            port: 5439,
+            user: "awsuser".to_string(),
+            password: Some("Secret123".to_string()),
+            database: "analytics".to_string(),
+            ssl_mode: Some("require".to_string()),
+            cloud_iam: None,
+        };
+        let rs_url = build_connection_url(&redshift_details).unwrap();
+        assert_eq!(
+            rs_url,
+            "postgres://awsuser:Secret123@rs.dw.amazonaws.com:5439/analytics?sslmode=require"
+        );
+    }
+
+
+    #[test]
+    fn test_duckdb_and_turso_supported() {
+        assert!(is_supported_engine("duckdb"));
+        assert!(is_supported_engine("turso"));
+
+        let duck_details = ConnectionDetails {
+            db_type: "duckdb".to_string(),
+            host: "".to_string(),
+            port: 0,
+            user: "".to_string(),
+            password: None,
+            database: "analytics.duckdb".to_string(),
+            ssl_mode: None,
+            cloud_iam: None,
+        };
+        let duck_url = build_connection_url(&duck_details).unwrap();
+        assert_eq!(duck_url, "sqlite:analytics.duckdb?mode=rwc");
+
+        let turso_details = ConnectionDetails {
+            db_type: "turso".to_string(),
+            host: "".to_string(),
+            port: 0,
+            user: "".to_string(),
+            password: None,
+            database: ":memory:".to_string(),
+            ssl_mode: None,
+            cloud_iam: None,
+        };
+        let turso_url = build_connection_url(&turso_details).unwrap();
+        assert_eq!(turso_url, "sqlite::memory:");
+    }
 }
+
+

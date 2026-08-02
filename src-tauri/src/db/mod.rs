@@ -25,5 +25,6 @@ pub mod ssh_tunnel;
 pub mod staged_edits;
 pub mod structure_editor;
 pub mod transactions;
+pub mod redis;
 
 

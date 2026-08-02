@@ -24,6 +24,7 @@ export interface ConnectionConfig {
   port: number;
   user: string;
   database: string;
+  ssl_mode?: string;
   project_path?: string;
   is_connected?: boolean;
   is_read_only?: boolean;

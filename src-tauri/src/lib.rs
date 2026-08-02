@@ -116,6 +116,7 @@ pub fn run() { // Entry point library run function for Tauri application
             commands::profile_sql_query,
             commands::apply_migration_sql,
             commands::list_migration_runs,
+            commands::fetch_redis_keys,
         ])
         .run(tauri::generate_context!()) // Run Tauri application context
         .expect("error while running devdash tauri application"); // Handle application runtime errors

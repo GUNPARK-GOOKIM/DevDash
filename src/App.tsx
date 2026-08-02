@@ -259,26 +259,19 @@ export const App: React.FC = () => {
     });
 
     try {
-      // Fast switch if pool already open
-      const already = connections.find((c) => c.id === conn.id)?.is_connected;
-      if (!already) {
-        let pwd = password;
-        if (pwd === undefined || pwd === '') {
-          pwd = (await getDbPassword(conn.id)) || undefined;
-        }
-        await connectDatabase(conn, pwd);
+      let pwd = password;
+      if (pwd === undefined || pwd === '') {
+        pwd = (await getDbPassword(conn.id)) || undefined;
       }
+      await connectDatabase(conn, pwd);
 
       setActiveConnection({ ...conn, is_connected: true });
       setConnections((prev) =>
         prev.map((c) => (c.id === conn.id ? { ...c, is_connected: true } : c))
       );
 
-      let fetchedTables = tablesByConn[conn.id];
-      if (!fetchedTables?.length) {
-        fetchedTables = (await getDatabaseTables(conn.id, conn.db_type)) || [];
-        setTablesByConn((prev) => ({ ...prev, [conn.id]: fetchedTables! }));
-      }
+      const fetchedTables = (await getDatabaseTables(conn.id, conn.db_type)) || [];
+      setTablesByConn((prev) => ({ ...prev, [conn.id]: fetchedTables }));
       setTables(fetchedTables);
 
       const cachedSchema = schemaByConn[conn.id];
@@ -637,6 +630,24 @@ export const App: React.FC = () => {
     [activeConnection?.name, activeConnection?.db_type]
   );
 
+  /** Run SQL query with automatic pool reconnection if connection expired */
+  const safeRunSqlQuery = useCallback(async (connId: string, sql: string) => {
+    try {
+      return await runSqlQuery(connId, sql);
+    } catch (err: any) {
+      const msg = String(err?.message || err || '');
+      if (msg.includes('is not connected') || msg.includes('pool expired')) {
+        const target = connections.find(c => c.id === connId) || activeConnection;
+        if (target) {
+          const pwd = (await getDbPassword(target.id)) || undefined;
+          await connectDatabase(target, pwd);
+          return await runSqlQuery(connId, sql);
+        }
+      }
+      throw err;
+    }
+  }, [connections, activeConnection]);
+
   /** Load one page of table data server-side (pageSize from settings). */
   const loadTablePage = useCallback(
     async (
@@ -666,11 +677,11 @@ export const App: React.FC = () => {
       setIsBrowserLoading(true);
       try {
         const [countRes, dataRes] = await Promise.all([
-          runSqlQuery(
+          safeRunSqlQuery(
             activeConnection.id,
             `SELECT COUNT(*) AS cnt FROM ${qTable}${safeWhere}`
           ).catch(() => null),
-          runSqlQuery(
+          safeRunSqlQuery(
             activeConnection.id,
             `SELECT * FROM ${qTable}${safeWhere}${safeSort} LIMIT ${pageSize} OFFSET ${offset}`
           ),
@@ -691,9 +702,14 @@ export const App: React.FC = () => {
             })
           );
         }
-      } catch (err) {
+      } catch (err: any) {
         console.warn('Failed to load table page:', err);
-        alert(`Failed to load table: ${String(err)}`);
+        const errStr = String(err?.message || err || '');
+        setRows([]);
+        setQueryResult({ columns: [], rows: [], execution_time_ms: 0, affected_rows: 0 });
+        if (!errStr.includes('does not exist')) {
+          alert(`Failed to load table: ${errStr}`);
+        }
       } finally {
         setIsBrowserLoading(false);
       }
@@ -723,7 +739,7 @@ export const App: React.FC = () => {
         if (statements.length === 0) return;
 
         if (statements.length === 1) {
-          const payload = await runSqlQuery(connId, statements[0], queryId);
+          const payload = await safeRunSqlQuery(connId, statements[0]);
           setQueryResult(payload);
           setMultiResults([
             {
@@ -742,7 +758,7 @@ export const App: React.FC = () => {
               is_primary_key: col.name === 'id',
             }));
             // Don't clobber table-catalog columns when running ad-hoc SQL in query tab
-            if (opts?.updateGrid) {
+            if (opts?.updateGrid ?? true) {
               setColumns(mappedCols);
             }
             setRows(
@@ -780,7 +796,7 @@ export const App: React.FC = () => {
               prev.map((r, idx) => (idx === i ? { ...r, status: 'running' } : r))
             );
             try {
-              const payload = await runSqlQuery(connId, statements[i], stmtId);
+              const payload = await safeRunSqlQuery(connId, statements[i]);
               lastPayload = payload;
               setMultiResults((prev) =>
                 prev.map((r, idx) =>
@@ -1410,7 +1426,8 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
+  const fallbackTab: WorkspaceTab = { id: 'tab-query', title: 'Query Editor', type: 'query', sql: '-- Write your SQL query here\n' };
+  const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0] || fallbackTab;
 
   // Schema for AI agent — prefer qualified names; columns for active browser object
   const aiSchema = useMemo(() => ({

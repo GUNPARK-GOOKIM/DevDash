@@ -16,10 +16,11 @@ tauri = { version = "2.0", features = [] } # Tauri 2.0 desktop framework core cr
 serde = { version = "1.0", features = ["derive"] } # Serde object serialization and deserialization macros
 serde_json = "1.0" # Serde JSON format parsing and encoding support
 tokio = { version = "1.0", features = ["full"] } # Tokio asynchronous runtime for async I/O and tasks
-sqlx = { version = "0.8", features = ["any", "runtime-tokio", "postgres", "mysql", "sqlite", "chrono", "uuid"] } # Multi-driver async SQL database client library
+sqlx = { version = "0.8", features = ["any", "runtime-tokio", "tls-rustls", "postgres", "mysql", "sqlite", "chrono", "uuid", "rust_decimal"] } # Multi-driver async SQL database client library
 keyring = "3.0" # Native OS Keychain and Secret Manager credential isolation store
 uuid = { version = "1.0", features = ["v4", "serde"] } # Universal Unique Identifier generation library
 chrono = { version = "0.4", features = ["serde"] } # Date and time representation library with serde support
+rust_decimal = { version = "1.30", features = ["serde-with-float"] } # Fixed precision decimal library
 dashmap = "6.0" # Concurrent thread-safe hash map for multi-pool connection state
 dirs = "6.0" # User config directory locator
 csv = "1.3" # Fast CSV parsing and encoding crate

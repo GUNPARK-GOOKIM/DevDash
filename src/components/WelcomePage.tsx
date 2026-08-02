@@ -45,7 +45,7 @@ const ALL_DBS: DbKind[] = [
   'redis', 'mongodb', 'cassandra', 'clickhouse'
 ];
 
-const NATIVE_DBS: DbKind[] = ['postgres', 'mysql', 'sqlite', 'mariadb', 'cockroachdb', 'redshift'];
+const NATIVE_DBS: DbKind[] = ['postgres', 'mysql', 'sqlite', 'mariadb', 'cockroachdb', 'redshift', 'duckdb', 'turso', 'redis'];
 const RELATIONAL_DBS: DbKind[] = ['postgres', 'mysql', 'sqlite', 'mariadb', 'cockroachdb', 'redshift', 'mssql', 'oracle', 'snowflake', 'duckdb', 'bigquery', 'turso'];
 const NOSQL_CACHE_DBS: DbKind[] = ['redis', 'mongodb', 'cassandra', 'clickhouse'];
 
