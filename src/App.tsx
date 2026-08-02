@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { TableGrid } from './components/TableGrid';
 import { SqlEditor } from './components/SqlEditor';
-import { SavedQueries } from './components/SavedQueries';
 import { ConnectionModal } from './components/ConnectionModal';
 import { WelcomePage } from './components/WelcomePage';
 import { SafeModeModal } from './components/SafeModeModal';
@@ -15,9 +14,8 @@ import { HealthGrid } from './components/HealthGrid';
 import { SchemaVisualizer } from './components/SchemaVisualizer';
 import { AiAgentBar } from './components/AiAgentBar';
 import { InlineJsonPopup } from './components/InlineJsonPopup';
-import { ContextMenu, buildCellContextMenu, ContextMenuAction } from './components/ContextMenu';
+import { ContextMenu, ContextMenuAction } from './components/ContextMenu';
 import { SettingsModal, AiConfig, GeneralSettings } from './components/SettingsModal';
-import { NoSqlInspector } from './components/NoSqlInspector';
 import { ExplainVisualizer } from './components/ExplainVisualizer';
 import { RoutinesManager } from './components/RoutinesManager';
 import { RolesManager } from './components/RolesManager';
@@ -28,8 +26,17 @@ import { SchemaDiffModal } from './components/SchemaDiffModal';
 import { PiiMaskingConfig } from './components/PiiMaskingConfig';
 import { SecureShareModal } from './components/SecureShareModal';
 import { SecureImportModal } from './components/SecureImportModal';
+import { CommandPalette } from './components/CommandPalette';
+import { ProcessManagerModal } from './components/ProcessManagerModal';
+import { QueryHistory } from './components/QueryHistory';
+import { MultiQueryResult } from './components/SqlEditor';
+import { TransactionBar } from './components/TransactionBar';
+import { ConnectionDiagnosticsModal } from './components/ConnectionDiagnosticsModal';
+import { QueryProfilerModal } from './components/QueryProfilerModal';
 import { useIsMobile } from './hooks/useMediaQuery';
 import { MobileViewport } from './components/mobile/MobileViewport';
+import { maskRowRecord } from './utils/piiMask';
+import { saveWorkspaceSession, loadWorkspaceSession } from './utils/workspaceSession';
 import {
   ConnectionConfig,
   DbKind,
@@ -42,11 +49,12 @@ import {
   WorkspaceTab,
   QueryHistoryEntry,
   TabType,
+  objectKey,
 } from './types';
 import {
-  X, Plus, Terminal, Table as TableIcon, Layers, Download, Upload,
-  GitBranch, Activity, Network, Shield, Clock, Wand2, Search, Sparkles, Settings,
-  Database, Cpu, Share2,
+  X, Plus, Terminal, Table as TableIcon, Layers, Download,
+  GitBranch, Activity, Network, Shield, Wand2, Sparkles, Settings,
+  Database, Cpu, Share2, Command, Clock,
 } from 'lucide-react';
 import { Tooltip } from './components/Tooltip';
 import {
@@ -60,9 +68,20 @@ import {
   getDbPassword,
   checkSqlSafety,
   commitStagedRowEdits,
+  commitStagedInserts,
+  commitStagedDeletes,
   structureAddColumn,
   structureDropColumn,
   isEngineSupported,
+  saveSecret,
+  getSecret,
+  getAutocompleteData,
+  cancelQuery,
+  fetchPersistedQueryHistory,
+  clearPersistedQueryHistory,
+  splitSqlStatements,
+  exportTableData,
+  AutocompleteData,
   EngineDialect,
 } from './services/tauriBridge';
 
@@ -130,7 +149,6 @@ export const App: React.FC = () => {
     localStorage.setItem('devdash_ai_config', JSON.stringify(safeForStorage));
     if (apiKey && apiKey !== '__KEYCHAIN__') {
       try {
-        const { saveSecret } = await import('./services/tauriBridge');
         await saveSecret('ai_api_key', apiKey);
       } catch (err) {
         console.warn('Failed to store AI API key in keychain:', err);
@@ -142,7 +160,6 @@ export const App: React.FC = () => {
   useEffect(() => {
     (async () => {
       try {
-        const { getSecret } = await import('./services/tauriBridge');
         const key = await getSecret('ai_api_key');
         if (key) {
           setAiConfig((prev) => ({ ...prev, apiKey: key }));
@@ -216,18 +233,21 @@ export const App: React.FC = () => {
     localStorage.setItem('devdash_show_welcome', String(showWelcome));
   }, [showWelcome]);
 
-  // Welcome page handlers
+  // Multi-connection workspace: keep pools open; cache catalog per connection
+  const [tablesByConn, setTablesByConn] = useState<Record<string, TableItem[]>>({});
+  const [schemaByConn, setSchemaByConn] = useState<Record<string, AutocompleteData | null>>({});
+  const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
+  const [isProfilerOpen, setIsProfilerOpen] = useState(false);
+  const [profilerSql, setProfilerSql] = useState('');
+  const [txActive, setTxActive] = useState(false);
+
+  // Welcome page handlers — multi-connection: do NOT drop previous pools
   const handleWelcomeConnect = useCallback(async (conn: ConnectionConfig, password?: string) => {
     if (!isEngineSupported(conn.db_type)) {
       alert(
         `Engine "${conn.db_type}" is not supported by the backend yet.\n\nSupported: PostgreSQL, MySQL/MariaDB, SQLite, CockroachDB, Redshift.`
       );
       return;
-    }
-
-    // Drop previous pool when switching connections (avoid leaking remote sessions)
-    if (activeConnection?.id && activeConnection.id !== conn.id) {
-      await disconnectDatabase(activeConnection.id);
     }
 
     setActiveConnection({ ...conn, is_connected: false });
@@ -239,29 +259,104 @@ export const App: React.FC = () => {
     });
 
     try {
-      let pwd = password;
-      if (pwd === undefined || pwd === '') {
-        pwd = (await getDbPassword(conn.id)) || undefined;
+      // Fast switch if pool already open
+      const already = connections.find((c) => c.id === conn.id)?.is_connected;
+      if (!already) {
+        let pwd = password;
+        if (pwd === undefined || pwd === '') {
+          pwd = (await getDbPassword(conn.id)) || undefined;
+        }
+        await connectDatabase(conn, pwd);
       }
-      await connectDatabase(conn, pwd);
+
       setActiveConnection({ ...conn, is_connected: true });
-      const fetchedTables = await getDatabaseTables(conn.id, conn.db_type);
-      setTables(fetchedTables || []);
+      setConnections((prev) =>
+        prev.map((c) => (c.id === conn.id ? { ...c, is_connected: true } : c))
+      );
+
+      let fetchedTables = tablesByConn[conn.id];
+      if (!fetchedTables?.length) {
+        fetchedTables = (await getDatabaseTables(conn.id, conn.db_type)) || [];
+        setTablesByConn((prev) => ({ ...prev, [conn.id]: fetchedTables! }));
+      }
+      setTables(fetchedTables);
+
+      const cachedSchema = schemaByConn[conn.id];
+      if (cachedSchema) {
+        setSchemaData(cachedSchema);
+      } else {
+        getAutocompleteData(conn.id, conn.db_type)
+          .then((data) => {
+            setSchemaData(data);
+            setSchemaByConn((prev) => ({ ...prev, [conn.id]: data }));
+          })
+          .catch(() => setSchemaData(null));
+      }
+
+      // Hydrate history once if empty (functional update avoids stale deps)
+      setQueryHistory((prev) => {
+        if (prev.length > 0) return prev;
+        fetchPersistedQueryHistory(1, 50)
+          .then((items) => {
+            if (!items?.length) return;
+            setQueryHistory(
+              items.map((h) => ({
+                id: h.id,
+                sql: h.query_text,
+                connectionName: conn.name,
+                engine: conn.db_type,
+                timestamp: h.timestamp,
+                executionTimeMs: Math.round(h.execution_time_ms),
+                rowCount: h.row_count,
+                status: h.error ? ('error' as const) : ('success' as const),
+                errorMessage: h.error || undefined,
+              }))
+            );
+          })
+          .catch(() => {
+            /* ignore */
+          });
+        return prev;
+      });
     } catch (err) {
       console.warn('Failed to connect to database or fetch tables:', err);
       setActiveConnection({ ...conn, is_connected: false });
       alert(`Connection failed: ${String(err)}`);
     }
-  }, [activeConnection?.id]);
+  }, [tablesByConn, schemaByConn, connections]);
 
-  const handleDeleteConnection = useCallback((id: string) => {
-    setConnections(prev => prev.filter(c => c.id !== id));
-    setRecentConnectionIds(prev => prev.filter(cid => cid !== id));
-    if (activeConnection?.id === id) {
-      setActiveConnection(null);
-      setShowWelcome(true);
+  const handleDeleteConnection = useCallback(async (id: string) => {
+    try {
+      await disconnectDatabase(id);
+    } catch {
+      /* ignore */
     }
-  }, [activeConnection]);
+    setConnections((prev) => prev.filter((c) => c.id !== id));
+    setRecentConnectionIds((prev) => prev.filter((cid) => cid !== id));
+    setTablesByConn((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setSchemaByConn((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    if (activeConnection?.id === id) {
+      // Switch to another still-connected pool if available
+      const remaining = connections.filter((c) => c.id !== id && c.is_connected);
+      if (remaining[0]) {
+        setActiveConnection(remaining[0]);
+        setTables(tablesByConn[remaining[0].id] || []);
+        setSchemaData(schemaByConn[remaining[0].id] || null);
+      } else {
+        setActiveConnection(null);
+        setShowWelcome(true);
+        setTables([]);
+      }
+    }
+  }, [activeConnection, connections, tablesByConn, schemaByConn]);
 
   const handleDuplicateConnection = useCallback((conn: ConnectionConfig) => {
     const duplicate: ConnectionConfig = {
@@ -349,6 +444,61 @@ export const App: React.FC = () => {
     localStorage.setItem('devdash_active_tab_id', activeTabId);
   }, [activeTabId]);
 
+  // Persist workspace session (multi-connection + tabs)
+  useEffect(() => {
+    if (showWelcome && !activeConnection) return;
+    saveWorkspaceSession({
+      activeConnectionId: activeConnection?.id || null,
+      connectedIds: connections.filter((c) => c.is_connected).map((c) => c.id),
+      tabs,
+      activeTabId,
+      showWelcome,
+      connections,
+      recentConnectionIds,
+    });
+  }, [activeConnection, connections, tabs, activeTabId, showWelcome, recentConnectionIds]);
+
+  // Restore multi-connection session once on mount
+  useEffect(() => {
+    const session = loadWorkspaceSession();
+    if (!session) return;
+    if (session.connections?.length) {
+      setConnections(session.connections);
+    }
+    if (session.tabs?.length) {
+      setTabs(session.tabs);
+    }
+    if (session.activeTabId) {
+      setActiveTabId(session.activeTabId);
+    }
+    if (session.recentConnectionIds?.length) {
+      setRecentConnectionIds(session.recentConnectionIds);
+    }
+    (async () => {
+      for (const id of session.connectedIds || []) {
+        const conn = session.connections.find((c) => c.id === id);
+        if (!conn) continue;
+        try {
+          const pwd = (await getDbPassword(id)) || undefined;
+          await connectDatabase(conn, pwd);
+          setConnections((prev) =>
+            prev.map((c) => (c.id === id ? { ...c, is_connected: true } : c))
+          );
+          const tbls = await getDatabaseTables(id, conn.db_type);
+          setTablesByConn((prev) => ({ ...prev, [id]: tbls }));
+          if (session.activeConnectionId === id) {
+            setActiveConnection({ ...conn, is_connected: true });
+            setTables(tbls);
+            setShowWelcome(false);
+          }
+        } catch {
+          /* leave offline */
+        }
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Auto-fetch tables when activeConnection is set but tables list is empty
   useEffect(() => {
     if (activeConnection?.id && tables.length === 0) {
@@ -357,6 +507,7 @@ export const App: React.FC = () => {
           const list = await getDatabaseTables(activeConnection.id, activeConnection.db_type);
           if (list && list.length > 0) {
             setTables(list);
+            setTablesByConn((prev) => ({ ...prev, [activeConnection.id]: list }));
           }
         } catch { /* ignore */ }
       })();
@@ -406,6 +557,9 @@ export const App: React.FC = () => {
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
   const [isSchemaDiffModalOpen, setIsSchemaDiffModalOpen] = useState(false);
   const [isPiiConfigModalOpen, setIsPiiConfigModalOpen] = useState(false);
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [isProcessManagerOpen, setIsProcessManagerOpen] = useState(false);
+  const [isMockDataOpen, setIsMockDataOpen] = useState(false);
   const [piiRules, setPiiRules] = useState(() => {
     const saved = localStorage.getItem('devdash_pii_rules');
     if (saved) {
@@ -430,8 +584,16 @@ export const App: React.FC = () => {
 
   // === QUERY STATE ===
   const [queryResult, setQueryResult] = useState<{ columns: { name: string; type_name: string }[]; rows: any[][]; execution_time_ms: number; affected_rows: number } | null>(null);
+  const [multiResults, setMultiResults] = useState<MultiQueryResult[]>([]);
+  const [isQueryLoading, setIsQueryLoading] = useState(false);
+  const [activeQueryId, setActiveQueryId] = useState<string | null>(null);
   const [queryHistory, setQueryHistory] = useState<QueryHistoryEntry[]>([]);
   const [showHistoryPanel, setShowHistoryPanel] = useState(false);
+  const [schemaData, setSchemaData] = useState<AutocompleteData | null>(null);
+  const [erdSchema, setErdSchema] = useState<{ name: string; columns: ColumnItem[] }[]>([]);
+  const [erdLoading, setErdLoading] = useState(false);
+  const [tableTotalRows, setTableTotalRows] = useState<number | null>(null);
+  const [isBrowserLoading, setIsBrowserLoading] = useState(false);
 
   // === SAVED QUERIES ===
   const [savedQueries, setSavedQueries] = useState<SavedQuery[]>([]);
@@ -444,123 +606,299 @@ export const App: React.FC = () => {
   // === LEGACY STAGED EDITS (for TableGrid compatibility) ===
   const [stagedEdits, setStagedEdits] = useState<StagedCellEdit[]>([]);
 
-  const displayRows = useMemo(() => {
-    let result = [...rows];
-    if (filterWhere) {
-      const match = filterWhere.match(/WHERE\s+(\w+)\s*(=|LIKE|>|<|!=)\s*'?([^']*)'?/i);
-      if (match) {
-        const [, col, op, val] = match;
-        const cleanVal = val.replace(/%/g, '').toLowerCase();
-        result = result.filter((r) => {
-          const cellVal = String(r[col] ?? '').toLowerCase();
-          if (op === '=') return cellVal === cleanVal || cellVal.includes(cleanVal);
-          if (op === 'LIKE') return cellVal.includes(cleanVal);
-          if (op === '!=') return cellVal !== cleanVal;
-          if (op === '>') return Number(r[col]) > Number(cleanVal);
-          if (op === '<') return Number(r[col]) < Number(cleanVal);
-          return true;
-        });
+  // Server-side filter/sort via loadTablePage — rows are already filtered
+  const displayRows = rows;
+
+  const quoteTableForQuery = useCallback(
+    (tableName: string) => {
+      const mysql =
+        activeConnection?.db_type === 'mysql' || activeConnection?.db_type === 'mariadb';
+      return tableName
+        .split('.')
+        .map((p) => (mysql ? `\`${p.replace(/`/g, '``')}\`` : `"${p.replace(/"/g, '""')}"`))
+        .join('.');
+    },
+    [activeConnection?.db_type]
+  );
+
+  const pushHistory = useCallback(
+    (entry: Omit<QueryHistoryEntry, 'id' | 'timestamp' | 'connectionName' | 'engine'>) => {
+      setQueryHistory((prev) => [
+        {
+          id: `qh-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: new Date().toISOString(),
+          connectionName: activeConnection?.name || '',
+          engine: activeConnection?.db_type || '',
+          ...entry,
+        },
+        ...prev,
+      ].slice(0, 200));
+    },
+    [activeConnection?.name, activeConnection?.db_type]
+  );
+
+  /** Load one page of table data server-side (pageSize from settings). */
+  const loadTablePage = useCallback(
+    async (
+      tableName: string,
+      page: number,
+      opts?: { where?: string; sort?: string }
+    ) => {
+      if (!activeConnection) return;
+      const pageSize = generalSettings.pageSize || 1000;
+      const offset = Math.max(0, (page - 1) * pageSize);
+      const qTable = quoteTableForQuery(tableName);
+      const whereClause = (opts?.where || filterWhere || '').trim();
+      const sortClause = (opts?.sort || filterSort || '').trim();
+      // Only allow safe fragments: must start with WHERE / ORDER BY and no multi-statement
+      const safeWhere =
+        whereClause &&
+        /^where\b/i.test(whereClause) &&
+        !whereClause.includes(';')
+          ? ` ${whereClause}`
+          : '';
+      const safeSort =
+        sortClause &&
+        /^order\s+by\b/i.test(sortClause) &&
+        !sortClause.includes(';')
+          ? ` ${sortClause}`
+          : '';
+      setIsBrowserLoading(true);
+      try {
+        const [countRes, dataRes] = await Promise.all([
+          runSqlQuery(
+            activeConnection.id,
+            `SELECT COUNT(*) AS cnt FROM ${qTable}${safeWhere}`
+          ).catch(() => null),
+          runSqlQuery(
+            activeConnection.id,
+            `SELECT * FROM ${qTable}${safeWhere}${safeSort} LIMIT ${pageSize} OFFSET ${offset}`
+          ),
+        ]);
+        if (countRes?.rows?.[0]) {
+          const raw = countRes.rows[0][0];
+          setTableTotalRows(typeof raw === 'number' ? raw : Number(raw) || null);
+        }
+        setQueryResult(dataRes);
+        if (dataRes.columns && dataRes.rows) {
+          setRows(
+            dataRes.rows.map((r) => {
+              const obj: Record<string, any> = {};
+              dataRes.columns.forEach((col, idx) => {
+                obj[col.name] = r[idx];
+              });
+              return obj;
+            })
+          );
+        }
+      } catch (err) {
+        console.warn('Failed to load table page:', err);
+        alert(`Failed to load table: ${String(err)}`);
+      } finally {
+        setIsBrowserLoading(false);
       }
-    }
-    if (filterSort) {
-      const match = filterSort.match(/ORDER BY\s+(\w+)\s+(ASC|DESC)/i);
-      if (match) {
-        const [, col, dir] = match;
-        result.sort((a, b) => {
-          if (a[col] < b[col]) return dir.toUpperCase() === 'ASC' ? -1 : 1;
-          if (a[col] > b[col]) return dir.toUpperCase() === 'ASC' ? 1 : -1;
-          return 0;
-        });
-      }
-    }
-    return result;
-  }, [rows, filterWhere, filterSort]);
+    },
+    [activeConnection, generalSettings.pageSize, quoteTableForQuery, filterWhere, filterSort]
+  );
 
   // === HANDLERS ===
-  const executeSqlQuery = useCallback(async (sql: string) => {
-    const connId = activeConnection?.id || 'default';
-    try {
-      const payload = await runSqlQuery(connId, sql);
-      setQueryResult(payload);
+  const executeSqlQuery = useCallback(
+    async (sql: string, opts?: { updateGrid?: boolean; queryId?: string }) => {
+      const connId = activeConnection?.id || 'default';
+      const queryId = opts?.queryId || `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      setActiveQueryId(queryId);
+      setIsQueryLoading(true);
+      try {
+        if (activeConnection?.is_read_only) {
+          const upper = sql.trim().toUpperCase();
+          const write = /^(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|GRANT|REVOKE|REPLACE|CALL)\b/.test(
+            upper
+          );
+          if (write) {
+            throw new Error('Connection is read-only. Write/DDL statements are blocked.');
+          }
+        }
 
-      // Convert rows payload to objects and sync columns state
-      if (payload.columns && payload.rows) {
-        const mappedCols: ColumnItem[] = payload.columns.map((col: any) => ({
-          name: col.name,
-          data_type: col.type_name || col.data_type || 'TEXT',
-          is_nullable: true,
-          is_primary_key: col.name === 'id',
-        }));
-        setColumns(mappedCols);
+        const statements = splitSqlStatements(sql);
+        if (statements.length === 0) return;
 
-        const objRows = payload.rows.map(r => {
-          const obj: Record<string, any> = {};
-          payload.columns.forEach((col, idx) => {
-            obj[col.name] = r[idx];
+        if (statements.length === 1) {
+          const payload = await runSqlQuery(connId, statements[0], queryId);
+          setQueryResult(payload);
+          setMultiResults([
+            {
+              id: 'r0',
+              sql: statements[0],
+              result: payload,
+              status: 'success',
+            },
+          ]);
+
+          if (opts?.updateGrid !== false && payload.columns && payload.rows) {
+            const mappedCols: ColumnItem[] = payload.columns.map((col: any) => ({
+              name: col.name,
+              data_type: col.type_name || col.data_type || 'TEXT',
+              is_nullable: true,
+              is_primary_key: col.name === 'id',
+            }));
+            // Don't clobber table-catalog columns when running ad-hoc SQL in query tab
+            if (opts?.updateGrid) {
+              setColumns(mappedCols);
+            }
+            setRows(
+              payload.rows.map((r) => {
+                const obj: Record<string, any> = {};
+                payload.columns.forEach((col, idx) => {
+                  obj[col.name] = r[idx];
+                });
+                return obj;
+              })
+            );
+          }
+
+          pushHistory({
+            sql: statements[0],
+            executionTimeMs: payload.execution_time_ms,
+            rowCount: payload.rows?.length || payload.affected_rows || 0,
+            status: 'success',
           });
-          return obj;
+        } else {
+          // Multi-statement: one result set per statement (TablePlus/DBeaver style)
+          const results: MultiQueryResult[] = statements.map((s, i) => ({
+            id: `r${i}`,
+            sql: s,
+            status: 'pending' as const,
+          }));
+          setMultiResults(results);
+          setQueryResult(null);
+
+          let lastPayload: typeof queryResult = null;
+          for (let i = 0; i < statements.length; i++) {
+            const stmtId = `${queryId}-${i}`;
+            setActiveQueryId(stmtId);
+            setMultiResults((prev) =>
+              prev.map((r, idx) => (idx === i ? { ...r, status: 'running' } : r))
+            );
+            try {
+              const payload = await runSqlQuery(connId, statements[i], stmtId);
+              lastPayload = payload;
+              setMultiResults((prev) =>
+                prev.map((r, idx) =>
+                  idx === i ? { ...r, status: 'success', result: payload } : r
+                )
+              );
+              pushHistory({
+                sql: statements[i],
+                executionTimeMs: payload.execution_time_ms,
+                rowCount: payload.rows?.length || payload.affected_rows || 0,
+                status: 'success',
+              });
+            } catch (err) {
+              setMultiResults((prev) =>
+                prev.map((r, idx) =>
+                  idx === i ? { ...r, status: 'error', error: String(err) } : r
+                )
+              );
+              pushHistory({
+                sql: statements[i],
+                executionTimeMs: 0,
+                rowCount: 0,
+                status: 'error',
+                errorMessage: String(err),
+              });
+              break;
+            }
+          }
+          if (lastPayload) setQueryResult(lastPayload);
+        }
+      } catch (err: any) {
+        console.error('Query execution error:', err);
+        setMultiResults([
+          {
+            id: 'r-err',
+            sql,
+            status: 'error',
+            error: String(err?.message || err),
+          },
+        ]);
+        pushHistory({
+          sql,
+          executionTimeMs: 0,
+          rowCount: 0,
+          status: 'error',
+          errorMessage: String(err?.message || err),
         });
-        setRows(objRows);
+      } finally {
+        setIsQueryLoading(false);
+        setActiveQueryId(null);
+      }
+    },
+    [activeConnection, pushHistory]
+  );
+
+  const handleCancelQuery = useCallback(async () => {
+    if (activeQueryId) {
+      try {
+        await cancelQuery(activeQueryId);
+      } catch {
+        /* ignore */
+      }
+    }
+    setIsQueryLoading(false);
+    setActiveQueryId(null);
+  }, [activeQueryId]);
+
+  const handleRunQueryWithSafeMode = useCallback(
+    async (sql: string) => {
+      // Read-only gate before safe mode
+      if (activeConnection?.is_read_only) {
+        const upper = sql.trim().toUpperCase();
+        if (/^(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|GRANT|REVOKE|REPLACE)\b/m.test(upper)) {
+          alert('This connection is marked read-only. Write/DDL statements are blocked.');
+          return;
+        }
       }
 
-      setQueryHistory(prev => [{
-        id: `qh-${Date.now()}`,
-        sql,
-        connectionName: activeConnection?.name || '',
-        engine: activeConnection?.db_type || '',
-        timestamp: new Date().toISOString(),
-        executionTimeMs: payload.execution_time_ms,
-        rowCount: payload.rows?.length || payload.affected_rows || 0,
-        status: 'success',
-      }, ...prev]);
-    } catch (err: any) {
-      console.error('Query execution error:', err);
-      setQueryHistory(prev => [{
-        id: `qh-${Date.now()}`,
-        sql,
-        connectionName: activeConnection?.name || '',
-        engine: activeConnection?.db_type || '',
-        timestamp: new Date().toISOString(),
-        executionTimeMs: 0,
-        rowCount: 0,
-        status: 'error',
-      }, ...prev]);
-    }
-  }, [activeConnection]);
+      const run = () => executeSqlQuery(sql, { updateGrid: false });
 
-  const handleRunQueryWithSafeMode = useCallback(async (sql: string) => {
-    if (!safeModeEnabled) {
-      executeSqlQuery(sql);
-      return;
-    }
-    try {
-      const analysis = await checkSqlSafety(sql);
-      if (analysis.requires_confirmation || analysis.is_destructive) {
-        setPendingDestructiveSql(sql);
-        setSafeModeWarning(
-          analysis.warning_message || 'Destructive operation detected. Confirm to continue.'
-        );
-        setIsSafeModeModalOpen(true);
-      } else {
-        executeSqlQuery(sql);
+      if (!safeModeEnabled) {
+        run();
+        return;
       }
-    } catch {
-      // Fall back to local heuristic if backend unavailable
-      const upper = sql.trim().toUpperCase();
-      const isDestructive =
-        upper.startsWith('DROP') ||
-        upper.startsWith('TRUNCATE') ||
-        (upper.startsWith('DELETE') && !upper.includes('WHERE')) ||
-        (upper.startsWith('UPDATE') && !upper.includes('WHERE'));
-      if (isDestructive) {
-        setPendingDestructiveSql(sql);
-        setSafeModeWarning('Destructive operation detected. Confirm to continue.');
-        setIsSafeModeModalOpen(true);
-      } else {
-        executeSqlQuery(sql);
+      try {
+        // Analyze each statement for multi-scripts
+        const statements = splitSqlStatements(sql);
+        for (const stmt of statements) {
+          const analysis = await checkSqlSafety(stmt);
+          if (analysis.requires_confirmation || analysis.is_destructive) {
+            setPendingDestructiveSql(sql);
+            setSafeModeWarning(
+              analysis.warning_message ||
+                `Destructive operation detected in: ${stmt.slice(0, 80)}…`
+            );
+            setIsSafeModeModalOpen(true);
+            return;
+          }
+        }
+        run();
+      } catch {
+        const upper = sql.trim().toUpperCase();
+        const isDestructive =
+          upper.startsWith('DROP') ||
+          upper.startsWith('TRUNCATE') ||
+          (upper.startsWith('DELETE') && !upper.includes('WHERE')) ||
+          (upper.startsWith('UPDATE') && !upper.includes('WHERE'));
+        if (isDestructive) {
+          setPendingDestructiveSql(sql);
+          setSafeModeWarning('Destructive operation detected. Confirm to continue.');
+          setIsSafeModeModalOpen(true);
+        } else {
+          run();
+        }
       }
-    }
-  }, [safeModeEnabled, executeSqlQuery]);
+    },
+    [safeModeEnabled, executeSqlQuery, activeConnection?.is_read_only]
+  );
 
   const mapEngineDialect = useCallback((dbType?: string): EngineDialect => {
     const t = (dbType || 'postgres').toLowerCase();
@@ -574,7 +912,12 @@ export const App: React.FC = () => {
       alert('No active connection to commit against.');
       return;
     }
-    const checked = stagedChanges.filter((c) => c.checked && c.changeType === 'update');
+    if (activeConnection.is_read_only) {
+      alert('Connection is read-only. Cannot commit staged changes.');
+      return;
+    }
+
+    const checked = stagedChanges.filter((c) => c.checked);
     if (checked.length === 0) {
       setStagedChanges((prev) => prev.filter((c) => !c.checked));
       setStagedEdits([]);
@@ -582,86 +925,193 @@ export const App: React.FC = () => {
     }
 
     const currentTab = tabs.find((t) => t.id === activeTabId);
-
-    // Group by table
-    const byTable = new Map<string, typeof checked>();
-    for (const change of checked) {
-      const list = byTable.get(change.tableName) || [];
-      list.push(change);
-      byTable.set(change.tableName, list);
-    }
+    const pkColumn = pkInfo.pk_column_name || 'id';
 
     try {
-      for (const [tableName, changes] of byTable) {
-        // Resolve PK column from current pkInfo when matching table, else 'id'
-        const pkColumn =
-          (currentTab?.tableName === tableName && pkInfo.pk_column_name) ||
-          pkInfo.pk_column_name ||
-          'id';
+      // Group by table + change type
+      const tables = new Set(checked.map((c) => c.tableName));
+      for (const tableName of tables) {
+        const tableChanges = checked.filter((c) => c.tableName === tableName);
 
-        // Collapse cell-level staged changes into row edits
-        const rowMap = new Map<string | number, { pk: string | number; changes: { column_name: string; new_value: unknown }[] }>();
-        for (const c of changes) {
-          const matchingEdit = stagedEdits.find(
-            (e) => e.rowId === c.rowId && e.columnName === c.columnName
-          );
-          const entry = rowMap.get(c.rowId) || { pk: c.rowId, changes: [] };
-          entry.changes.push({
-            column_name: c.columnName || c.identifier,
-            new_value: matchingEdit?.newValue ?? null,
-          });
-          rowMap.set(c.rowId, entry);
+        // UPDATEs
+        const updates = tableChanges.filter((c) => c.changeType === 'update');
+        if (updates.length > 0) {
+          const rowMap = new Map<
+            string | number,
+            { pk: string | number; changes: { column_name: string; new_value: unknown }[] }
+          >();
+          for (const c of updates) {
+            const matchingEdit = stagedEdits.find(
+              (e) => e.rowId === c.rowId && e.columnName === c.columnName
+            );
+            const entry = rowMap.get(c.rowId) || { pk: c.rowId, changes: [] };
+            entry.changes.push({
+              column_name: c.columnName || c.identifier,
+              new_value: matchingEdit?.newValue ?? c.newValues?.[c.columnName || ''] ?? null,
+            });
+            rowMap.set(c.rowId, entry);
+          }
+          const edits = Array.from(rowMap.values()).map((r) => ({
+            pk_value: r.pk,
+            changes: r.changes,
+          }));
+          await commitStagedRowEdits(activeConnection.id, tableName, pkColumn, edits);
         }
 
-        const edits = Array.from(rowMap.values()).map((r) => ({
-          pk_value: r.pk,
-          changes: r.changes,
-        }));
+        // INSERTs — one staged change per new row with newValues bag
+        const inserts = tableChanges.filter((c) => c.changeType === 'insert');
+        if (inserts.length > 0) {
+          const rows = inserts.map((c) => {
+            // Merge cell-level staged edits into the insert payload
+            const vals: Record<string, unknown> = { ...(c.newValues || {}) };
+            for (const e of stagedEdits) {
+              if (e.rowId === c.rowId) vals[e.columnName] = e.newValue;
+            }
+            // Drop empty-string / null optional fields for cleaner INSERT
+            const cols = Object.keys(vals).filter(
+              (k) => vals[k] !== '' && vals[k] !== undefined
+            );
+            return {
+              columns: cols,
+              values: cols.map((k) => vals[k]),
+            };
+          });
+          await commitStagedInserts(activeConnection.id, tableName, rows);
+        }
 
-        await commitStagedRowEdits(activeConnection.id, tableName, pkColumn, edits);
+        // DELETEs
+        const deletes = tableChanges.filter((c) => c.changeType === 'delete');
+        if (deletes.length > 0) {
+          await commitStagedDeletes(
+            activeConnection.id,
+            tableName,
+            pkColumn,
+            deletes.map((c) => ({ pk_value: c.rowId }))
+          );
+        }
       }
 
       setStagedChanges((prev) => prev.filter((c) => !c.checked));
       setStagedEdits([]);
 
-      // Refresh active browser table if open
       if (currentTab?.type === 'browser' && currentTab.tableName) {
-        executeSqlQuery(`SELECT * FROM ${currentTab.tableName} LIMIT 1000;`);
+        await loadTablePage(currentTab.tableName, currentPage);
       }
     } catch (err) {
       alert(`Failed to commit staged edits: ${String(err)}`);
     }
-  }, [activeConnection, stagedChanges, stagedEdits, pkInfo, tabs, activeTabId, executeSqlQuery]);
+  }, [activeConnection, stagedChanges, stagedEdits, pkInfo, tabs, activeTabId, loadTablePage, currentPage]);
+
+  const handleAddRow = useCallback(() => {
+    const tab = tabs.find((t) => t.id === activeTabId);
+    const tbl = tab?.tableName || 'unknown';
+    const insertable = columns.filter((c) => !c.is_primary_key || !/serial|identity|auto/i.test(c.data_type));
+    const newValues: Record<string, any> = {};
+    for (const c of insertable) {
+      newValues[c.name] = c.is_nullable ? null : '';
+    }
+    const rowId = `new-${Date.now()}`;
+    setStagedChanges((prev) => [
+      ...prev,
+      {
+        id: `ins-${rowId}`,
+        tableName: tbl,
+        changeType: 'insert',
+        identifier: '(new row)',
+        diff: `INSERT ${Object.keys(newValues).join(', ')}`,
+        rowId,
+        columnName: undefined,
+        checked: true,
+        newValues,
+      },
+    ]);
+    // Seed staged cell edits so user can fill values in staging tab display
+    setStagedEdits((prev) => [
+      ...prev,
+      ...Object.entries(newValues).map(([columnName, newValue]) => ({
+        rowId,
+        columnName,
+        oldValue: null,
+        newValue,
+        tableName: tbl,
+      })),
+    ]);
+    setActiveTabId('tab-staging');
+  }, [tabs, activeTabId, columns]);
+
+  const handleDeleteSelectedRow = useCallback(
+    (rowId: string | number) => {
+      const tab = tabs.find((t) => t.id === activeTabId);
+      const tbl = tab?.tableName || 'unknown';
+      setStagedChanges((prev) => {
+        const without = prev.filter(
+          (c) => !(c.rowId === rowId && c.changeType === 'delete' && c.tableName === tbl)
+        );
+        return [
+          ...without,
+          {
+            id: `del-${rowId}`,
+            tableName: tbl,
+            changeType: 'delete' as const,
+            identifier: String(rowId),
+            diff: `DELETE row ${rowId}`,
+            rowId,
+            checked: true,
+          },
+        ];
+      });
+    },
+    [tabs, activeTabId]
+  );
 
   const handleStageEdit = useCallback((edit: StagedCellEdit) => {
-    setStagedEdits(prev => {
-      const filtered = prev.filter(e => !(e.rowId === edit.rowId && e.columnName === edit.columnName));
+    setStagedEdits((prev) => {
+      const filtered = prev.filter(
+        (e) => !(e.rowId === edit.rowId && e.columnName === edit.columnName)
+      );
       return [...filtered, edit];
     });
-    // Also add to staging view
-    const activeTab = tabs.find(t => t.id === activeTabId);
-    const tblName = activeTab?.tableName || 'unknown';
-    setStagedChanges(prev => [...prev, {
-      id: `sc-${Date.now()}-${Math.random()}`,
-      tableName: edit.tableName || tblName,
-      changeType: 'update',
-      identifier: edit.columnName,
-      diff: `${edit.columnName}: ${String(edit.oldValue)} → ${String(edit.newValue)}`,
-      rowId: edit.rowId,
-      columnName: edit.columnName,
-      checked: true,
-    }]);
+    // Upsert into staging commit view (same cell should not create duplicate rows)
+    const activeTabForStage = tabs.find((t) => t.id === activeTabId);
+    const tblName = edit.tableName || activeTabForStage?.tableName || 'unknown';
+    setStagedChanges((prev) => {
+      const without = prev.filter(
+        (c) => !(c.rowId === edit.rowId && c.columnName === edit.columnName)
+      );
+      return [
+        ...without,
+        {
+          id: `sc-${edit.rowId}-${edit.columnName}`,
+          tableName: tblName,
+          changeType: 'update' as const,
+          identifier: edit.columnName,
+          diff: `${edit.columnName}: ${String(edit.oldValue)} → ${String(edit.newValue)}`,
+          rowId: edit.rowId,
+          columnName: edit.columnName,
+          checked: true,
+        },
+      ];
+    });
   }, [tabs, activeTabId]);
 
+  const handleResetAllStaged = useCallback(() => {
+    setStagedEdits([]);
+    setStagedChanges([]);
+  }, []);
+
   const handleOpenTableTab = useCallback(async (tableName: string) => {
+    // tableName is expected to be schema-qualified when multi-schema (e.g. public.users)
+    const shortTitle = tableName.includes('.') ? tableName.split('.').pop()! : tableName;
     const existing = tabs.find(t => t.tableName === tableName && t.type === 'browser');
     if (existing) { setActiveTabId(existing.id); }
     else {
       const newId = `tab-${Date.now()}`;
-      setTabs(prev => [...prev, { id: newId, title: `Browser (${tableName})`, type: 'browser', tableName }]);
+      setTabs(prev => [...prev, { id: newId, title: shortTitle, type: 'browser', tableName }]);
       setActiveTabId(newId);
     }
 
+    setCurrentPage(1);
+    setTableTotalRows(null);
     if (activeConnection) {
       try {
         const [fetchedCols, fetchedPk] = await Promise.all([
@@ -670,16 +1120,14 @@ export const App: React.FC = () => {
         ]);
         if (fetchedCols && fetchedCols.length > 0) setColumns(fetchedCols);
         if (fetchedPk) setPkInfo(fetchedPk);
-
-        // Execute SELECT query to retrieve live table rows
-        executeSqlQuery(`SELECT * FROM ${tableName} LIMIT 1000;`);
+        await loadTablePage(tableName, 1);
       } catch (err) {
         console.warn('Failed to load table details/rows:', err);
       }
     }
-  }, [tabs, activeConnection, executeSqlQuery]);
+  }, [tabs, activeConnection, loadTablePage]);
 
-  // Auto-fetch columns and rows when active browser tab changes or reloads
+  // Auto-fetch columns and rows when active browser tab changes
   useEffect(() => {
     const currentTab = tabs.find((t) => t.id === activeTabId);
     if (currentTab?.type === 'browser' && currentTab?.tableName && activeConnection) {
@@ -691,11 +1139,27 @@ export const App: React.FC = () => {
           ]);
           if (fetchedCols && fetchedCols.length > 0) setColumns(fetchedCols);
           if (fetchedPk) setPkInfo(fetchedPk);
-          executeSqlQuery(`SELECT * FROM ${currentTab.tableName} LIMIT 1000;`);
-        } catch { /* ignore */ }
+          await loadTablePage(currentTab.tableName!, currentPage);
+        } catch {
+          /* ignore */
+        }
       })();
     }
+    // Intentionally omit currentPage — page changes handled separately
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTabId, activeConnection?.id]);
+
+  // Server-side page change for browser tabs
+  const handleBrowserPageChange = useCallback(
+    (newPage: number) => {
+      setCurrentPage(newPage);
+      const currentTab = tabs.find((t) => t.id === activeTabId);
+      if (currentTab?.type === 'browser' && currentTab.tableName) {
+        loadTablePage(currentTab.tableName, newPage);
+      }
+    },
+    [tabs, activeTabId, loadTablePage]
+  );
 
   const handleOpenNewQueryTab = useCallback(() => {
     const newId = `tab-${Date.now()}`;
@@ -711,13 +1175,48 @@ export const App: React.FC = () => {
     if (activeTabId === id) setActiveTabId(remaining[remaining.length - 1].id);
   }, [tabs, activeTabId]);
 
-  const handleOpenErd = useCallback(() => {
-    const existing = tabs.find(t => t.type === 'erd');
-    if (existing) { setActiveTabId(existing.id); return; }
-    const newId = `tab-erd-${Date.now()}`;
-    setTabs(prev => [...prev, { id: newId, title: 'Schema Visualizer (ERD)', type: 'erd' }]);
-    setActiveTabId(newId);
-  }, [tabs]);
+  const handleOpenErd = useCallback(async () => {
+    const existing = tabs.find((t) => t.type === 'erd');
+    if (existing) {
+      setActiveTabId(existing.id);
+    } else {
+      const newId = `tab-erd-${Date.now()}`;
+      setTabs((prev) => [...prev, { id: newId, title: 'Schema Visualizer (ERD)', type: 'erd' }]);
+      setActiveTabId(newId);
+    }
+
+    // Full schema load with FK edges — use qualified names for multi-schema DBs
+    if (!activeConnection || tables.length === 0) return;
+    setErdLoading(true);
+    try {
+      const batchSize = 8;
+      // Prefer base tables for ERD (views rarely have FKs)
+      const erdSources = tables.filter(
+        (t) => !(t.table_type || '').toUpperCase().includes('VIEW')
+      );
+      const loaded: { name: string; columns: ColumnItem[] }[] = [];
+      for (let i = 0; i < erdSources.length; i += batchSize) {
+        const batch = erdSources.slice(i, i + batchSize);
+        const results = await Promise.all(
+          batch.map(async (t) => {
+            const key = objectKey(t);
+            const cols = await getTableColumns(
+              activeConnection.id,
+              activeConnection.db_type,
+              key
+            );
+            return { name: key, columns: cols };
+          })
+        );
+        loaded.push(...results);
+      }
+      setErdSchema(loaded);
+    } catch (err) {
+      console.warn('ERD schema load failed:', err);
+    } finally {
+      setErdLoading(false);
+    }
+  }, [tabs, activeConnection, tables]);
 
   const handleOpenHealth = useCallback(() => {
     const existing = tabs.find(t => t.type === 'health');
@@ -727,69 +1226,227 @@ export const App: React.FC = () => {
     setActiveTabId(newId);
   }, [tabs]);
 
-  const handleExportData = useCallback((format: 'csv' | 'json' | 'sql' | 'jsonl' | 'markdown' | 'parquet') => {
-    let content = '';
-    if (format === 'csv') {
-      const headers = columns.map(c => c.name).join(',');
-      const rowStrs = rows.map(r => columns.map(c => String(r[c.name] ?? '')).join(',')).join('\n');
-      content = `${headers}\n${rowStrs}`;
-    } else if (format === 'json') {
-      content = JSON.stringify(rows, null, 2);
-    } else if (format === 'jsonl') {
-      content = rows.map(r => JSON.stringify(r)).join('\n');
-    } else if (format === 'markdown') {
-      const headers = `| ${columns.map(c => c.name).join(' | ')} |`;
-      const separator = `| ${columns.map(() => '---').join(' | ')} |`;
-      const rowStrs = rows.map(r => `| ${columns.map(c => String(r[c.name] ?? '')).join(' | ')} |`).join('\n');
-      content = `${headers}\n${separator}\n${rowStrs}`;
-    } else {
-      const tbl = tabs.find((t) => t.id === activeTabId)?.tableName || 'exported_table';
-      content = rows
-        .map((r) => {
-          const vals = columns.map((c) =>
-            typeof r[c.name] === 'string'
-              ? `'${String(r[c.name]).replace(/'/g, "''")}'`
-              : r[c.name] === null || r[c.name] === undefined
-                ? 'NULL'
-                : String(r[c.name])
-          );
-          return `INSERT INTO ${tbl} (${columns.map((c) => c.name).join(', ')}) VALUES (${vals.join(', ')});`;
+  const handleExportData = useCallback(
+    async (
+      format: 'csv' | 'json' | 'sql' | 'jsonl' | 'markdown' | 'parquet',
+      scope: 'full' | 'page' = 'page'
+    ) => {
+      if (format === 'parquet') {
+        throw new Error(
+          'Parquet binary export is not implemented. Use CSV, JSON, JSONL, Markdown, or SQL dump instead.'
+        );
+      }
+
+      const activeTabForExport = tabs.find((t) => t.id === activeTabId);
+      const tbl = activeTabForExport?.tableName || 'export';
+      let content = '';
+      let extension = format === 'sql' ? 'sql' : format;
+
+      // Full table server export for csv/json/sql when native app available
+      if (
+        scope === 'full' &&
+        activeConnection &&
+        (format === 'csv' || format === 'json' || format === 'sql')
+      ) {
+        content = await exportTableData(
+          activeConnection.id,
+          tbl,
+          format,
+          filterWhere || undefined
+        );
+      } else {
+        const colNames = columns.map((c) => c.name);
+        const exportRows = rows.map((r) => maskRowRecord(r, colNames, piiRules));
+
+        const sqlLiteral = (val: unknown): string => {
+          if (val === null || val === undefined) return 'NULL';
+          if (typeof val === 'number' || typeof val === 'bigint') return String(val);
+          if (typeof val === 'boolean') return val ? 'TRUE' : 'FALSE';
+          return `'${String(val).replace(/'/g, "''")}'`;
+        };
+
+        if (format === 'csv') {
+          const headers = colNames.join(',');
+          const rowStrs = exportRows
+            .map((r) =>
+              colNames
+                .map((c) => {
+                  const v = r[c];
+                  const s = v === null || v === undefined ? '' : String(v);
+                  return s.includes(',') || s.includes('"') || s.includes('\n')
+                    ? `"${s.replace(/"/g, '""')}"`
+                    : s;
+                })
+                .join(',')
+            )
+            .join('\n');
+          content = `${headers}\n${rowStrs}`;
+        } else if (format === 'json') {
+          content = JSON.stringify(exportRows, null, 2);
+        } else if (format === 'jsonl') {
+          content = exportRows.map((r) => JSON.stringify(r)).join('\n');
+        } else if (format === 'markdown') {
+          const headers = `| ${colNames.join(' | ')} |`;
+          const separator = `| ${colNames.map(() => '---').join(' | ')} |`;
+          const rowStrs = exportRows
+            .map((r) => `| ${colNames.map((c) => String(r[c] ?? '')).join(' | ')} |`)
+            .join('\n');
+          content = `${headers}\n${separator}\n${rowStrs}`;
+        } else {
+          extension = 'sql';
+          content = exportRows
+            .map((r) => {
+              const vals = colNames.map((c) => sqlLiteral(r[c]));
+              return `INSERT INTO ${tbl} (${colNames.join(', ')}) VALUES (${vals.join(', ')});`;
+            })
+            .join('\n');
+        }
+      }
+
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${tbl}_${scope}_${Date.now()}.${extension}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+    [columns, rows, tabs, activeTabId, piiRules, activeConnection, filterWhere]
+  );
+
+  const quoteIdent = useCallback(
+    (name: string): string => {
+      const mysql =
+        activeConnection?.db_type === 'mysql' || activeConnection?.db_type === 'mariadb';
+      // Allow schema.table
+      return name
+        .split('.')
+        .map((part) => {
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(part)) {
+            throw new Error(`Unsafe SQL identifier: ${part}`);
+          }
+          return mysql ? `\`${part}\`` : `"${part}"`;
         })
-        .join('\n');
+        .join('.');
+    },
+    [activeConnection?.db_type]
+  );
+
+  const handleMockDataGenerate = useCallback(
+    async (generatedRows: Record<string, any>[]) => {
+      const tableName = tabs.find((t) => t.id === activeTabId)?.tableName;
+      if (!activeConnection || !tableName) {
+        throw new Error('Open a table browser tab before seeding mock data.');
+      }
+      if (generatedRows.length === 0) return;
+
+      const colNames = Object.keys(generatedRows[0]);
+      for (const c of colNames) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(c)) {
+          throw new Error(`Unsafe column name: ${c}`);
+        }
+      }
+
+      const sqlLiteral = (val: unknown): string => {
+        if (val === null || val === undefined) return 'NULL';
+        if (typeof val === 'number' || typeof val === 'bigint') {
+          if (Number.isNaN(val)) return 'NULL';
+          return String(val);
+        }
+        if (typeof val === 'boolean') return val ? 'TRUE' : 'FALSE';
+        return `'${String(val).replace(/'/g, "''")}'`;
+      };
+
+      const qTable = quoteIdent(tableName);
+      const qCols = colNames.map((c) => quoteIdent(c)).join(', ');
+      const batchSize = 50;
+      let inserted = 0;
+      try {
+        for (let i = 0; i < generatedRows.length; i += batchSize) {
+          const batch = generatedRows.slice(i, i + batchSize);
+          const values = batch
+            .map((row) => `(${colNames.map((c) => sqlLiteral(row[c])).join(', ')})`)
+            .join(',\n');
+          const sql = `INSERT INTO ${qTable} (${qCols}) VALUES\n${values};`;
+          await runSqlQuery(activeConnection.id, sql);
+          inserted += batch.length;
+        }
+        await loadTablePage(tableName, currentPage);
+      } catch (err) {
+        throw new Error(`Insert failed after ${inserted} rows: ${String(err)}`);
+      }
+    },
+    [activeConnection, tabs, activeTabId, loadTablePage, currentPage, quoteIdent]
+  );
+
+  /** Open a query tab prefilled with SQL; optionally run it immediately. */
+  const openQueryWithSql = useCallback((sql: string, runImmediately = false) => {
+    const newId = `tab-${Date.now()}`;
+    setTabs((prev) => [
+      ...prev,
+      {
+        id: newId,
+        title: `Query Console ${prev.filter((t) => t.type === 'query' || t.type === 'console').length + 1}`,
+        type: 'query' as TabType,
+        sql,
+      },
+    ]);
+    setActiveTabId(newId);
+    if (runImmediately && sql.trim()) {
+      // Defer so tab state is committed before run updates shared result state
+      setTimeout(() => handleRunQueryWithSafeMode(sql), 0);
     }
-    const blob = new Blob([content], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const activeTab = tabs.find(t => t.id === activeTabId);
-    a.download = `${activeTab?.tableName || 'export'}_${Date.now()}.${format}`;
-    a.click();
-  }, [columns, rows, tabs, activeTabId]);
+  }, [handleRunQueryWithSafeMode]);
+
+  // Cmd/Ctrl+P command palette; Cmd/Ctrl+Shift+P also works
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        setIsCommandPaletteOpen((open) => !open);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
 
-  // Schema for AI agent — include columns only for the currently inspected table
-  // (full multi-table schema map would require per-table introspection cache)
+  // Schema for AI agent — prefer qualified names; columns for active browser object
   const aiSchema = useMemo(() => ({
-    tables: tables.map(t => ({
-      name: t.name,
-      columns: activeTab?.tableName === t.name ? columns.map(c => c.name) : [],
-    })),
+    tables: tables.map((t) => {
+      const key = objectKey(t);
+      return {
+        name: key,
+        columns: activeTab?.tableName === key ? columns.map((c) => c.name) : [],
+      };
+    }),
   }), [tables, columns, activeTab?.tableName]);
 
-  // ERD: use live tables + columns when available; otherwise table names only
+  // ERD: prefer fully-loaded schema cache (with FKs); fall back to partial
   const erdTables = useMemo(() => {
+    if (erdSchema.length > 0) return erdSchema;
     if (tables.length === 0) return [];
-    return tables.map((t) => {
-      if (activeTab?.tableName === t.name && columns.length > 0) {
-        return { name: t.name, columns };
-      }
-      return {
-        name: t.name,
-        columns: [{ name: '(open table to load columns)', data_type: '', is_nullable: true, is_primary_key: false }],
-      };
-    });
-  }, [tables, columns, activeTab?.tableName]);
+    return tables
+      .filter((t) => !(t.table_type || '').toUpperCase().includes('VIEW'))
+      .map((t) => {
+        const key = objectKey(t);
+        if (activeTab?.tableName === key && columns.length > 0) {
+          return { name: key, columns };
+        }
+        return {
+          name: key,
+          columns: [
+            {
+              name: erdLoading ? 'loading…' : '(open ERD to load full schema)',
+              data_type: '',
+              is_nullable: true,
+              is_primary_key: false,
+            },
+          ],
+        };
+      });
+  }, [erdSchema, tables, columns, activeTab?.tableName, erdLoading]);
 
   const tabIcon = (type: TabType, isActive: boolean) => {
     const cls = `w-[14px] h-[14px] shrink-0 ${isActive ? 'text-accent' : 'text-text/30'}`;
@@ -915,18 +1572,26 @@ export const App: React.FC = () => {
                 stagedEdits={stagedEdits}
                 onStageEdit={handleStageEdit}
                 onApplyEdits={() => setActiveTabId('tab-staging')}
-                onResetEdits={() => setStagedEdits([])}
+                onResetEdits={handleResetAllStaged}
                 currentPage={currentPage}
-                onPageChange={setCurrentPage}
-                isLoading={false}
+                onPageChange={handleBrowserPageChange}
+                isLoading={isBrowserLoading}
                 piiRules={piiRules}
+                totalRows={tableTotalRows ?? undefined}
+                pageSize={generalSettings.pageSize}
               />
             ) : (
               <SqlEditor
+                key={activeTab.id}
                 initialSql={activeTab.sql || ''}
                 onRunQuery={handleRunQueryWithSafeMode}
+                onCancelQuery={handleCancelQuery}
                 queryResult={queryResult}
-                isLoading={false}
+                multiResults={multiResults}
+                isLoading={isQueryLoading}
+                schemaData={schemaData}
+                dialectHint={activeConnection?.db_type}
+                readOnlyConnection={!!activeConnection?.is_read_only}
                 onSaveQuery={(name, sql) => {
                   setSavedQueries((prev) => [
                     ...prev,
@@ -970,6 +1635,7 @@ export const App: React.FC = () => {
           setIsSecureShareModalOpen(true);
         }}
         currentProjectPath={currentProjectPath}
+        activeObjectKey={activeTab?.tableName}
       />
 
       {/* === MAIN CONTENT === */}
@@ -985,10 +1651,7 @@ export const App: React.FC = () => {
             activeTable={activeTab.tableName}
             lastQueries={queryHistory.slice(0, 3).map(q => q.sql)}
             dbType={activeConnection?.db_type || 'postgres'}
-            onExecuteQuery={(sql) => {
-              handleOpenNewQueryTab();
-              handleRunQueryWithSafeMode(sql);
-            }}
+            onExecuteQuery={(sql) => openQueryWithSql(sql, true)}
             aiConfig={aiConfig}
           />
 
@@ -1024,6 +1687,12 @@ export const App: React.FC = () => {
             </button>
           </div>
         </div>
+
+        <TransactionBar
+          connectionId={activeConnection?.id || null}
+          connectionName={activeConnection?.name}
+          onStatusChange={setTxActive}
+        />
 
         {/* TAB BAR */}
         <div className="h-9 bg-surface border-b border-border flex items-center px-2 space-x-0.5 select-none shrink-0 overflow-x-auto no-scrollbar">
@@ -1085,16 +1754,42 @@ export const App: React.FC = () => {
               >
                 Export
               </button>
+              <button
+                onClick={() => setIsMockDataOpen(true)}
+                className="px-2 py-0.5 rounded text-textMuted text-[11px] hover:bg-surface2 flex items-center space-x-1"
+                title="Generate and INSERT synthetic rows"
+              >
+                <Sparkles className="w-3 h-3" />
+                <span>Seed Mock Data</span>
+              </button>
             </div>
           </div>
         )}
 
         {/* === WORKSPACE CONTENT === */}
         <div className="flex-1 overflow-hidden relative flex">
-          <div className="flex-1 flex flex-col h-full overflow-hidden">
+          <div className="flex-1 flex flex-col h-full overflow-hidden min-w-0">
             {activeTab.type === 'browser' ? (
               <>
-                <FilterBar columns={columns} onApplyFilter={(w, s) => { setFilterWhere(w); setFilterSort(s); }} onClearFilter={() => { setFilterWhere(''); setFilterSort(''); }} />
+                <FilterBar
+                  columns={columns}
+                  onApplyFilter={(w, s) => {
+                    setFilterWhere(w);
+                    setFilterSort(s);
+                    setCurrentPage(1);
+                    if (activeTab.tableName) {
+                      loadTablePage(activeTab.tableName, 1, { where: w, sort: s });
+                    }
+                  }}
+                  onClearFilter={() => {
+                    setFilterWhere('');
+                    setFilterSort('');
+                    setCurrentPage(1);
+                    if (activeTab.tableName) {
+                      loadTablePage(activeTab.tableName, 1, { where: '', sort: '' });
+                    }
+                  }}
+                />
                 <TableGrid
                   tableName={activeTab.tableName || 'products'}
                   columns={columns}
@@ -1103,19 +1798,42 @@ export const App: React.FC = () => {
                   stagedEdits={stagedEdits}
                   onStageEdit={handleStageEdit}
                   onApplyEdits={() => setActiveTabId('tab-staging')}
-                  onResetEdits={() => setStagedEdits([])}
+                  onResetEdits={handleResetAllStaged}
                   currentPage={currentPage}
-                  onPageChange={setCurrentPage}
-                  isLoading={false}
+                  onPageChange={handleBrowserPageChange}
+                  isLoading={isBrowserLoading}
                   piiRules={piiRules}
+                  totalRows={tableTotalRows ?? undefined}
+                  pageSize={generalSettings.pageSize}
+                  onAddRow={handleAddRow}
+                  onDeleteSelectedRow={handleDeleteSelectedRow}
+                  readOnly={!!activeConnection?.is_read_only}
+                  onJumpToRow={(tbl, filterCol, val) => {
+                    const where = `WHERE ${filterCol} = '${String(val).replace(/'/g, "''")}'`;
+                    handleOpenTableTab(tbl).then(() => {
+                      setFilterWhere(where);
+                      setCurrentPage(1);
+                      loadTablePage(tbl, 1, { where });
+                    });
+                  }}
                 />
               </>
             ) : activeTab.type === 'query' || activeTab.type === 'console' ? (
               <SqlEditor
-                initialSql={activeTab.sql}
+                key={activeTab.id}
+                initialSql={activeTab.sql || ''}
                 onRunQuery={handleRunQueryWithSafeMode}
+                onCancelQuery={handleCancelQuery}
                 queryResult={queryResult}
-                isLoading={false}
+                multiResults={multiResults}
+                isLoading={isQueryLoading}
+                schemaData={schemaData}
+                dialectHint={activeConnection?.db_type}
+                readOnlyConnection={!!activeConnection?.is_read_only}
+                onProfileQuery={(sql) => {
+                  setProfilerSql(sql);
+                  setIsProfilerOpen(true);
+                }}
                 onSaveQuery={(name, sql) => {
                   setSavedQueries(prev => [...prev, { id: `sq-${Date.now()}`, name, sql_content: sql, project_path: currentProjectPath, created_at: new Date().toISOString() }]);
                 }}
@@ -1126,12 +1844,27 @@ export const App: React.FC = () => {
                 onToggleChange={(id) => setStagedChanges(prev => prev.map(c => c.id === id ? { ...c, checked: !c.checked } : c))}
                 onToggleAll={(checked) => setStagedChanges(prev => prev.map(c => ({ ...c, checked })))}
                 onCommit={handleCommitStaged}
-                onDiscard={(id) => setStagedChanges(prev => prev.filter(c => c.id !== id))}
+                onDiscard={(id) => {
+                  setStagedChanges((prev) => {
+                    const removed = prev.find((c) => c.id === id);
+                    if (removed) {
+                      setStagedEdits((edits) =>
+                        edits.filter(
+                          (e) =>
+                            !(e.rowId === removed.rowId && e.columnName === removed.columnName)
+                        )
+                      );
+                    }
+                    return prev.filter((c) => c.id !== id);
+                  });
+                }}
               />
             ) : activeTab.type === 'structure' ? (
               <StructureView
                 tableName={activeTab.tableName || 'products'}
                 columns={columns}
+                connectionId={activeConnection?.id}
+                dbType={activeConnection?.db_type}
                 onAddColumn={async (name, type) => {
                   if (!activeConnection || !activeTab.tableName) {
                     setColumns((prev) => [
@@ -1177,7 +1910,13 @@ export const App: React.FC = () => {
                 }}
               />
             ) : activeTab.type === 'erd' ? (
-              <SchemaVisualizer tables={erdTables} onSelectTable={handleOpenTableTab} />
+              erdLoading && erdSchema.length === 0 ? (
+                <div className="flex items-center justify-center h-full text-textMuted text-sm">
+                  Loading full schema with foreign keys…
+                </div>
+              ) : (
+                <SchemaVisualizer tables={erdTables} onSelectTable={handleOpenTableTab} />
+              )
             ) : activeTab.type === 'health' ? (
               <HealthGrid connectionId={activeConnection?.id || ''} dbType={activeConnection?.db_type || 'postgres'} />
             ) : activeTab.type === 'nosql' ? (
@@ -1197,36 +1936,48 @@ export const App: React.FC = () => {
                 onRunExplain={(sql) => handleRunQueryWithSafeMode(sql)}
               />
             ) : activeTab.type === 'routines' ? (
-              <div className="flex items-center justify-center h-full text-textMuted p-8">
-                <div className="text-center space-y-2 max-w-md">
-                  <p className="text-sm font-medium text-text">Routines manager is a UI prototype only</p>
-                  <p className="text-xs">
-                    Stored procedure / function introspection is not implemented in the backend.
-                    Demo PL/pgSQL definitions were previously hard-coded in the frontend.
-                  </p>
-                </div>
-              </div>
+              <RoutinesManager
+                connectionId={activeConnection?.id || ''}
+                dbType={activeConnection?.db_type || 'postgres'}
+                onExecuteSql={(sql) => openQueryWithSql(sql, true)}
+              />
             ) : activeTab.type === 'roles' ? (
-              <div className="flex items-center justify-center h-full text-textMuted p-8">
-                <div className="text-center space-y-2 max-w-md">
-                  <p className="text-sm font-medium text-text">Roles / privileges manager is a UI prototype only</p>
-                  <p className="text-xs">
-                    No GRANT/REVOKE catalog queries are implemented. Demo users/roles were hard-coded.
-                  </p>
-                </div>
-              </div>
+              <RolesManager
+                connectionId={activeConnection?.id || ''}
+                dbType={activeConnection?.db_type || 'postgres'}
+                onExecuteSql={(sql) => openQueryWithSql(sql, false)}
+              />
             ) : activeTab.type === 'builder' ? (
               <VisualQueryBuilder
                 tables={tables}
                 columns={columns}
                 activeTable={activeTab.tableName}
-                onExecuteQuery={(sql) => {
-                  handleOpenNewQueryTab();
-                  handleRunQueryWithSafeMode(sql);
-                }}
+                onExecuteQuery={(sql) => openQueryWithSql(sql, true)}
               />
             ) : null}
           </div>
+
+          {showHistoryPanel && (
+            <QueryHistory
+              history={queryHistory.map((h) => ({
+                id: h.id,
+                sql: h.sql,
+                timestamp: h.timestamp,
+                executionTimeMs: h.executionTimeMs,
+                status: h.status,
+                errorMessage: h.errorMessage,
+              }))}
+              onSelectQuery={(sql) => openQueryWithSql(sql, false)}
+              onClearHistory={async () => {
+                setQueryHistory([]);
+                try {
+                  await clearPersistedQueryHistory();
+                } catch {
+                  /* ignore */
+                }
+              }}
+            />
+          )}
         </div>
 
         {/* FOOTER STATUS BAR */}
@@ -1254,14 +2005,85 @@ export const App: React.FC = () => {
             )}
             <button onClick={handleOpenErd} className="hover:text-text text-[10px]">ERD</button>
             <button onClick={handleOpenHealth} className="hover:text-text text-[10px]">Health</button>
+            <button
+              onClick={() => setIsDiagnosticsOpen(true)}
+              disabled={!activeConnection}
+              className="hover:text-text text-[10px] disabled:opacity-40"
+              title="Connection diagnostics"
+            >
+              Diagnose
+            </button>
+            <button
+              onClick={() => {
+                setProfilerSql('');
+                setIsProfilerOpen(true);
+              }}
+              disabled={!activeConnection}
+              className="hover:text-text text-[10px] disabled:opacity-40"
+              title="Query profiler"
+            >
+              Profile
+            </button>
+            <button
+              onClick={() => setShowHistoryPanel((v) => !v)}
+              className={`hover:text-text text-[10px] flex items-center space-x-0.5 ${showHistoryPanel ? 'text-accent' : ''}`}
+              title="Query history"
+            >
+              <Clock className="w-3 h-3" />
+              <span>History</span>
+            </button>
+            {txActive && (
+              <span className="text-amber-400 text-[10px] font-semibold">TX</span>
+            )}
+            <button
+              onClick={() => {
+                const existing = tabs.find((t) => t.type === 'routines');
+                if (existing) {
+                  setActiveTabId(existing.id);
+                  return;
+                }
+                const id = `tab-routines-${Date.now()}`;
+                setTabs((prev) => [...prev, { id, title: 'Routines', type: 'routines' }]);
+                setActiveTabId(id);
+              }}
+              className="hover:text-text text-[10px]"
+            >
+              Routines
+            </button>
+            <button
+              onClick={() => {
+                const existing = tabs.find((t) => t.type === 'roles');
+                if (existing) {
+                  setActiveTabId(existing.id);
+                  return;
+                }
+                const id = `tab-roles-${Date.now()}`;
+                setTabs((prev) => [...prev, { id, title: 'Roles', type: 'roles' }]);
+                setActiveTabId(id);
+              }}
+              className="hover:text-text text-[10px]"
+            >
+              Roles
+            </button>
+            <button onClick={() => setIsProcessManagerOpen(true)} className="hover:text-text text-[10px]">
+              Processes
+            </button>
             <button onClick={() => setIsAuditModalOpen(true)} className="hover:text-text text-[10px]">Audit</button>
             <button onClick={() => setIsPiiConfigModalOpen(true)} className="hover:text-text text-[10px]">PII</button>
             <button
               onClick={() => setIsSchemaDiffModalOpen(true)}
               className="hover:text-text text-[10px]"
-              title="UI prototype only"
+              title="Live schema diff between connected databases"
             >
-              Schema Diff*
+              Schema Diff
+            </button>
+            <button
+              onClick={() => setIsCommandPaletteOpen(true)}
+              className="hover:text-text text-[10px] flex items-center space-x-0.5"
+              title="Command Palette (Cmd+P)"
+            >
+              <Command className="w-3 h-3" />
+              <span>Palette</span>
             </button>
           </div>
 
@@ -1287,8 +2109,16 @@ export const App: React.FC = () => {
             {/* Connection Status */}
             <span className="flex items-center space-x-1.5">
               <span className={`w-1.5 h-1.5 rounded-full ${activeConnection?.is_connected ? 'bg-success' : 'bg-error'}`} />
-              <span className="text-text font-medium">Connected: {activeConnection?.database || 'Disconnected'}</span>
-              <span className="text-textMuted">{queryHistory.length > 0 ? `${queryHistory[0].executionTimeMs}ms` : '9ms'}</span>
+              <span className="text-text font-medium">
+                {activeConnection?.name || 'Disconnected'}
+                {activeConnection?.database ? ` · ${activeConnection.database}` : ''}
+              </span>
+              <span className="text-textMuted">
+                {connections.filter((c) => c.is_connected).length} open
+              </span>
+              <span className="text-textMuted">
+                {queryHistory.length > 0 ? `${queryHistory[0].executionTimeMs}ms` : '—'}
+              </span>
             </span>
           </div>
         </footer>
@@ -1333,9 +2163,22 @@ export const App: React.FC = () => {
         }}
       />
 
-      <SafeModeModal isOpen={isSafeModeModalOpen} onClose={() => setIsSafeModeModalOpen(false)} sql={pendingDestructiveSql} warningMessage={safeModeWarning} onConfirmExecute={() => executeSqlQuery(pendingDestructiveSql)} />
+      <SafeModeModal
+        isOpen={isSafeModeModalOpen}
+        onClose={() => setIsSafeModeModalOpen(false)}
+        sql={pendingDestructiveSql}
+        warningMessage={safeModeWarning}
+        onConfirmExecute={() => executeSqlQuery(pendingDestructiveSql, { updateGrid: false })}
+      />
 
-      <ExportModal isOpen={isExportModalOpen} onClose={() => setIsExportModalOpen(false)} tableName={activeTab.tableName || 'products'} onExport={handleExportData} />
+      <ExportModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        tableName={activeTab.tableName || 'products'}
+        onExport={handleExportData}
+        activeFilter={filterWhere}
+        supportsFullExport={!!activeConnection}
+      />
 
       <ImportModal
         isOpen={isImportModalOpen}
@@ -1344,14 +2187,19 @@ export const App: React.FC = () => {
         tableName={activeTab?.tableName}
         onImportSuccess={(file, count) => {
           if (activeTab?.tableName) {
-            executeSqlQuery(`SELECT * FROM ${activeTab.tableName} LIMIT 1000;`);
+            loadTablePage(activeTab.tableName, currentPage);
           }
           console.info(`Imported ${count} rows from ${file}`);
         }}
       />
 
       <AuditLoggerModal isOpen={isAuditModalOpen} onClose={() => setIsAuditModalOpen(false)} />
-      <SchemaDiffModal isOpen={isSchemaDiffModalOpen} onClose={() => setIsSchemaDiffModalOpen(false)} />
+      <SchemaDiffModal
+        isOpen={isSchemaDiffModalOpen}
+        onClose={() => setIsSchemaDiffModalOpen(false)}
+        connections={connections}
+        activeConnectionId={activeConnection?.id}
+      />
       <PiiMaskingConfig
         isOpen={isPiiConfigModalOpen}
         onClose={() => setIsPiiConfigModalOpen(false)}
@@ -1380,6 +2228,99 @@ export const App: React.FC = () => {
             }
           } catch { /* ignore */ }
         }}
+      />
+
+      <CommandPalette
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        tables={tables}
+        connections={connections}
+        savedQueries={savedQueries}
+        onSelectTable={handleOpenTableTab}
+        onSelectConnection={async (conn) => {
+          await handleWelcomeConnect(conn);
+        }}
+        onSelectQuery={(q) => openQueryWithSql(q.sql_content, false)}
+        commands={[
+          { id: 'cmd-new-query', label: 'New Query Console', action: handleOpenNewQueryTab },
+          { id: 'cmd-erd', label: 'Open Schema Visualizer (ERD)', action: handleOpenErd },
+          { id: 'cmd-health', label: 'Open Health / Metrics', action: handleOpenHealth },
+          {
+            id: 'cmd-processes',
+            label: 'Open Process Manager',
+            action: () => setIsProcessManagerOpen(true),
+          },
+          {
+            id: 'cmd-schema-diff',
+            label: 'Open Schema Diff',
+            action: () => setIsSchemaDiffModalOpen(true),
+          },
+          {
+            id: 'cmd-settings',
+            label: 'Open Settings',
+            action: () => setIsSettingsOpen(true),
+          },
+          {
+            id: 'cmd-staging',
+            label: 'Go to Staging & Commit',
+            action: () => setActiveTabId('tab-staging'),
+          },
+          {
+            id: 'cmd-routines',
+            label: 'Open Routines Manager',
+            action: () => {
+              const existing = tabs.find((t) => t.type === 'routines');
+              if (existing) setActiveTabId(existing.id);
+              else {
+                const id = `tab-routines-${Date.now()}`;
+                setTabs((prev) => [...prev, { id, title: 'Routines', type: 'routines' }]);
+                setActiveTabId(id);
+              }
+            },
+          },
+          {
+            id: 'cmd-roles',
+            label: 'Open Roles Manager',
+            action: () => {
+              const existing = tabs.find((t) => t.type === 'roles');
+              if (existing) setActiveTabId(existing.id);
+              else {
+                const id = `tab-roles-${Date.now()}`;
+                setTabs((prev) => [...prev, { id, title: 'Roles', type: 'roles' }]);
+                setActiveTabId(id);
+              }
+            },
+          },
+        ]}
+      />
+
+      <ProcessManagerModal
+        isOpen={isProcessManagerOpen}
+        onClose={() => setIsProcessManagerOpen(false)}
+        connectionId={activeConnection?.id || ''}
+        dbType={activeConnection?.db_type || 'postgres'}
+      />
+
+      <ConnectionDiagnosticsModal
+        isOpen={isDiagnosticsOpen}
+        onClose={() => setIsDiagnosticsOpen(false)}
+        connectionId={activeConnection?.id || ''}
+        connectionName={activeConnection?.name || ''}
+      />
+
+      <QueryProfilerModal
+        isOpen={isProfilerOpen}
+        onClose={() => setIsProfilerOpen(false)}
+        connectionId={activeConnection?.id || ''}
+        initialSql={profilerSql || queryHistory[0]?.sql || 'SELECT 1'}
+      />
+
+      <MockDataGenerator
+        isOpen={isMockDataOpen}
+        onClose={() => setIsMockDataOpen(false)}
+        tableName={activeTab?.tableName || 'table'}
+        columns={columns}
+        onGenerate={handleMockDataGenerate}
       />
 
       {/* Settings & Preferences Modal */}
