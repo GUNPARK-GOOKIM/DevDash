@@ -106,20 +106,6 @@ fn validate_identifier(name: &str) -> Result<(), String> {
 
 // Fetch list of tables and views from all user-visible schemas
 pub async fn fetch_tables(pool: &AnyPool, db_kind: &str) -> Result<Vec<TableInfo>, String> {
-    fetch_tables_inner(pool, None, None, db_kind).await
-}
-
-/// Overload accepting a ManagedConnection so callers with native pools can use them.
-pub async fn fetch_tables_managed(managed: &crate::db::pool::ManagedConnection) -> Result<Vec<TableInfo>, String> {
-    fetch_tables_inner(&managed.pool, managed.pg_pool.as_ref(), managed.mysql_pool.as_ref(), &managed.db_type).await
-}
-
-async fn fetch_tables_inner(
-    pool: &AnyPool,
-    pg_pool: Option<&sqlx::PgPool>,
-    mysql_pool: Option<&sqlx::MySqlPool>,
-    db_kind: &str,
-) -> Result<Vec<TableInfo>, String> {
     let mut tables = Vec::new();
 
     match db_kind.to_lowercase().as_str() {
@@ -131,25 +117,15 @@ async fn fetch_tables_inner(
                   AND table_schema NOT LIKE 'pg_temp_%'
                   AND table_schema NOT LIKE 'pg_toast_temp_%'
                 ORDER BY table_schema, table_type, table_name;";
-            if let Some(pg) = pg_pool {
-                let rows = sqlx::query_as::<_, (String, String, String)>(sql)
-                    .fetch_all(pg)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                for (schema, name, table_type) in rows {
-                    tables.push(TableInfo::new(&schema, &name, &table_type));
-                }
-            } else {
-                let rows = sqlx::query::<Any>(sql)
-                    .fetch_all(pool)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                for row in rows {
-                    let schema: String = row.get(0);
-                    let name: String = row.get(1);
-                    let table_type: String = row.get(2);
-                    tables.push(TableInfo::new(&schema, &name, &table_type));
-                }
+            let rows = sqlx::query::<Any>(sql)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let schema: String = row.get(0);
+                let name: String = row.get(1);
+                let table_type: String = row.get(2);
+                tables.push(TableInfo::new(&schema, &name, &table_type));
             }
         }
         "mysql" | "mariadb" => {
@@ -158,29 +134,18 @@ async fn fetch_tables_inner(
                 FROM information_schema.tables
                 WHERE table_schema = DATABASE()
                 ORDER BY table_type, table_name;";
-            if let Some(my) = mysql_pool {
-                let rows = sqlx::query_as::<_, (String, String, String)>(sql)
-                    .fetch_all(my)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                for (schema, name, table_type) in rows {
-                    let mut info = TableInfo::new(&schema, &name, &table_type);
-                    info.qualified_name = name.clone();
-                    tables.push(info);
-                }
-            } else {
-                let rows = sqlx::query::<Any>(sql)
-                    .fetch_all(pool)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                for row in rows {
-                    let schema: String = row.get(0);
-                    let name: String = row.get(1);
-                    let table_type: String = row.get(2);
-                    let mut info = TableInfo::new(&schema, &name, &table_type);
-                    info.qualified_name = name.clone();
-                    tables.push(info);
-                }
+            let rows = sqlx::query::<Any>(sql)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let schema: String = row.get(0);
+                let name: String = row.get(1);
+                let table_type: String = row.get(2);
+                // Use bare name for default DB to keep SQL simple; still store schema
+                let mut info = TableInfo::new(&schema, &name, &table_type);
+                info.qualified_name = name.clone();
+                tables.push(info);
             }
         }
         _ => {
@@ -207,25 +172,9 @@ async fn fetch_tables_inner(
     Ok(tables)
 }
 
+// Fetch column details for a table. Accepts bare name or schema.qualified name.
 pub async fn fetch_columns(
     pool: &AnyPool,
-    db_kind: &str,
-    table_name: &str,
-) -> Result<Vec<ColumnInfo>, String> {
-    fetch_columns_inner(pool, None, None, db_kind, table_name).await
-}
-
-pub async fn fetch_columns_managed(
-    managed: &crate::db::pool::ManagedConnection,
-    table_name: &str,
-) -> Result<Vec<ColumnInfo>, String> {
-    fetch_columns_inner(&managed.pool, managed.pg_pool.as_ref(), managed.mysql_pool.as_ref(), &managed.db_type, table_name).await
-}
-
-async fn fetch_columns_inner(
-    pool: &AnyPool,
-    pg_pool: Option<&sqlx::PgPool>,
-    mysql_pool: Option<&sqlx::MySqlPool>,
     db_kind: &str,
     table_name: &str,
 ) -> Result<Vec<ColumnInfo>, String> {
@@ -245,50 +194,31 @@ async fn fetch_columns_inner(
                    ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema AND c.column_name = kcu.column_name
                  WHERE c.table_name = $1 AND c.table_schema = $2
                  ORDER BY c.ordinal_position";
-            if let Some(pg) = pg_pool {
-                let rows = sqlx::query_as::<_, (String, String, String, bool)>(sql)
-                    .bind(&bare_table)
-                    .bind(&schema)
-                    .fetch_all(pg)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                for (name, data_type, is_nullable_str, is_pk) in rows {
-                    columns.push(ColumnInfo {
-                        name,
-                        data_type,
-                        is_nullable: is_nullable_str == "YES",
-                        is_primary_key: is_pk,
-                        is_foreign_key: false,
-                        fk_table: None,
-                        fk_column: None,
-                    });
-                }
-            } else {
-                let rows = sqlx::query::<Any>(sql)
-                    .bind(&bare_table)
-                    .bind(&schema)
-                    .fetch_all(pool)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                for row in rows {
-                    let name: String = row.get(0);
-                    let data_type: String = row.get(1);
-                    let is_nullable_str: String = row.get(2);
-                    let is_pk: bool = row.get(3);
-                    columns.push(ColumnInfo {
-                        name,
-                        data_type,
-                        is_nullable: is_nullable_str == "YES",
-                        is_primary_key: is_pk,
-                        is_foreign_key: false,
-                        fk_table: None,
-                        fk_column: None,
-                    });
-                }
+            let rows = sqlx::query::<Any>(sql)
+                .bind(&bare_table)
+                .bind(&schema)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let name: String = row.get(0);
+                let data_type: String = row.get(1);
+                let is_nullable_str: String = row.get(2);
+                let is_pk: bool = row.get(3);
+                columns.push(ColumnInfo {
+                    name,
+                    data_type,
+                    is_nullable: is_nullable_str == "YES",
+                    is_primary_key: is_pk,
+                    is_foreign_key: false,
+                    fk_table: None,
+                    fk_column: None,
+                });
             }
         }
         "mysql" | "mariadb" => {
             let sql = if let Some(ref schema) = schema_opt {
+                // Explicit schema (rare for single-DB connections)
                 let _ = schema;
                 "SELECT column_name, data_type, is_nullable, column_key
                  FROM information_schema.columns
@@ -300,63 +230,34 @@ async fn fetch_columns_inner(
                  WHERE table_name = ? AND table_schema = DATABASE()
                  ORDER BY ordinal_position"
             };
-            
-            if let Some(my) = mysql_pool {
-                let rows = if let Some(ref schema) = schema_opt {
-                    sqlx::query_as::<_, (String, String, String, String)>(sql)
-                        .bind(&bare_table)
-                        .bind(schema)
-                        .fetch_all(my)
-                        .await
-                        .map_err(|e| e.to_string())?
-                } else {
-                    sqlx::query_as::<_, (String, String, String, String)>(sql)
-                        .bind(&bare_table)
-                        .fetch_all(my)
-                        .await
-                        .map_err(|e| e.to_string())?
-                };
-                for (name, data_type, is_nullable_str, column_key) in rows {
-                    columns.push(ColumnInfo {
-                        name,
-                        data_type,
-                        is_nullable: is_nullable_str == "YES",
-                        is_primary_key: column_key == "PRI",
-                        is_foreign_key: false,
-                        fk_table: None,
-                        fk_column: None,
-                    });
-                }
+            let rows = if let Some(ref schema) = schema_opt {
+                sqlx::query::<Any>(sql)
+                    .bind(&bare_table)
+                    .bind(schema)
+                    .fetch_all(pool)
+                    .await
+                    .map_err(|e| e.to_string())?
             } else {
-                let rows = if let Some(ref schema) = schema_opt {
-                    sqlx::query::<Any>(sql)
-                        .bind(&bare_table)
-                        .bind(schema)
-                        .fetch_all(pool)
-                        .await
-                        .map_err(|e| e.to_string())?
-                } else {
-                    sqlx::query::<Any>(sql)
-                        .bind(&bare_table)
-                        .fetch_all(pool)
-                        .await
-                        .map_err(|e| e.to_string())?
-                };
-                for row in rows {
-                    let name: String = row.get(0);
-                    let data_type: String = row.get(1);
-                    let is_nullable_str: String = row.get(2);
-                    let column_key: String = row.get(3);
-                    columns.push(ColumnInfo {
-                        name,
-                        data_type,
-                        is_nullable: is_nullable_str == "YES",
-                        is_primary_key: column_key == "PRI",
-                        is_foreign_key: false,
-                        fk_table: None,
-                        fk_column: None,
-                    });
-                }
+                sqlx::query::<Any>(sql)
+                    .bind(&bare_table)
+                    .fetch_all(pool)
+                    .await
+                    .map_err(|e| e.to_string())?
+            };
+            for row in rows {
+                let name: String = row.get(0);
+                let data_type: String = row.get(1);
+                let is_nullable_str: String = row.get(2);
+                let column_key: String = row.get(3);
+                columns.push(ColumnInfo {
+                    name,
+                    data_type,
+                    is_nullable: is_nullable_str == "YES",
+                    is_primary_key: column_key == "PRI",
+                    is_foreign_key: false,
+                    fk_table: None,
+                    fk_column: None,
+                });
             }
         }
         _ => {
@@ -386,7 +287,7 @@ async fn fetch_columns_inner(
     }
 
     // Enrich with foreign-key metadata (pass original name so schema is preserved)
-    if let Ok(fks) = fetch_foreign_keys_inner(pool, pg_pool, mysql_pool, db_kind, table_name).await {
+    if let Ok(fks) = fetch_foreign_keys(pool, db_kind, table_name).await {
         for fk in fks {
             if let Some(col) = columns.iter_mut().find(|c| c.name == fk.column_name) {
                 col.is_foreign_key = true;
@@ -399,25 +300,10 @@ async fn fetch_columns_inner(
     Ok(columns)
 }
 
+/// Fetch foreign-key relationships for a table (Postgres / MySQL / SQLite).
+/// Accepts bare or schema.qualified table names.
 pub async fn fetch_foreign_keys(
     pool: &AnyPool,
-    db_kind: &str,
-    table_name: &str,
-) -> Result<Vec<ForeignKeyInfo>, String> {
-    fetch_foreign_keys_inner(pool, None, None, db_kind, table_name).await
-}
-
-pub async fn fetch_foreign_keys_managed(
-    managed: &crate::db::pool::ManagedConnection,
-    table_name: &str,
-) -> Result<Vec<ForeignKeyInfo>, String> {
-    fetch_foreign_keys_inner(&managed.pool, managed.pg_pool.as_ref(), managed.mysql_pool.as_ref(), &managed.db_type, table_name).await
-}
-
-async fn fetch_foreign_keys_inner(
-    pool: &AnyPool,
-    pg_pool: Option<&sqlx::PgPool>,
-    mysql_pool: Option<&sqlx::MySqlPool>,
     db_kind: &str,
     table_name: &str,
 ) -> Result<Vec<ForeignKeyInfo>, String> {
@@ -444,97 +330,49 @@ async fn fetch_foreign_keys_inner(
                 WHERE tc.constraint_type = 'FOREIGN KEY'
                   AND tc.table_schema = $2
                   AND tc.table_name = $1";
-            if let Some(pg) = pg_pool {
-                let rows = sqlx::query_as::<_, (String, String, String, String)>(sql)
-                    .bind(&bare_table)
-                    .bind(&schema)
-                    .fetch_all(pg)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                for (column_name, referenced_table, referenced_column, constraint_name) in rows {
-                    fks.push(ForeignKeyInfo {
-                        column_name,
-                        referenced_table,
-                        referenced_column,
-                        constraint_name,
-                    });
-                }
-            } else {
-                let rows = sqlx::query::<Any>(sql)
-                    .bind(&bare_table)
-                    .bind(&schema)
-                    .fetch_all(pool)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                for row in rows {
-                    fks.push(ForeignKeyInfo {
-                        column_name: row.get(0),
-                        referenced_table: row.get(1),
-                        referenced_column: row.get(2),
-                        constraint_name: row.get(3),
-                    });
-                }
+            let rows = sqlx::query::<Any>(sql)
+                .bind(&bare_table)
+                .bind(&schema)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                fks.push(ForeignKeyInfo {
+                    column_name: row.get(0),
+                    referenced_table: row.get(1),
+                    referenced_column: row.get(2),
+                    constraint_name: row.get(3),
+                });
             }
         }
         "mysql" | "mariadb" => {
-            if let Some(my) = mysql_pool {
-                let rows = if let Some(ref schema) = schema_opt {
-                    let sql = "SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME, CONSTRAINT_NAME
-                        FROM information_schema.KEY_COLUMN_USAGE
-                        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL";
-                    sqlx::query_as::<_, (String, String, String, String)>(sql)
-                        .bind(schema)
-                        .bind(&bare_table)
-                        .fetch_all(my)
-                        .await
-                        .map_err(|e| e.to_string())?
-                } else {
-                    let sql = "SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME, CONSTRAINT_NAME
-                        FROM information_schema.KEY_COLUMN_USAGE
-                        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL";
-                    sqlx::query_as::<_, (String, String, String, String)>(sql)
-                        .bind(&bare_table)
-                        .fetch_all(my)
-                        .await
-                        .map_err(|e| e.to_string())?
-                };
-                for (column_name, referenced_table, referenced_column, constraint_name) in rows {
-                    fks.push(ForeignKeyInfo {
-                        column_name,
-                        referenced_table,
-                        referenced_column,
-                        constraint_name,
-                    });
-                }
+            let rows = if let Some(ref schema) = schema_opt {
+                let sql = "SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME, CONSTRAINT_NAME
+                    FROM information_schema.KEY_COLUMN_USAGE
+                    WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL";
+                sqlx::query::<Any>(sql)
+                    .bind(schema)
+                    .bind(&bare_table)
+                    .fetch_all(pool)
+                    .await
+                    .map_err(|e| e.to_string())?
             } else {
-                let rows = if let Some(ref schema) = schema_opt {
-                    let sql = "SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME, CONSTRAINT_NAME
-                        FROM information_schema.KEY_COLUMN_USAGE
-                        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL";
-                    sqlx::query::<Any>(sql)
-                        .bind(schema)
-                        .bind(&bare_table)
-                        .fetch_all(pool)
-                        .await
-                        .map_err(|e| e.to_string())?
-                } else {
-                    let sql = "SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME, CONSTRAINT_NAME
-                        FROM information_schema.KEY_COLUMN_USAGE
-                        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL";
-                    sqlx::query::<Any>(sql)
-                        .bind(&bare_table)
-                        .fetch_all(pool)
-                        .await
-                        .map_err(|e| e.to_string())?
-                };
-                for row in rows {
-                    fks.push(ForeignKeyInfo {
-                        column_name: row.get(0),
-                        referenced_table: row.get(1),
-                        referenced_column: row.get(2),
-                        constraint_name: row.get(3),
-                    });
-                }
+                let sql = "SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME, CONSTRAINT_NAME
+                    FROM information_schema.KEY_COLUMN_USAGE
+                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL";
+                sqlx::query::<Any>(sql)
+                    .bind(&bare_table)
+                    .fetch_all(pool)
+                    .await
+                    .map_err(|e| e.to_string())?
+            };
+            for row in rows {
+                fks.push(ForeignKeyInfo {
+                    column_name: row.get(0),
+                    referenced_table: row.get(1),
+                    referenced_column: row.get(2),
+                    constraint_name: row.get(3),
+                });
             }
         }
         _ => {

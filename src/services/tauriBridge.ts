@@ -140,7 +140,7 @@ export const getDatabaseTables = async (
             : t.name),
     }));
   } catch (err) {
-    console.error('Failed to fetch database tables via IPC:', err);
+    console.warn('Failed to fetch database tables via IPC:', err);
     return [];
   }
 };
@@ -360,7 +360,7 @@ const webPasswordStore = new Map<string, string>();
 
 export const saveDbPassword = async (connectionId: string, password: string): Promise<void> => {
   webPasswordStore.set(connectionId, password);
-  try { sessionStorage.setItem(`devdash_pwd_${connectionId}`, password); } catch {}
+  try { sessionStorage.setItem(`devdash_pwd_${connectionId}`, password); } catch { }
   if (!isTauriAvailable()) return;
   await invoke('save_db_password', { connectionId, password });
 };
@@ -865,8 +865,7 @@ export const generateMigrationSql = async (
     const sql: string[] = [];
     for (const col of added) {
       sql.push(
-        `ALTER TABLE ${q(current.table_name)} ADD COLUMN ${q(col.name)} ${col.data_type} ${
-          col.is_nullable ? 'NULL' : 'NOT NULL'
+        `ALTER TABLE ${q(current.table_name)} ADD COLUMN ${q(col.name)} ${col.data_type} ${col.is_nullable ? 'NULL' : 'NOT NULL'
         };`
       );
     }

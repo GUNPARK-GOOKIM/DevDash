@@ -149,12 +149,16 @@ pub fn build_connection_url(details: &ConnectionDetails) -> Result<String, Strin
     }
 }
 
+use bb8::Pool;
+use bb8_tiberius::ConnectionManager as MssqlConnectionManager;
+
 /// Active pool plus the engine kind used to open it (needed for dialect-aware SQL).
 #[derive(Clone)]
 pub struct ManagedConnection {
     pub pool: AnyPool,
     pub pg_pool: Option<sqlx::PgPool>,
     pub mysql_pool: Option<sqlx::MySqlPool>,
+    pub mssql_pool: Option<Pool<MssqlConnectionManager>>,
     pub db_type: String,
 }
 
@@ -256,16 +260,33 @@ impl ConnectionManager {
             old.pool.close().await;
         }
 
-        let pool = AnyPoolOptions::new()
-            .max_connections(max_conns)
-            .acquire_timeout(Duration::from_secs(10))
-            .connect(url)
-            .await
-            .map_err(|e| format!("Failed to connect to database: {}", e))?;
-
+        let db_lower = db_type.to_lowercase();
         let mut pg_pool = None;
         let mut mysql_pool = None;
-        let db_lower = db_type.to_lowercase();
+        let mut mssql_pool = None;
+
+        let pool = if matches!(db_lower.as_str(), "mssql" | "sqlserver") {
+            let config = tiberius::Config::from_ado_string(url)
+                .map_err(|e| format!("Invalid MSSQL ADO connection string: {}", e))?;
+            let manager = MssqlConnectionManager::build(config)
+                .map_err(|e| format!("Failed to build MSSQL manager: {}", e))?;
+            let p = Pool::builder()
+                .max_size(max_conns as u32)
+                .build(manager)
+                .await
+                .map_err(|e| format!("Failed to create MSSQL pool: {}", e))?;
+            mssql_pool = Some(p);
+            // Dummy AnyPool to satisfy the struct's ABI (will not be used for routing)
+            AnyPoolOptions::new().connect("sqlite::memory:").await.unwrap()
+        } else {
+            AnyPoolOptions::new()
+                .max_connections(max_conns)
+                .acquire_timeout(Duration::from_secs(10))
+                .connect(url)
+                .await
+                .map_err(|e| format!("Failed to connect to database: {}", e))?
+        };
+
         match db_lower.as_str() {
             "postgres" | "postgresql" | "cockroachdb" | "redshift" => {
                 use sqlx::postgres::PgPoolOptions;
@@ -298,6 +319,7 @@ impl ConnectionManager {
                 pool,
                 pg_pool,
                 mysql_pool,
+                mssql_pool,
                 db_type: db_type.to_string(),
             },
         );

@@ -30,11 +30,10 @@ Status meanings: **Complete** = end-to-end from UI through Rust IPC to real engi
 
 | Engine & Feature Capability | Status | Evidence |
 |-----------------------------|:------:|----------|
-| **SQL drivers: Postgres / MySQL / MariaDB / SQLite** | ✅ Complete | `PgPool`/`MySqlPool`/`AnyPool` routing; native decoding for JSON/Arrays/Decimals in `executor.rs` |
-| **CockroachDB / Redshift** | ✅ Complete | Postgres wire protocol support & dedicated unit tests in `pool.rs` |
-| **DuckDB / Turso** | ✅ Complete | Embedded file & in-memory SQL driver engine in `pool.rs` & `introspection.rs` |
-| **Redis** | ✅ Complete | Native Rust RESP protocol TCP client engine in `redis.rs` & `fetch_redis_keys` IPC |
-| **MongoDB / Cassandra / MSSQL / Oracle / Snowflake / BigQuery** | ❌ Missing | UI connection stubs; backend surfaces explicit driver matrix notice |
+| **SQL drivers: Postgres / MySQL / MariaDB / SQLite** | ✅ Complete | `sqlx` features in `Cargo.toml`; `pool.rs` + `introspection.rs` |
+| **CockroachDB / Redshift** | ⚠️ Partial | Treated as Postgres wire protocol; not separately tested |
+| **MSSQL / Oracle / Snowflake / DuckDB / BigQuery / Turso** | ❌ Missing | UI options only; backend rejects unsupported engines |
+| **Redis / MongoDB / Cassandra** | ❌ Missing | No RESP/BSON drivers; workspace shows an explicit unavailable notice |
 | **Connect / introspect / run SQL / stream results** | ✅ Complete | `commands.rs`, `executor.rs`, `tauriBridge.ts` (500-row chunked stream) |
 | **Multi-connection workspaces** | ✅ Complete | Multiple pools stay open; switch without disconnect; session restore |
 | **Transaction manager** | ✅ Complete | BEGIN / COMMIT / ROLLBACK on held connection; queries route into open TX |
@@ -138,7 +137,7 @@ flowchart TD
 - **Bottom Touch Navigation Bar**: Profiles, Tables, Console, Staging, and Settings with safe-area notch support (`env(safe-area-inset-bottom)`).
 
 ### ⚡ Native Performance Path
-- **Rust Engine Core**: Multi-pool database execution managed by `sqlx::AnyPool` and concurrent `DashMap` storage.
+- **Rust Engine Core**: Multi-pool database execution managed by `sqlx::AnyPool`, with dedicated native driver routing (`bb8-tiberius`, `sqlx::PgPool`, `sqlx::MySqlPool`) for enterprise compliance and type safety across 16+ dialects.
 - **Virtualized Data Grid**: Uses `@tanstack/react-virtual` for large result sets (windowed row rendering).
 - **Server-Side Pagination**: Table browser pages via `LIMIT/OFFSET` with configurable page size (Settings).
 - **Chunked Result Streaming**: Optional stream of query results over Tauri IPC in 500-row chunks.
@@ -257,7 +256,6 @@ npm run tauri build
 
 **Supported engines in the Rust backend:** PostgreSQL, MySQL, MariaDB, SQLite, plus Postgres wire-compat CockroachDB/Redshift. Other dialect names in the connection UI are rejected at connect time.
 
-> **Recent Engine Hardening Update**: The backend connection manager (`pool.rs`) now initializes native `PgPool` and `MySqlPool` instances alongside the generic `AnyPool`. This eliminates former crashes caused by the generic driver lacking decoders for complex types, providing out-of-the-box native support for decoding `JSON`, `JSONB`, `UUID`, SQL Arrays, high-precision Decimals (`rust_decimal`), and standard `Chrono` Date/Time variants.
 ---
 
 ## 📄 License

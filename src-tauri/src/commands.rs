@@ -3,7 +3,7 @@ use crate::db::app_storage::{AppStorage, ConnectionGroup, QueryHistoryItem, Save
 use crate::db::credentials; // Import credentials module for keyring secrets management
 use crate::db::executor::{execute_dynamic_query, QueryResultPayload}; // Import dynamic query execution function and payload struct
 use crate::db::export; // Import export module for CSV, JSON, SQL dump operations
-use crate::db::introspection::{fetch_tables, fetch_tables_managed, fetch_columns, fetch_columns_managed, analyze_primary_keys, TableInfo, ColumnInfo, PkAnalysis}; // Import introspection functions and structs
+use crate::db::introspection::{fetch_tables, fetch_columns, analyze_primary_keys, TableInfo, ColumnInfo, PkAnalysis}; // Import introspection functions and structs
 use crate::db::pool::{ConnectionManager, ConnectionDetails, TestConnectionResult}; // Import ConnectionManager, ConnectionDetails, and TestConnectionResult
 use crate::db::safe_mode::{analyze_sql_safety, SafetyAnalysis}; // Import safe mode analysis function
 use crate::db::staged_edits::{
@@ -336,35 +336,35 @@ pub async fn disconnect_database( // Async command handler function
 #[tauri::command] // Tauri command macro annotation
 pub async fn get_database_tables( // Async command handler function
     connection_id: String, // Connection ID identifier
-    _db_kind: String, // Database engine kind identifier string
+    db_kind: String, // Database engine kind identifier string
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<Vec<TableInfo>, String> { // Command return signature
-    let managed = state.connection_manager.get_managed_connection(&connection_id)?;
-    fetch_tables_managed(&managed).await
+    let pool = state.connection_manager.get_pool(&connection_id)?; // Lookup cached connection pool instance
+    fetch_tables(&pool, &db_kind).await // Call fetch_tables introspection function asynchronously
 } // End of get_database_tables command
 
 // IPC Command: Fetch column details for a specific table
 #[tauri::command] // Tauri command macro annotation
 pub async fn get_table_columns( // Async command handler function
     connection_id: String, // Connection ID identifier
-    _db_kind: String, // Database engine kind string
+    db_kind: String, // Database engine kind string
     table_name: String, // Target table name string
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<Vec<ColumnInfo>, String> { // Command return signature
-    let managed = state.connection_manager.get_managed_connection(&connection_id)?;
-    fetch_columns_managed(&managed, &table_name).await // Call fetch_columns introspection function
+    let pool = state.connection_manager.get_pool(&connection_id)?; // Lookup cached connection pool
+    fetch_columns(&pool, &db_kind, &table_name).await // Call fetch_columns introspection function
 } // End of get_table_columns command
 
 // IPC Command: Analyze primary key status for editing safety
 #[tauri::command] // Tauri command macro annotation
 pub async fn get_pk_analysis( // Async command handler function
     connection_id: String, // Connection ID identifier
-    _db_kind: String, // Database engine kind string
+    db_kind: String, // Database engine kind string
     table_name: String, // Target table name string
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<PkAnalysis, String> { // Command return signature
-    let managed = state.connection_manager.get_managed_connection(&connection_id)?;
-    let columns = fetch_columns_managed(&managed, &table_name).await?; // Fetch column metadata
+    let pool = state.connection_manager.get_pool(&connection_id)?; // Lookup cached connection pool
+    let columns = fetch_columns(&pool, &db_kind, &table_name).await?; // Fetch column metadata
     Ok(analyze_primary_keys(&columns)) // Analyze and return PK status
 } // End of get_pk_analysis command
 
@@ -422,7 +422,11 @@ pub async fn run_sql_query( // Async command handler function
     
     // Spawn task to run query asynchronously on thread pool
     let handle = tokio::spawn(async move {
-        execute_dynamic_query(&conn_clone, &sql_clone).await
+        if conn_clone.db_type.to_lowercase() == "mssql" || conn_clone.db_type.to_lowercase() == "sqlserver" {
+            crate::db::executor::execute_mssql_query(&conn_clone, &sql_clone).await
+        } else {
+            execute_dynamic_query(&conn_clone.pool, &sql_clone).await
+        }
     });
 
     // Register active query handle
@@ -728,9 +732,13 @@ pub async fn stream_sql_query(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<QueryResultPayload, String> {
-    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let managed_conn = state.connection_manager.get_managed_connection(&connection_id)?;
     let size = chunk_size.unwrap_or(500);
-    crate::db::executor::stream_dynamic_query(&app_handle, &pool, &query_id, &sql, size).await
+    if managed_conn.db_type.to_lowercase() == "mssql" || managed_conn.db_type.to_lowercase() == "sqlserver" {
+        crate::db::executor::stream_mssql_query(&app_handle, &managed_conn, &query_id, &sql, size).await
+    } else {
+        crate::db::executor::stream_dynamic_query(&app_handle, &managed_conn.pool, &query_id, &sql, size).await
+    }
 }
 
 // IPC Command: Get paginated query history
