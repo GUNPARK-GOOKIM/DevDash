@@ -40,7 +40,7 @@ Status meanings: **Complete** = end-to-end from UI through Rust IPC to real engi
 | **OS keychain passwords** | ✅ Complete | `credentials.rs` via `keyring` |
 | **SSH tunnel** | ⚠️ Partial | `ssh_tunnel.rs` opens local forward; session-per-connection is heavy / limited |
 | **Local AI (Ollama) + cloud LLM providers** | ⚠️ Partial | Browser `fetch` to Ollama/OpenAI/Claude from UI — works when configured; not “built-in offline AI” |
-| **EXPLAIN plan visualizer** | ❌ UI prototype | `ExplainVisualizer.tsx` ships a hardcoded demo plan tree |
+| **EXPLAIN plan visualizer** | ✅ Complete | `ExplainVisualizer.tsx` parses live PostgreSQL / MySQL / SQLite `EXPLAIN (FORMAT JSON)` execution trees |
 | **Health / metrics grid** | ⚠️ Partial | Live metrics IPC for PG/MySQL/SQLite; no fake CPU/RAM; QPS/slow queries limited |
 | **Routines manager** | ❌ UI prototype | Hardcoded demo routines |
 | **Roles / privilege matrix** | ❌ UI prototype | Hardcoded demo users/roles |
@@ -53,7 +53,8 @@ Status meanings: **Complete** = end-to-end from UI through Rust IPC to real engi
 | **Mock data generator** | ⚠️ Partial | Generates rows client-side; insert path incomplete |
 | **Command palette / process manager** | ❌ Dead UI | Components exist but are not mounted in `App.tsx` |
 | **Virtualized grid + TSV copy** | ⚠️ Partial | `@tanstack/react-virtual` is a dependency but the grid currently maps all rows (not windowed); TSV copy works |
-| **Encrypted connection export** | ⚠️ Partial | AES-GCM module present; limited UI exposure |
+| **Encrypted connection export & QR** | ✅ Complete | `encrypted_export.rs` + Web Crypto API PBKDF2/AES-256-GCM string export & camera QR scanner |
+| **Mobile touch adaptation (GAP 26)** | ✅ Complete | `MobileViewport.tsx`, `MobileBottomNav.tsx`, `MobileDrawer.tsx`, `useMediaQuery.ts` |
 | **Cloud IAM auth** | ❌ Missing | Struct stub only (`CloudIamConfig`) |
 | **&lt;20MB RAM claim** | ❓ Unverified | Not measured in CI |
 

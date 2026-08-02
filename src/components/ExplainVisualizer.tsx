@@ -4,6 +4,7 @@ import {
   ChevronDown, Search, Copy, Play, Clock, Layers, GitBranch, Eye,
   TrendingUp, Filter, ArrowRight,
 } from 'lucide-react';
+import { runSqlQuery } from '../services/tauriBridge';
 
 // ─── Plan Node Types ────────────────────────────────────────────────
 export interface ExplainNode {
@@ -219,8 +220,8 @@ export const ExplainVisualizer: React.FC<ExplainVisualizerProps> = ({ connection
   const [sqlInput, setSqlInput] = useState('SELECT u.email, COUNT(o.id) AS order_count\nFROM users u\nJOIN orders o ON o.user_id = u.id\nWHERE u.created_at > \'2026-01-01\'\nGROUP BY u.email\nORDER BY order_count DESC\nLIMIT 50;');
   const [selectedNode, setSelectedNode] = useState<ExplainNode | null>(null);
 
-  // Demo plan tree
-  const [plan] = useState<ExplainNode>({
+  // Demo / Live plan tree
+  const [plan, setPlan] = useState<ExplainNode>({
     nodeType: 'Limit',
     startupCost: 142.58,
     totalCost: 142.71,
@@ -338,6 +339,53 @@ export const ExplainVisualizer: React.FC<ExplainVisualizerProps> = ({ connection
     navigator.clipboard.writeText(JSON.stringify(plan, null, 2));
   }, [plan]);
 
+  const handleExecuteExplain = useCallback(async () => {
+    if (!sqlInput.trim() || !connectionId) return;
+    try {
+      const isMysql = dbType.toLowerCase().includes('mysql') || dbType.toLowerCase().includes('maria');
+      const isSqlite = dbType.toLowerCase().includes('sqlite');
+      const explainQuery = isSqlite
+        ? `EXPLAIN QUERY PLAN ${sqlInput.trim()};`
+        : isMysql
+        ? `EXPLAIN FORMAT=JSON ${sqlInput.trim()};`
+        : `EXPLAIN (FORMAT JSON) ${sqlInput.trim()};`;
+
+      const result = await runSqlQuery(connectionId, explainQuery);
+      if (result && result.rows && result.rows.length > 0) {
+        const rawOutput = result.rows[0][0];
+        let parsedPlan: any = null;
+        if (typeof rawOutput === 'string') {
+          try {
+            const json = JSON.parse(rawOutput);
+            parsedPlan = Array.isArray(json) ? json[0]?.Plan || json[0] : json.Plan || json;
+          } catch {
+            parsedPlan = null;
+          }
+        } else if (typeof rawOutput === 'object') {
+          parsedPlan = rawOutput?.Plan || rawOutput;
+        }
+
+        if (parsedPlan) {
+          const mapRawNode = (n: any): ExplainNode => ({
+            nodeType: n['Node Type'] || n['node_type'] || 'Query Node',
+            relationName: n['Relation Name'] || n['table'],
+            startupCost: n['Startup Cost'] || 0,
+            totalCost: n['Total Cost'] || n['query_cost'] || 1,
+            planRows: n['Plan Rows'] || n['rows'] || 1,
+            actualRows: n['Actual Rows'],
+            planWidth: n['Plan Width'] || 0,
+            actualTime: n['Actual Total Time'],
+            indexName: n['Index Name'] || n['key'],
+            children: n.Plans ? n.Plans.map(mapRawNode) : undefined,
+          });
+          setPlan(mapRawNode(parsedPlan));
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to run EXPLAIN query:', err);
+    }
+  }, [sqlInput, connectionId, dbType]);
+
   return (
     <div className="flex flex-col h-full bg-base text-text font-sans select-none">
       {/* Header */}
@@ -366,7 +414,10 @@ export const ExplainVisualizer: React.FC<ExplainVisualizerProps> = ({ connection
             rows={3}
             placeholder="Enter SQL query to analyze…"
           />
-          <button className="px-3 py-2 bg-accent/20 text-accent border border-accent/30 rounded-lg text-xs font-semibold hover:bg-accent/30 transition-colors flex items-center space-x-1.5 shrink-0">
+          <button
+            onClick={handleExecuteExplain}
+            className="px-3 py-2 bg-accent/20 text-accent border border-accent/30 rounded-lg text-xs font-semibold hover:bg-accent/30 transition-colors flex items-center space-x-1.5 shrink-0"
+          >
             <Play className="w-3 h-3" />
             <span>Run EXPLAIN</span>
           </button>
