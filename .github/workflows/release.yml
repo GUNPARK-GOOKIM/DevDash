@@ -23,7 +23,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -32,7 +32,7 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
 
       - name: Install frontend dependencies
         run: npm install
@@ -44,6 +44,6 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'DevDash ${{ github.ref_name }}'
-          releaseBody: 'DevDash native desktop database GUI client release.'
-          releaseDraft: true
+          releaseBody: 'DevDash native database GUI client release with AES-256 connection sharing, mobile touch adaptation, and live EXPLAIN plan visualizer.'
+          releaseDraft: false
           prerelease: false
