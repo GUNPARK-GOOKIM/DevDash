@@ -30,6 +30,12 @@ hmac = "0.12" # HMAC support for PBKDF2
 sha2 = "0.10" # SHA-256 hashing for PBKDF2
 ssh2 = "0.9" # Native SSH2 protocol library for SSH tunnel port forwarding
 futures-util = "0.3" # StreamExt for sqlx row streaming
+openssl = { version = "0.10", features = ["vendored"], optional = true } # Vendored OpenSSL (enabled only for Android CI builds)
+
+# Cargo feature flags
+[features] # Feature flags section
+default = [] # No vendored OpenSSL by default (uses system TLS on desktop)
+vendored-openssl = ["dep:openssl"] # Enable vendored OpenSSL for Android cross-compilation
 
 # Build configuration dependencies
 [build-dependencies] # Build dependencies section

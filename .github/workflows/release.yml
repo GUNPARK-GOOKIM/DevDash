@@ -89,7 +89,7 @@ jobs:
         run: npx tauri android init --ci
 
       - name: Build Android APKs
-        run: npx tauri android build --apk
+        run: npx tauri android build --apk --features vendored-openssl
 
       - name: Upload APKs to GitHub Release
         uses: softprops/action-gh-release@v2
