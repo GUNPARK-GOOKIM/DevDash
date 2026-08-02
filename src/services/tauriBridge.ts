@@ -112,18 +112,31 @@ export const getDatabaseTables = async (
 ): Promise<TableItem[]> => {
   if (!isTauriAvailable()) {
     return [
-      { name: 'users', table_type: 'table' },
-      { name: 'products', table_type: 'table' },
-      { name: 'orders', table_type: 'table' },
-      { name: 'categories', table_type: 'table' },
+      { name: 'users', schema: 'main', table_type: 'BASE TABLE', qualified_name: 'users' },
+      { name: 'products', schema: 'main', table_type: 'BASE TABLE', qualified_name: 'products' },
+      { name: 'orders', schema: 'main', table_type: 'BASE TABLE', qualified_name: 'orders' },
+      { name: 'categories', schema: 'main', table_type: 'BASE TABLE', qualified_name: 'categories' },
+      { name: 'active_users', schema: 'main', table_type: 'VIEW', qualified_name: 'active_users' },
     ];
   }
 
   try {
-    return await invoke<TableItem[]>('get_database_tables', {
+    const raw = await invoke<TableItem[]>('get_database_tables', {
       connectionId,
       dbKind,
     });
+    // Normalize for older payloads missing schema/qualified_name
+    return raw.map((t) => ({
+      ...t,
+      schema: t.schema || 'main',
+      qualified_name:
+        t.qualified_name ||
+        (t.schema && t.schema !== 'main' && t.schema !== 'public'
+          ? `${t.schema}.${t.name}`
+          : t.schema === 'public'
+            ? `${t.schema}.${t.name}`
+            : t.name),
+    }));
   } catch (err) {
     console.warn('Failed to fetch database tables via IPC:', err);
     return [];
@@ -174,11 +187,31 @@ export const getTableColumns = async (
   }
 
   try {
-    return await invoke<ColumnItem[]>('get_table_columns', {
+    const raw = await invoke<
+      Array<
+        ColumnItem & {
+          fk_table?: string | null;
+          fk_column?: string | null;
+        }
+      >
+    >('get_table_columns', {
       connectionId,
       dbKind,
       tableName,
     });
+    // Map Rust ColumnInfo FK fields into frontend ColumnItem.fk_references
+    return raw.map((c) => ({
+      name: c.name,
+      data_type: c.data_type,
+      is_nullable: c.is_nullable,
+      is_primary_key: c.is_primary_key,
+      is_foreign_key: Boolean(c.is_foreign_key || c.fk_table),
+      fk_references:
+        c.fk_table && c.fk_column
+          ? { table: c.fk_table, column: c.fk_column }
+          : c.fk_references,
+      default_value: c.default_value,
+    }));
   } catch (err) {
     console.warn('Failed to fetch table columns via IPC:', err);
     return [];
@@ -207,10 +240,20 @@ export const getPkAnalysis = async (
 
 export const runSqlQuery = async (
   connectionId: string,
-  sql: string
+  sql: string,
+  queryId?: string
 ): Promise<QueryResultPayload> => {
   if (!isTauriAvailable()) {
     const lower = sql.toLowerCase();
+    // COUNT(*) helpers for browser-mode pagination demos
+    if (/\bcount\s*\(\s*\*\s*\)/i.test(sql) && !lower.includes('group by')) {
+      return {
+        columns: [{ name: 'count', type_name: 'INTEGER' }],
+        rows: [[42]],
+        execution_time_ms: 2,
+        affected_rows: 1,
+      };
+    }
     if (lower.includes('from users')) {
       return {
         columns: [
@@ -271,10 +314,10 @@ export const runSqlQuery = async (
     };
   }
 
-  const queryId = `q-${Date.now()}-${Math.random()}`;
+  const qid = queryId || `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   return await invoke<QueryResultPayload>('run_sql_query', {
     connectionId,
-    queryId,
+    queryId: qid,
     sql,
   });
 };
@@ -456,6 +499,112 @@ export const commitStagedRowEdits = async (
     tableName,
     pkColumn,
     edits,
+  });
+};
+
+export interface StagedInsertRowPayload {
+  columns: string[];
+  values: unknown[];
+}
+
+export interface StagedDeleteRowPayload {
+  pk_value: unknown;
+}
+
+export const commitStagedInserts = async (
+  connectionId: string,
+  tableName: string,
+  rows: StagedInsertRowPayload[]
+): Promise<number> => {
+  if (!isTauriAvailable()) {
+    throw new Error('Staged inserts require the native Tauri desktop app');
+  }
+  return await invoke<number>('commit_staged_inserts', {
+    connectionId,
+    tableName,
+    rows,
+  });
+};
+
+export const commitStagedDeletes = async (
+  connectionId: string,
+  tableName: string,
+  pkColumn: string,
+  rows: StagedDeleteRowPayload[]
+): Promise<number> => {
+  if (!isTauriAvailable()) {
+    throw new Error('Staged deletes require the native Tauri desktop app');
+  }
+  return await invoke<number>('commit_staged_deletes', {
+    connectionId,
+    tableName,
+    pkColumn,
+    rows,
+  });
+};
+
+export interface IndexInfoPayload {
+  name: string;
+  columns: string[];
+  is_unique: boolean;
+  is_primary: boolean;
+}
+
+export interface TableDdlPayload {
+  table_name: string;
+  create_sql: string;
+  indexes: IndexInfoPayload[];
+  foreign_keys: {
+    column_name: string;
+    referenced_table: string;
+    referenced_column: string;
+    constraint_name: string;
+  }[];
+}
+
+export const generateTableDdl = async (
+  connectionId: string,
+  tableName: string,
+  dbKind: string
+): Promise<TableDdlPayload> => {
+  if (!isTauriAvailable()) {
+    throw new Error('DDL generation requires the native Tauri desktop app');
+  }
+  return await invoke<TableDdlPayload>('generate_table_ddl_cmd', {
+    connectionId,
+    tableName,
+    dbKind,
+  });
+};
+
+export const getTableIndexes = async (
+  connectionId: string,
+  tableName: string,
+  dbKind: string
+): Promise<IndexInfoPayload[]> => {
+  if (!isTauriAvailable()) return [];
+  return await invoke<IndexInfoPayload[]>('get_table_indexes', {
+    connectionId,
+    tableName,
+    dbKind,
+  });
+};
+
+/** Full-table export from the engine (not limited to the current UI page). */
+export const exportTableData = async (
+  connectionId: string,
+  tableName: string,
+  format: 'csv' | 'json' | 'sql',
+  whereClause?: string
+): Promise<string> => {
+  if (!isTauriAvailable()) {
+    throw new Error('Full table export requires the native Tauri desktop app');
+  }
+  return await invoke<string>('export_table_data', {
+    connectionId,
+    tableName,
+    format,
+    whereClause: whereClause || null,
   });
 };
 
@@ -720,6 +869,451 @@ export const importConnectionsFromText = async (
     encryptedPayload,
     passphrase: passphrase || '',
   });
+};
+
+// ─── Schema migration (per-table column diff) ────────────────────────
+export interface ColumnSnapshotPayload {
+  name: string;
+  data_type: string;
+  is_nullable: boolean;
+  is_primary_key: boolean;
+}
+
+export interface TableSnapshotPayload {
+  table_name: string;
+  columns: ColumnSnapshotPayload[];
+}
+
+export interface MigrationDiffResultPayload {
+  table_name: string;
+  added_columns: ColumnSnapshotPayload[];
+  removed_columns: string[];
+  sql_statements: string[];
+}
+
+export const generateMigrationSql = async (
+  snapshot: TableSnapshotPayload,
+  current: TableSnapshotPayload,
+  engine: EngineDialect
+): Promise<MigrationDiffResultPayload> => {
+  if (!isTauriAvailable()) {
+    // Lightweight browser fallback mirroring schema_migration.rs
+    const snap = new Map(snapshot.columns.map((c) => [c.name.toLowerCase(), c]));
+    const cur = new Map(current.columns.map((c) => [c.name.toLowerCase(), c]));
+    const added = current.columns.filter((c) => !snap.has(c.name.toLowerCase()));
+    const removed = snapshot.columns
+      .filter((c) => !cur.has(c.name.toLowerCase()))
+      .map((c) => c.name);
+    const q = (id: string) => (engine === 'mysql' ? `\`${id}\`` : `"${id}"`);
+    const sql: string[] = [];
+    for (const col of added) {
+      sql.push(
+        `ALTER TABLE ${q(current.table_name)} ADD COLUMN ${q(col.name)} ${col.data_type} ${
+          col.is_nullable ? 'NULL' : 'NOT NULL'
+        };`
+      );
+    }
+    for (const name of removed) {
+      sql.push(`ALTER TABLE ${q(current.table_name)} DROP COLUMN ${q(name)};`);
+    }
+    return {
+      table_name: current.table_name,
+      added_columns: added,
+      removed_columns: removed,
+      sql_statements: sql,
+    };
+  }
+  return await invoke<MigrationDiffResultPayload>('generate_migration_sql', {
+    snapshot,
+    current,
+    engine,
+  });
+};
+
+// ─── Backend process kill (protocol-level) ───────────────────────────
+export const cancelBackendQuery = async (
+  connectionId: string,
+  pidOrThreadId: number,
+  dbKind: string
+): Promise<void> => {
+  if (!isTauriAvailable()) {
+    throw new Error('Process kill requires the native Tauri desktop app');
+  }
+  await invoke('cancel_backend_query', {
+    connectionId,
+    pidOrThreadId,
+    dbKind,
+  });
+};
+
+/** List active server processes for process manager UI. */
+export interface DatabaseProcessItem {
+  pid: number;
+  user: string;
+  database: string;
+  clientAddr: string;
+  state: string;
+  query: string;
+  durationMs: number;
+}
+
+// ─── Autocomplete schema map ─────────────────────────────────────────
+export interface AutocompleteData {
+  schemas: string[];
+  tables: string[];
+  table_columns: { table_name: string; columns: string[] }[];
+  fetch_time_ms: number;
+}
+
+export const getAutocompleteData = async (
+  connectionId: string,
+  dbKind: string
+): Promise<AutocompleteData> => {
+  if (!isTauriAvailable()) {
+    return {
+      schemas: ['public'],
+      tables: ['users', 'products', 'orders', 'categories'],
+      table_columns: [
+        { table_name: 'users', columns: ['id', 'username', 'email', 'role', 'status', 'created_at'] },
+        { table_name: 'products', columns: ['id', 'category_id', 'name', 'price', 'stock', 'is_active'] },
+        { table_name: 'orders', columns: ['id', 'user_id', 'product_id', 'quantity', 'total_amount', 'order_date'] },
+        { table_name: 'categories', columns: ['id', 'name', 'description'] },
+      ],
+      fetch_time_ms: 1,
+    };
+  }
+  return await invoke<AutocompleteData>('get_autocomplete_data', {
+    connectionId,
+    dbKind,
+  });
+};
+
+// ─── Query cancel ────────────────────────────────────────────────────
+export const cancelQuery = async (queryId: string): Promise<void> => {
+  if (!isTauriAvailable()) return;
+  await invoke('cancel_query', { queryId });
+};
+
+// ─── Query history (persisted in app SQLite) ─────────────────────────
+export interface PersistedQueryHistoryItem {
+  id: string;
+  query_text: string;
+  connection_id: string;
+  timestamp: string;
+  execution_time_ms: number;
+  row_count: number;
+  error?: string | null;
+}
+
+export const fetchPersistedQueryHistory = async (
+  page = 1,
+  pageSize = 50
+): Promise<PersistedQueryHistoryItem[]> => {
+  if (!isTauriAvailable()) return [];
+  return await invoke<PersistedQueryHistoryItem[]>('get_query_history', {
+    page,
+    pageSize,
+  });
+};
+
+export const clearPersistedQueryHistory = async (): Promise<void> => {
+  if (!isTauriAvailable()) return;
+  await invoke('clear_all_query_history');
+};
+
+export const deletePersistedHistoryEntry = async (id: string): Promise<void> => {
+  if (!isTauriAvailable()) return;
+  await invoke('delete_history_entry', { id });
+};
+
+/** Split a SQL script into statements, respecting quotes and line/block comments. */
+export function splitSqlStatements(sql: string): string[] {
+  const statements: string[] = [];
+  let current = '';
+  let i = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+
+  while (i < sql.length) {
+    const ch = sql[i];
+    const next = sql[i + 1];
+
+    if (inLineComment) {
+      current += ch;
+      if (ch === '\n') inLineComment = false;
+      i++;
+      continue;
+    }
+    if (inBlockComment) {
+      current += ch;
+      if (ch === '*' && next === '/') {
+        current += '/';
+        i += 2;
+        inBlockComment = false;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    if (!inSingle && !inDouble) {
+      if (ch === '-' && next === '-') {
+        current += ch;
+        inLineComment = true;
+        i++;
+        continue;
+      }
+      if (ch === '/' && next === '*') {
+        current += ch;
+        inBlockComment = true;
+        i++;
+        continue;
+      }
+    }
+    if (ch === "'" && !inDouble) {
+      // handle escaped ''
+      if (inSingle && next === "'") {
+        current += "''";
+        i += 2;
+        continue;
+      }
+      inSingle = !inSingle;
+      current += ch;
+      i++;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      current += ch;
+      i++;
+      continue;
+    }
+    if (ch === ';' && !inSingle && !inDouble) {
+      const trimmed = current.trim();
+      if (trimmed) statements.push(trimmed);
+      current = '';
+      i++;
+      continue;
+    }
+    current += ch;
+    i++;
+  }
+  const tail = current.trim();
+  if (tail) statements.push(tail);
+  return statements;
+}
+
+// ─── Multi-connection ────────────────────────────────────────────────
+export const listConnectedIds = async (): Promise<string[]> => {
+  if (!isTauriAvailable()) return [];
+  return await invoke<string[]>('list_connected_ids');
+};
+
+// ─── Transactions ────────────────────────────────────────────────────
+export interface TxStatus {
+  active: boolean;
+  connection_id: string;
+  started_at?: string | null;
+  statement_count: number;
+  duration_ms: number;
+}
+
+export const beginTransaction = async (connectionId: string): Promise<TxStatus> => {
+  if (!isTauriAvailable()) throw new Error('Transactions require the native app');
+  return await invoke<TxStatus>('begin_transaction', { connectionId });
+};
+
+export const commitTransaction = async (connectionId: string): Promise<TxStatus> => {
+  if (!isTauriAvailable()) throw new Error('Transactions require the native app');
+  return await invoke<TxStatus>('commit_transaction', { connectionId });
+};
+
+export const rollbackTransaction = async (connectionId: string): Promise<TxStatus> => {
+  if (!isTauriAvailable()) throw new Error('Transactions require the native app');
+  return await invoke<TxStatus>('rollback_transaction', { connectionId });
+};
+
+export const getTransactionStatus = async (connectionId: string): Promise<TxStatus> => {
+  if (!isTauriAvailable()) {
+    return {
+      active: false,
+      connection_id: connectionId,
+      statement_count: 0,
+      duration_ms: 0,
+    };
+  }
+  return await invoke<TxStatus>('get_transaction_status', { connectionId });
+};
+
+// ─── Diagnostics ─────────────────────────────────────────────────────
+export interface DiagnosticCheck {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface ConnectionDiagnostics {
+  success: boolean;
+  latency_ms: number;
+  server_version: string;
+  current_database: string;
+  current_user: string;
+  is_superuser?: boolean | null;
+  max_connections?: number | null;
+  active_connections?: number | null;
+  database_size_pretty?: string | null;
+  encoding?: string | null;
+  uptime_seconds?: number | null;
+  message: string;
+  checks: DiagnosticCheck[];
+}
+
+export const diagnoseConnection = async (
+  connectionId: string
+): Promise<ConnectionDiagnostics> => {
+  if (!isTauriAvailable()) throw new Error('Diagnostics require the native app');
+  return await invoke<ConnectionDiagnostics>('diagnose_connection', { connectionId });
+};
+
+// ─── Query profiling ─────────────────────────────────────────────────
+export interface ProfileNode {
+  node_type: string;
+  relation?: string | null;
+  cost?: number | null;
+  actual_ms?: number | null;
+  rows?: number | null;
+  detail: string;
+}
+
+export interface QueryProfile {
+  sql: string;
+  dialect: string;
+  profile_sql: string;
+  total_time_ms: number;
+  planning_time_ms?: number | null;
+  execution_time_ms?: number | null;
+  plan_text: string;
+  plan_json?: string | null;
+  summary: string;
+  nodes: ProfileNode[];
+}
+
+export const profileSqlQuery = async (
+  connectionId: string,
+  sql: string
+): Promise<QueryProfile> => {
+  if (!isTauriAvailable()) throw new Error('Profiling requires the native app');
+  return await invoke<QueryProfile>('profile_sql_query', { connectionId, sql });
+};
+
+// ─── Migration apply ─────────────────────────────────────────────────
+export interface ApplyMigrationResult {
+  success: boolean;
+  dry_run: boolean;
+  statements_run: number;
+  duration_ms: number;
+  error?: string | null;
+  run_id: string;
+}
+
+export interface MigrationRunRecord {
+  id: string;
+  source_connection: string;
+  target_connection: string;
+  sql_script: string;
+  dry_run: boolean;
+  success: boolean;
+  error?: string | null;
+  statements_run: number;
+  duration_ms: number;
+  created_at: string;
+}
+
+export const applyMigrationSql = async (
+  connectionId: string,
+  sourceLabel: string,
+  targetLabel: string,
+  sqlScript: string,
+  dryRun: boolean
+): Promise<ApplyMigrationResult> => {
+  if (!isTauriAvailable()) throw new Error('Migration apply requires the native app');
+  return await invoke<ApplyMigrationResult>('apply_migration_sql', {
+    connectionId,
+    sourceLabel,
+    targetLabel,
+    sqlScript,
+    dryRun,
+  });
+};
+
+export const listMigrationRuns = async (limit = 50): Promise<MigrationRunRecord[]> => {
+  if (!isTauriAvailable()) return [];
+  return await invoke<MigrationRunRecord[]>('list_migration_runs', { limit });
+};
+
+export const listDatabaseProcesses = async (
+  connectionId: string,
+  dbKind: string
+): Promise<DatabaseProcessItem[]> => {
+  const kind = dbKind.toLowerCase();
+  let sql: string;
+
+  if (kind === 'postgres' || kind === 'postgresql' || kind === 'cockroachdb' || kind === 'redshift') {
+    sql = `
+      SELECT
+        pid,
+        COALESCE(usename, '') AS username,
+        COALESCE(datname, '') AS database,
+        COALESCE(client_addr::text, '') AS client_addr,
+        COALESCE(state, '') AS state,
+        COALESCE(query, '') AS query,
+        COALESCE(EXTRACT(EPOCH FROM (now() - query_start)) * 1000, 0)::bigint AS duration_ms
+      FROM pg_stat_activity
+      WHERE pid <> pg_backend_pid()
+      ORDER BY query_start DESC NULLS LAST
+      LIMIT 200;
+    `;
+  } else if (kind === 'mysql' || kind === 'mariadb') {
+    sql = `
+      SELECT
+        ID AS pid,
+        USER AS username,
+        DB AS database,
+        HOST AS client_addr,
+        COMMAND AS state,
+        INFO AS query,
+        TIME * 1000 AS duration_ms
+      FROM information_schema.PROCESSLIST
+      ORDER BY TIME DESC
+      LIMIT 200;
+    `;
+  } else {
+    // SQLite is embedded — no multi-session process list
+    return [];
+  }
+
+  const result = await runSqlQuery(connectionId, sql);
+  const colIndex = (name: string) =>
+    result.columns.findIndex((c) => c.name.toLowerCase() === name.toLowerCase());
+
+  const iPid = colIndex('pid');
+  const iUser = colIndex('username');
+  const iDb = colIndex('database');
+  const iClient = colIndex('client_addr');
+  const iState = colIndex('state');
+  const iQuery = colIndex('query');
+  const iDur = colIndex('duration_ms');
+
+  return result.rows.map((row) => ({
+    pid: Number(row[iPid] ?? 0),
+    user: String(row[iUser] ?? ''),
+    database: String(row[iDb] ?? ''),
+    clientAddr: String(row[iClient] ?? ''),
+    state: String(row[iState] ?? ''),
+    query: String(row[iQuery] ?? ''),
+    durationMs: Number(row[iDur] ?? 0),
+  }));
 };
 
 

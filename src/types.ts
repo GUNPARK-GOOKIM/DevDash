@@ -44,8 +44,25 @@ export interface ConnectionConfig {
 }
 
 export interface TableItem {
+  /** Bare object name */
   name: string;
+  /** Schema / namespace (public, main, analytics, …) */
+  schema?: string;
+  /** BASE TABLE | VIEW | … */
   table_type: string;
+  /** schema.name when multi-schema; bare name otherwise */
+  qualified_name?: string;
+}
+
+/** Prefer qualified_name for SQL; fall back to name. */
+export function objectKey(t: TableItem | string): string {
+  if (typeof t === 'string') return t;
+  return t.qualified_name || (t.schema && t.schema !== 'main' ? `${t.schema}.${t.name}` : t.name);
+}
+
+export function isViewObject(t: TableItem): boolean {
+  const ty = (t.table_type || '').toUpperCase();
+  return ty.includes('VIEW');
 }
 
 export interface ColumnItem {
@@ -119,6 +136,8 @@ export interface WorkspaceTab {
   type: TabType;
   tableName?: string;
   sql?: string;
+  /** Bound connection for multi-connection workspaces */
+  connectionId?: string;
 }
 
 export interface ConnectionGroup {
