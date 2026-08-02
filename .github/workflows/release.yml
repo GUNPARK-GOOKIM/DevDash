@@ -47,3 +47,51 @@ jobs:
           releaseBody: 'DevDash native database GUI client release with AES-256 connection sharing, mobile touch adaptation, and live EXPLAIN plan visualizer.'
           releaseDraft: false
           prerelease: false
+
+  android-release:
+    name: Build & Release Android APK
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android NDK
+        uses: nkmr-yt/setup-android-ndk@v1
+        with:
+          ndk-version: r25c
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Rust target
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Initialize Android project
+        run: npx tauri android init --ci
+
+      - name: Build Android APKs
+        run: npx tauri android build --apk
+
+      - name: Upload APKs to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+            src-tauri/gen/android/app/build/outputs/apk/arm64/release/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
