@@ -105,6 +105,15 @@ flowchart TD
 - **Cloud LLM Support**: Optional OpenAI-compatible / Anthropic endpoints via API key (network required).
 - **Cmd+K**: Focuses the AI bar when AI is enabled.
 
+### 🔐 100% Offline AES-256 Connection Sharing & QR Scanner
+- **Zero-Trust Encryption**: Share database connection profiles securely using PBKDF2 + AES-256-GCM authenticated encryption.
+- **Copyable Text & QR Codes**: Export connection profiles as Base64 strings (Slack/Email friendly) or visual QR codes.
+- **Mobile Camera Decoder**: Scan QR codes directly using your phone's camera to import profiles in 1 tap.
+
+### 📱 Mobile Touch Viewport Adaptation (Android & iOS)
+- **Ergonomic Touch Drawer**: Slide-over drawer for switching database connections and selecting tables on mobile screens (`< 768px`).
+- **Bottom Touch Navigation Bar**: 1-tap switching between Profiles, Tables, Console, Staging, and Settings with safe-area notch support (`env(safe-area-inset-bottom)`).
+
 ### ⚡ Native Performance Path
 - **Rust Engine Core**: Multi-pool database execution managed by `sqlx::AnyPool` and concurrent `DashMap` storage.
 - **Virtualized Data Grid**: Uses `@tanstack/react-virtual` for large result sets.
@@ -114,14 +123,15 @@ flowchart TD
 
 ## 💻 Download & Installation
 
-### Option 1: Direct Download (Pre-Compiled Binary)
-Download the latest installer for your operating system directly from GitHub Releases:
+### Option 1: Direct Download (Pre-Compiled Binaries & Installers)
+Download the latest installer or APK for your platform directly from GitHub Releases:
 
-- **🪟 Windows**: [`DevDash-Setup-x64.exe`](../../releases/latest) or `.msi`
-- **🍏 macOS**: [`DevDash-x64-arm64.dmg`](../../releases/latest) (Apple Silicon M1/M2/M3 & Intel)
-- **🐧 Linux**: [`DevDash.AppImage`](../../releases/latest) or `.deb`
+- **🪟 Windows**: [`DevDash-Setup-x64.exe`](https://github.com/GUNPARK-GOOKIM/DevDash/releases/latest) or `.msi`
+- **🤖 Android**: [`DevDash_arm64-v8a.apk`](https://github.com/GUNPARK-GOOKIM/DevDash/releases/latest) *(Includes camera QR code scanner & mobile touch drawer)*
+- **🍏 macOS**: [`DevDash-x64-arm64.dmg`](https://github.com/GUNPARK-GOOKIM/DevDash/releases/latest) (Apple Silicon M1/M2/M3 & Intel)
+- **🐧 Linux**: [`DevDash.AppImage`](https://github.com/GUNPARK-GOOKIM/DevDash/releases/latest) or `.deb`
 
-👉 **[Go to GitHub Releases](../../releases/latest)**
+👉 **[Go to GitHub Releases (Download APK & Installers)](https://github.com/GUNPARK-GOOKIM/DevDash/releases/latest)**
 
 ---
 

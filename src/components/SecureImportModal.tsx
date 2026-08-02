@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Download, Key, Shield, CheckCircle, AlertTriangle, X, Lock } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { Download, Key, Shield, CheckCircle, AlertTriangle, X, Lock, Camera, QrCode } from 'lucide-react';
 import { importConnectionsFromText } from '../services/tauriBridge';
 
 interface SecureImportModalProps {
@@ -18,8 +18,33 @@ export const SecureImportModal: React.FC<SecureImportModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successCount, setSuccessCount] = useState<number | null>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
+
+  const handleCameraCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const resultStr = event.target?.result as string;
+      if (resultStr) {
+        // If file is JSON or plain text containing encrypted file payload
+        try {
+          if (resultStr.includes('salt_b64') || resultStr.includes('ciphertext_b64')) {
+            setEncryptedPayload(resultStr.trim());
+            setError(null);
+          } else {
+            setEncryptedPayload(resultStr.trim());
+          }
+        } catch {
+          setEncryptedPayload(resultStr.trim());
+        }
+      }
+    };
+    reader.readAsText(file);
+  };
 
   const handleImport = async () => {
     if (!encryptedPayload.trim()) {
@@ -100,11 +125,29 @@ export const SecureImportModal: React.FC<SecureImportModalProps> = ({
           ) : (
             <>
               <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
-                  Encrypted Payload (Paste Base64/JSON string)
-                </label>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                    Encrypted Payload (Paste Base64/JSON string)
+                  </label>
+                  <input
+                    type="file"
+                    ref={cameraInputRef}
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={handleCameraCapture}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => cameraInputRef.current?.click()}
+                    className="flex items-center space-x-1.5 px-2.5 py-1 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded-lg text-xs font-medium transition-colors"
+                  >
+                    <Camera className="w-3.5 h-3.5" />
+                    <span>Scan QR / Image</span>
+                  </button>
+                </div>
                 <textarea
-                  rows={5}
+                  rows={4}
                   placeholder="Paste encrypted payload from Slack, Email, or QR scan..."
                   value={encryptedPayload}
                   onChange={(e) => setEncryptedPayload(e.target.value)}
