@@ -37,6 +37,7 @@ pub fn run() { // Entry point library run function for Tauri application
         storage, // Set storage field
         active_queries: tokio::sync::Mutex::new(std::collections::HashMap::new()), // Initialize query tracker map
         ssh_tunnel_manager, // Set ssh_tunnel_manager field
+        tx_manager: db::transactions::TransactionManager::new(),
     }; // End of AppState instantiation
 
     tauri::Builder::default() // Create default Tauri application builder
@@ -61,6 +62,10 @@ pub fn run() { // Entry point library run function for Tauri application
             commands::cancel_backend_query, // Register cancel_backend_query IPC command (GAP 12)
             commands::check_sql_safety, // Register check_sql_safety IPC command
             commands::commit_staged_row_edits, // Register commit_staged_row_edits IPC command
+            commands::commit_staged_inserts,
+            commands::commit_staged_deletes,
+            commands::generate_table_ddl_cmd,
+            commands::get_table_indexes,
             commands::export_table_data, // Register export_table_data IPC command
             commands::save_project_query, // Register save_project_query IPC command
             commands::get_queries_for_project, // Register get_queries_for_project IPC command
@@ -101,7 +106,16 @@ pub fn run() { // Entry point library run function for Tauri application
             commands::get_audit_log,
             commands::save_secret,
             commands::get_secret,
-            commands::delete_secret
+            commands::delete_secret,
+            commands::list_connected_ids,
+            commands::begin_transaction,
+            commands::commit_transaction,
+            commands::rollback_transaction,
+            commands::get_transaction_status,
+            commands::diagnose_connection,
+            commands::profile_sql_query,
+            commands::apply_migration_sql,
+            commands::list_migration_runs,
         ])
         .run(tauri::generate_context!()) // Run Tauri application context
         .expect("error while running devdash tauri application"); // Handle application runtime errors

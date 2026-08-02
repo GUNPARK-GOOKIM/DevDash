@@ -6,7 +6,11 @@ use crate::db::export; // Import export module for CSV, JSON, SQL dump operation
 use crate::db::introspection::{fetch_tables, fetch_columns, analyze_primary_keys, TableInfo, ColumnInfo, PkAnalysis}; // Import introspection functions and structs
 use crate::db::pool::{ConnectionManager, ConnectionDetails, TestConnectionResult}; // Import ConnectionManager, ConnectionDetails, and TestConnectionResult
 use crate::db::safe_mode::{analyze_sql_safety, SafetyAnalysis}; // Import safe mode analysis function
-use crate::db::staged_edits::{apply_staged_edits, StagedRowEdit}; // Import staged edit execution function and payload struct
+use crate::db::staged_edits::{
+    apply_staged_deletes, apply_staged_edits, apply_staged_inserts, StagedDeleteRow,
+    StagedInsertRow, StagedRowEdit,
+};
+use crate::db::ddl::{fetch_indexes, generate_table_ddl, IndexInfo, TableDdlResult};
 use crate::db::json_tree::{parse_json_tree, JsonParseResult}; // Import JSON tree viewer parser
 use crate::db::chart_formatter::{format_query_result_for_chart, ColumnInput, FormattedChartData}; // Import chart data formatter
 use crate::db::schema_migration::{generate_schema_migration, EngineDialect, MigrationDiffResult, TableSnapshot}; // Import schema migration generator
@@ -33,6 +37,10 @@ use crate::db::encrypted_export::{
 }; // Import AES-256 encrypted export engine
 use crate::db::ssh_tunnel::{SshConfigPayload, SshTunnelManager}; // Import SSH tunnel manager and types
 use crate::db::audit::{self, AuditEntry}; // Import audit trail logger
+use crate::db::transactions::{TransactionManager, TxStatus};
+use crate::db::diagnostics::{run_connection_diagnostics, ConnectionDiagnostics};
+use crate::db::profiler::{profile_query, QueryProfile};
+use crate::db::migrations_log::{self, MigrationRun};
 use std::sync::Arc; // Import Arc for atomic reference sharing
 use tauri::State; // Import State extractor type from tauri crate
 use std::collections::HashMap; // Import HashMap for tracking active query handles
@@ -44,6 +52,7 @@ pub struct AppState { // Struct definition for managed state
     pub storage: Arc<AppStorage>, // Embedded SQLite app storage instance
     pub active_queries: Mutex<HashMap<String, tokio::task::AbortHandle>>, // Map of active query cancellation handles
     pub ssh_tunnel_manager: SshTunnelManager, // Native SSH tunnel manager handle
+    pub tx_manager: TransactionManager, // Explicit GUI transaction sessions
 } // End of AppState struct definition
 
 // IPC Command: Save database password securely in OS Keychain
@@ -317,6 +326,7 @@ pub async fn disconnect_database( // Async command handler function
     connection_id: String, // Connection ID identifier
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<(), String> { // Command return signature
+    state.tx_manager.force_drop(&connection_id).await;
     state.connection_manager.disconnect(&connection_id).await // Call connection manager disconnect method
 } // End of disconnect_database command
 
@@ -364,6 +374,33 @@ pub async fn run_sql_query( // Async command handler function
     sql: String, // Raw SQL string to execute
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<QueryResultPayload, String> { // Command return signature
+    // Prefer open transaction session when present
+    if let Ok(Some(payload)) = state.tx_manager.execute_in_tx(&connection_id, &sql).await {
+        let row_count = if !payload.rows.is_empty() {
+            payload.rows.len() as i64
+        } else {
+            payload.affected_rows as i64
+        };
+        let _ = state
+            .storage
+            .log_query_history(
+                &sql,
+                &connection_id,
+                payload.execution_time_ms as f64,
+                row_count,
+                None,
+            )
+            .await;
+        let _ = audit::log_action(
+            &connection_id,
+            "QUERY_TX",
+            &sql,
+            payload.affected_rows,
+            "SUCCESS",
+        );
+        return Ok(payload);
+    }
+
     let pool = state.connection_manager.get_pool(&connection_id)?; // Lookup cached connection pool instance
     
     // Clone connection pool and SQL statement for task execution
@@ -430,6 +467,243 @@ pub async fn run_sql_query( // Async command handler function
 
     result
 } // End of run_sql_query command
+
+// ─── Multi-connection workspace ──────────────────────────────────────
+#[tauri::command]
+pub fn list_connected_ids(state: State<'_, AppState>) -> Vec<String> {
+    state.connection_manager.list_connected_ids()
+}
+
+// ─── Transaction manager ─────────────────────────────────────────────
+#[tauri::command]
+pub async fn begin_transaction(
+    connection_id: String,
+    state: State<'_, AppState>,
+) -> Result<TxStatus, String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    state.tx_manager.begin(&pool, &connection_id).await
+}
+
+#[tauri::command]
+pub async fn commit_transaction(
+    connection_id: String,
+    state: State<'_, AppState>,
+) -> Result<TxStatus, String> {
+    state.tx_manager.commit(&connection_id).await
+}
+
+#[tauri::command]
+pub async fn rollback_transaction(
+    connection_id: String,
+    state: State<'_, AppState>,
+) -> Result<TxStatus, String> {
+    state.tx_manager.rollback(&connection_id).await
+}
+
+#[tauri::command]
+pub async fn get_transaction_status(
+    connection_id: String,
+    state: State<'_, AppState>,
+) -> Result<TxStatus, String> {
+    Ok(state.tx_manager.status(&connection_id).await)
+}
+
+// ─── Connection diagnostics ──────────────────────────────────────────
+#[tauri::command]
+pub async fn diagnose_connection(
+    connection_id: String,
+    state: State<'_, AppState>,
+) -> Result<ConnectionDiagnostics, String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let db_kind = state
+        .connection_manager
+        .get_db_type(&connection_id)
+        .unwrap_or_else(|_| "postgres".into());
+    run_connection_diagnostics(&pool, &db_kind).await
+}
+
+// ─── Query profiling ─────────────────────────────────────────────────
+#[tauri::command]
+pub async fn profile_sql_query(
+    connection_id: String,
+    sql: String,
+    state: State<'_, AppState>,
+) -> Result<QueryProfile, String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let db_kind = state
+        .connection_manager
+        .get_db_type(&connection_id)
+        .unwrap_or_else(|_| "postgres".into());
+    profile_query(&pool, &db_kind, &sql).await
+}
+
+// ─── Migration apply workflow ────────────────────────────────────────
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct ApplyMigrationResult {
+    pub success: bool,
+    pub dry_run: bool,
+    pub statements_run: i64,
+    pub duration_ms: f64,
+    pub error: Option<String>,
+    pub run_id: String,
+}
+
+#[tauri::command]
+pub async fn apply_migration_sql(
+    connection_id: String,
+    source_label: String,
+    target_label: String,
+    sql_script: String,
+    dry_run: bool,
+    state: State<'_, AppState>,
+) -> Result<ApplyMigrationResult, String> {
+    use std::time::Instant;
+    let start = Instant::now();
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let run_id = migrations_log::new_run_id();
+
+    // Split on ; outside strings (simple)
+    let statements: Vec<String> = split_sql_simple(&sql_script);
+    if statements.is_empty() {
+        return Err("No SQL statements to apply".into());
+    }
+
+    if dry_run {
+        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let run = MigrationRun {
+            id: run_id.clone(),
+            source_connection: source_label,
+            target_connection: target_label,
+            sql_script,
+            dry_run: true,
+            success: true,
+            error: None,
+            statements_run: statements.len() as i64,
+            duration_ms,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let _ = migrations_log::log_migration_run(state.storage.pool(), &run).await;
+        return Ok(ApplyMigrationResult {
+            success: true,
+            dry_run: true,
+            statements_run: statements.len() as i64,
+            duration_ms,
+            error: None,
+            run_id,
+        });
+    }
+
+    // Apply inside a real transaction
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("Failed to begin migration transaction: {}", e))?;
+    let mut ran = 0i64;
+    for stmt in &statements {
+        match sqlx::query(stmt).execute(&mut *tx).await {
+            Ok(_) => ran += 1,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+                let err = format!("Statement {} failed: {}", ran + 1, e);
+                let run = MigrationRun {
+                    id: run_id.clone(),
+                    source_connection: source_label,
+                    target_connection: target_label,
+                    sql_script,
+                    dry_run: false,
+                    success: false,
+                    error: Some(err.clone()),
+                    statements_run: ran,
+                    duration_ms,
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                };
+                let _ = migrations_log::log_migration_run(state.storage.pool(), &run).await;
+                return Ok(ApplyMigrationResult {
+                    success: false,
+                    dry_run: false,
+                    statements_run: ran,
+                    duration_ms,
+                    error: Some(err),
+                    run_id,
+                });
+            }
+        }
+    }
+    tx.commit()
+        .await
+        .map_err(|e| format!("Migration COMMIT failed: {}", e))?;
+    let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let run = MigrationRun {
+        id: run_id.clone(),
+        source_connection: source_label,
+        target_connection: target_label,
+        sql_script,
+        dry_run: false,
+        success: true,
+        error: None,
+        statements_run: ran,
+        duration_ms,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+    let _ = migrations_log::log_migration_run(state.storage.pool(), &run).await;
+    let _ = audit::log_action(
+        &connection_id,
+        "MIGRATION",
+        &format!("Applied {} statements", ran),
+        ran as u64,
+        "SUCCESS",
+    );
+    Ok(ApplyMigrationResult {
+        success: true,
+        dry_run: false,
+        statements_run: ran,
+        duration_ms,
+        error: None,
+        run_id,
+    })
+}
+
+#[tauri::command]
+pub async fn list_migration_runs(
+    limit: Option<i64>,
+    state: State<'_, AppState>,
+) -> Result<Vec<MigrationRun>, String> {
+    migrations_log::list_migration_runs(state.storage.pool(), limit.unwrap_or(50)).await
+}
+
+fn split_sql_simple(sql: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let chars: Vec<char> = sql.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\'' && !in_double {
+            in_single = !in_single;
+            cur.push(c);
+        } else if c == '"' && !in_single {
+            in_double = !in_double;
+            cur.push(c);
+        } else if c == ';' && !in_single && !in_double {
+            let t = cur.trim().to_string();
+            if !t.is_empty() && !t.starts_with("--") {
+                out.push(t);
+            }
+            cur.clear();
+        } else {
+            cur.push(c);
+        }
+        i += 1;
+    }
+    let t = cur.trim().to_string();
+    if !t.is_empty() {
+        out.push(t);
+    }
+    out
+}
 
 // IPC Command: Stream dynamic query rows in chunks of 500 rows over Tauri IPC events
 #[tauri::command]
@@ -692,6 +966,85 @@ pub async fn commit_staged_row_edits( // Async command handler function
     result
 } // End of commit_staged_row_edits command
 
+// IPC Command: Commit staged INSERT rows in a transaction
+#[tauri::command]
+pub async fn commit_staged_inserts(
+    connection_id: String,
+    table_name: String,
+    rows: Vec<StagedInsertRow>,
+    state: State<'_, AppState>,
+) -> Result<u64, String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let db_type = state
+        .connection_manager
+        .get_db_type(&connection_id)
+        .unwrap_or_else(|_| "postgres".to_string());
+    let mysql_style = crate::db::pool::ConnectionManager::is_mysql_style(&db_type);
+    let result = apply_staged_inserts(&pool, &table_name, rows, mysql_style).await;
+    if let Ok(count) = &result {
+        let _ = audit::log_action(
+            &connection_id,
+            "STAGED_INSERT",
+            &format!("INSERT {} row(s) into {}", count, table_name),
+            *count,
+            "SUCCESS",
+        );
+    }
+    result
+}
+
+// IPC Command: Commit staged DELETE rows in a transaction
+#[tauri::command]
+pub async fn commit_staged_deletes(
+    connection_id: String,
+    table_name: String,
+    pk_column: String,
+    rows: Vec<StagedDeleteRow>,
+    state: State<'_, AppState>,
+) -> Result<u64, String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let db_type = state
+        .connection_manager
+        .get_db_type(&connection_id)
+        .unwrap_or_else(|_| "postgres".to_string());
+    let mysql_style = crate::db::pool::ConnectionManager::is_mysql_style(&db_type);
+    let result = apply_staged_deletes(&pool, &table_name, &pk_column, rows, mysql_style).await;
+    if let Ok(count) = &result {
+        let _ = audit::log_action(
+            &connection_id,
+            "STAGED_DELETE",
+            &format!("DELETE {} row(s) from {}", count, table_name),
+            *count,
+            "SUCCESS",
+        );
+    }
+    result
+}
+
+// IPC Command: Generate CREATE TABLE DDL + indexes for a live table
+#[tauri::command]
+pub async fn generate_table_ddl_cmd(
+    connection_id: String,
+    table_name: String,
+    db_kind: String,
+    state: State<'_, AppState>,
+) -> Result<TableDdlResult, String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    generate_table_ddl(&pool, &db_kind, &table_name).await
+}
+
+// IPC Command: List indexes for a table
+#[tauri::command]
+pub async fn get_table_indexes(
+    connection_id: String,
+    table_name: String,
+    db_kind: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<IndexInfo>, String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    fetch_indexes(&pool, &db_kind, &table_name).await
+}
+
 // IPC Command: Read recent append-only audit log entries
 #[tauri::command]
 pub fn get_audit_log(limit: Option<usize>) -> Result<Vec<AuditEntry>, String> {
@@ -700,11 +1053,13 @@ pub fn get_audit_log(limit: Option<usize>) -> Result<Vec<AuditEntry>, String> {
 }
 
 // IPC Command: Export table data in specified format (CSV, JSON, SQL)
+// Optional where_clause applies server-side filtering (full table export, not just UI page).
 #[tauri::command]
 pub async fn export_table_data(
     connection_id: String,
     table_name: String,
     format: String,
+    where_clause: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let pool = state.connection_manager.get_pool(&connection_id)?;
@@ -713,10 +1068,17 @@ pub async fn export_table_data(
         .get_db_type(&connection_id)
         .unwrap_or_else(|_| "postgres".to_string());
     let mysql_style = crate::db::pool::ConnectionManager::is_mysql_style(&db_type);
+    let where_ref = where_clause.as_deref();
     match format.to_lowercase().as_str() {
-        "csv" => export::export_csv(&pool, &table_name, true, mysql_style).await,
-        "json" => export::export_json(&pool, &table_name, mysql_style).await,
-        "sql" => export::export_sql_dump(&pool, &table_name, mysql_style).await,
+        "csv" => {
+            export::export_csv_filtered(&pool, &table_name, true, mysql_style, where_ref).await
+        }
+        "json" => {
+            export::export_json_filtered(&pool, &table_name, mysql_style, where_ref).await
+        }
+        "sql" | "sqldump" => {
+            export::export_sql_dump_filtered(&pool, &table_name, mysql_style, where_ref).await
+        }
         _ => Err(format!("Unsupported export format: {}", format)),
     }
 }
