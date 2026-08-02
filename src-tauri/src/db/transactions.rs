@@ -22,6 +22,7 @@ pub struct TxStatus {
 struct TxSession {
     conn: PoolConnection<Any>,
     started: Instant,
+    started_at: String,
     statement_count: u64,
 }
 
@@ -47,9 +48,7 @@ impl TransactionManager {
             TxStatus {
                 active: true,
                 connection_id: connection_id.to_string(),
-                started_at: Some(
-                    chrono::Utc::now().to_rfc3339(), // approximate; client uses duration
-                ),
+                started_at: Some(s.started_at.clone()),
                 statement_count: s.statement_count,
                 duration_ms: s.started.elapsed().as_millis() as u64,
             }
@@ -81,6 +80,7 @@ impl TransactionManager {
             TxSession {
                 conn,
                 started: Instant::now(),
+                started_at: chrono::Utc::now().to_rfc3339(),
                 statement_count: 0,
             },
         );
@@ -207,6 +207,49 @@ mod tests {
             .unwrap();
         mgr.rollback("c2").await.unwrap();
         let row = sqlx::query("SELECT COUNT(*) as c FROM t2")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let count: i64 = row.try_get(0).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    /// Failed SQL inside an open TX must return Err and leave the session active
+    /// (callers must not re-run the statement on the pool).
+    #[tokio::test]
+    async fn test_failed_sql_stays_in_tx() {
+        sqlx::any::install_default_drivers();
+        let pool = AnyPoolOptions::new()
+            .max_connections(4)
+            .connect("sqlite:file:tx_fail?mode=memory&cache=shared")
+            .await
+            .unwrap();
+        pool.execute("CREATE TABLE t3 (id INTEGER PRIMARY KEY);")
+            .await
+            .unwrap();
+        let mgr = TransactionManager::new();
+        mgr.begin(&pool, "c3").await.unwrap();
+        let started = mgr.status("c3").await.started_at.clone();
+        assert!(started.is_some());
+
+        let err = mgr
+            .execute_in_tx("c3", "INSERT INTO no_such_table_xyz (id) VALUES (1);")
+            .await;
+        assert!(err.is_err(), "invalid SQL should error inside TX");
+        assert!(
+            mgr.is_active("c3").await,
+            "TX must remain open after statement failure"
+        );
+        // started_at is stable across status polls
+        assert_eq!(mgr.status("c3").await.started_at, started);
+
+        // Valid work after failure still goes on the held connection
+        mgr.execute_in_tx("c3", "INSERT INTO t3 (id) VALUES (1);")
+            .await
+            .unwrap()
+            .unwrap();
+        mgr.rollback("c3").await.unwrap();
+        let row = sqlx::query("SELECT COUNT(*) as c FROM t3")
             .fetch_one(&pool)
             .await
             .unwrap();

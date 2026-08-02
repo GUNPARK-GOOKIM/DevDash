@@ -374,31 +374,42 @@ pub async fn run_sql_query( // Async command handler function
     sql: String, // Raw SQL string to execute
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<QueryResultPayload, String> { // Command return signature
-    // Prefer open transaction session when present
-    if let Ok(Some(payload)) = state.tx_manager.execute_in_tx(&connection_id, &sql).await {
-        let row_count = if !payload.rows.is_empty() {
-            payload.rows.len() as i64
-        } else {
-            payload.affected_rows as i64
-        };
-        let _ = state
-            .storage
-            .log_query_history(
-                &sql,
+    // Prefer open transaction session when present.
+    // On TX SQL failure, surface the error — do NOT fall through to the pool
+    // (which would re-run the statement outside the held connection / auto-commit).
+    match state.tx_manager.execute_in_tx(&connection_id, &sql).await {
+        Ok(Some(payload)) => {
+            let row_count = if !payload.rows.is_empty() {
+                payload.rows.len() as i64
+            } else {
+                payload.affected_rows as i64
+            };
+            let _ = state
+                .storage
+                .log_query_history(
+                    &sql,
+                    &connection_id,
+                    payload.execution_time_ms as f64,
+                    row_count,
+                    None,
+                )
+                .await;
+            let _ = audit::log_action(
                 &connection_id,
-                payload.execution_time_ms as f64,
-                row_count,
-                None,
-            )
-            .await;
-        let _ = audit::log_action(
-            &connection_id,
-            "QUERY_TX",
-            &sql,
-            payload.affected_rows,
-            "SUCCESS",
-        );
-        return Ok(payload);
+                "QUERY_TX",
+                &sql,
+                payload.affected_rows,
+                "SUCCESS",
+            );
+            return Ok(payload);
+        }
+        Err(e) => {
+            let _ = audit::log_action(&connection_id, "QUERY_TX", &sql, 0, "ERROR");
+            return Err(e);
+        }
+        Ok(None) => {
+            // No active transaction for this connection — continue on pool
+        }
     }
 
     let pool = state.connection_manager.get_pool(&connection_id)?; // Lookup cached connection pool instance

@@ -1,7 +1,7 @@
 //! Query profiling via EXPLAIN / EXPLAIN ANALYZE (engine-specific).
 
 use serde::{Deserialize, Serialize};
-use sqlx::{AnyPool, Column, Row};
+use sqlx::{AnyPool, Row};
 use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
