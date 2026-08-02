@@ -20,8 +20,7 @@
         "resizable": true,
         "fullscreen": false,
         "transparent": false,
-        "decorations": true,
-        "icon": "icons/icon.png"
+        "decorations": true
       }
     ],
     "security": {
