@@ -55,6 +55,11 @@ pub struct AppStorage { // Struct definition for embedded storage manager
 } // End of AppStorage struct definition
 
 impl AppStorage { // Implementation block for AppStorage struct
+    /// Expose pool for ancillary modules (migration log, etc.).
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     // Initialize embedded SQLite database file or memory store asynchronously and run migration DDL
     pub async fn new(db_path: &str) -> Result<Self, String> { // Async AppStorage constructor function
         let connection_string = if db_path == ":memory:" { // Check if in-memory DB path requested

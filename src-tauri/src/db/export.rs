@@ -21,14 +21,31 @@ pub struct ExportConfig { // Struct for export parameters
     pub include_headers: bool, // Whether to include column headers in output
 } // End of ExportConfig struct
 
-// Fetch all rows from a table and convert to JSON value arrays
+// Fetch all rows from a table (optional WHERE fragment, already validated by caller)
 async fn fetch_table_data(
     pool: &AnyPool,
     table_name: &str,
     mysql_style: bool,
+    where_clause: Option<&str>,
 ) -> Result<(Vec<String>, Vec<Vec<Value>>), String> {
     let quoted = crate::db::identifiers::quote_table(table_name, mysql_style)?;
-    let sql = format!("SELECT * FROM {}", quoted);
+    let mut sql = format!("SELECT * FROM {}", quoted);
+    if let Some(w) = where_clause {
+        let trimmed = w.trim();
+        if !trimmed.is_empty() {
+            // Reject multi-statement injection
+            if trimmed.contains(';') {
+                return Err("WHERE clause must not contain semicolons".to_string());
+            }
+            if trimmed.to_uppercase().starts_with("WHERE") {
+                sql.push(' ');
+                sql.push_str(trimmed);
+            } else {
+                sql.push_str(" WHERE ");
+                sql.push_str(trimmed);
+            }
+        }
+    }
     let rows: Vec<AnyRow> = sqlx::query(&sql)
         .fetch_all(pool)
         .await
@@ -72,7 +89,17 @@ pub async fn export_csv(
     include_headers: bool,
     mysql_style: bool,
 ) -> Result<String, String> {
-    let (cols, rows) = fetch_table_data(pool, table_name, mysql_style).await?;
+    export_csv_filtered(pool, table_name, include_headers, mysql_style, None).await
+}
+
+pub async fn export_csv_filtered(
+    pool: &AnyPool,
+    table_name: &str,
+    include_headers: bool,
+    mysql_style: bool,
+    where_clause: Option<&str>,
+) -> Result<String, String> {
+    let (cols, rows) = fetch_table_data(pool, table_name, mysql_style, where_clause).await?;
     let mut output = String::new(); // Initialize output buffer string
 
     if include_headers { // Check if headers should be included
@@ -101,7 +128,16 @@ pub async fn export_json(
     table_name: &str,
     mysql_style: bool,
 ) -> Result<String, String> {
-    let (cols, rows) = fetch_table_data(pool, table_name, mysql_style).await?;
+    export_json_filtered(pool, table_name, mysql_style, None).await
+}
+
+pub async fn export_json_filtered(
+    pool: &AnyPool,
+    table_name: &str,
+    mysql_style: bool,
+    where_clause: Option<&str>,
+) -> Result<String, String> {
+    let (cols, rows) = fetch_table_data(pool, table_name, mysql_style, where_clause).await?;
     let mut json_rows = Vec::new(); // Initialize JSON objects vector
 
     for row in &rows { // Iterate through data rows
@@ -123,7 +159,16 @@ pub async fn export_sql_dump(
     table_name: &str,
     mysql_style: bool,
 ) -> Result<String, String> {
-    let (cols, rows) = fetch_table_data(pool, table_name, mysql_style).await?;
+    export_sql_dump_filtered(pool, table_name, mysql_style, None).await
+}
+
+pub async fn export_sql_dump_filtered(
+    pool: &AnyPool,
+    table_name: &str,
+    mysql_style: bool,
+    where_clause: Option<&str>,
+) -> Result<String, String> {
+    let (cols, rows) = fetch_table_data(pool, table_name, mysql_style, where_clause).await?;
     let mut output = String::new();
     let quoted_table = crate::db::identifiers::quote_table(table_name, mysql_style)?;
     let quoted_cols: Vec<String> = cols

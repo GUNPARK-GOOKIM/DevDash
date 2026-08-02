@@ -285,6 +285,15 @@ impl ConnectionManager {
         }
         Ok(())
     }
+
+    /// IDs of currently open pools (multi-connection workspace).
+    pub fn list_connected_ids(&self) -> Vec<String> {
+        self.pools.iter().map(|e| e.key().clone()).collect()
+    }
+
+    pub fn is_connected(&self, id: &str) -> bool {
+        self.pools.contains_key(id)
+    }
 }
 
 #[cfg(test)]

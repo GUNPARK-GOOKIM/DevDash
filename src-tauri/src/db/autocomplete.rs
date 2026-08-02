@@ -24,24 +24,44 @@ pub async fn fetch_autocomplete_data(
 ) -> Result<AutocompleteDataPayload, String> {
     let start_time = Instant::now();
 
-    // 1. Fetch tables
+    // 1. Fetch tables (multi-schema aware)
     let tables_info = fetch_tables(pool, db_kind).await?;
     let mut tables = Vec::new();
     let mut table_columns = Vec::new();
+    let mut schemas: Vec<String> = Vec::new();
 
     for table in &tables_info {
-        tables.push(table.name.clone());
-        let cols_info = fetch_columns(pool, db_kind, &table.name).await.unwrap_or_default();
+        if !schemas.iter().any(|s| s == &table.schema) {
+            schemas.push(table.schema.clone());
+        }
+        // Prefer qualified names for autocomplete so multi-schema DBs disambiguate
+        let key = if table.qualified_name.is_empty() {
+            table.name.clone()
+        } else {
+            table.qualified_name.clone()
+        };
+        tables.push(key.clone());
+        // Also register bare name for convenience when unique
+        if key != table.name && !tables.iter().any(|t| t == &table.name) {
+            tables.push(table.name.clone());
+        }
+        let cols_info = fetch_columns(pool, db_kind, &key)
+            .await
+            .unwrap_or_default();
         let cols = cols_info.into_iter().map(|c| c.name).collect();
         table_columns.push(TableColumnsMap {
-            table_name: table.name.clone(),
+            table_name: key,
             columns: cols,
         });
     }
 
+    if schemas.is_empty() {
+        schemas.push("public".to_string());
+    }
+
     let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
     Ok(AutocompleteDataPayload {
-        schemas: vec!["public".to_string(), "information_schema".to_string()],
+        schemas,
         tables,
         table_columns,
         fetch_time_ms: elapsed,

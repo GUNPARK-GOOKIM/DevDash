@@ -142,6 +142,160 @@ pub async fn apply_staged_edits(
     Ok(total_updated)
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StagedInsertRow {
+    pub columns: Vec<String>,
+    pub values: Vec<Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StagedDeleteRow {
+    pub pk_value: Value,
+}
+
+pub fn build_insert_statement(
+    table: &str,
+    row: &StagedInsertRow,
+    mysql_style: bool,
+) -> Result<String, String> {
+    if row.columns.is_empty() || row.columns.len() != row.values.len() {
+        return Err("Insert row must have matching columns and values".to_string());
+    }
+    let quoted_table = quote_table(table, mysql_style)?;
+    for c in &row.columns {
+        validate_simple_identifier(c)?;
+    }
+    let cols = row
+        .columns
+        .iter()
+        .map(|c| quote_ident(c, mysql_style))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let vals = row
+        .values
+        .iter()
+        .map(sql_literal)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok(format!(
+        "INSERT INTO {} ({}) VALUES ({});",
+        quoted_table, cols, vals
+    ))
+}
+
+pub fn build_delete_statement(
+    table: &str,
+    pk_col: &str,
+    row: &StagedDeleteRow,
+    mysql_style: bool,
+) -> Result<String, String> {
+    let quoted_table = quote_table(table, mysql_style)?;
+    let where_clause = match &row.pk_value {
+        Value::Object(obj) => {
+            let mut clauses = Vec::new();
+            for (k, v) in obj {
+                validate_simple_identifier(k)?;
+                clauses.push(format!(
+                    "{} = {}",
+                    quote_ident(k, mysql_style),
+                    sql_literal(v)
+                ));
+            }
+            if clauses.is_empty() {
+                return Err("Composite primary key object is empty".to_string());
+            }
+            clauses.join(" AND ")
+        }
+        Value::String(s) if s.starts_with('{') && s.ends_with('}') => {
+            if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(s) {
+                let mut clauses = Vec::new();
+                for (k, v) in obj {
+                    validate_simple_identifier(&k)?;
+                    clauses.push(format!(
+                        "{} = {}",
+                        quote_ident(&k, mysql_style),
+                        sql_literal(&v)
+                    ));
+                }
+                if clauses.is_empty() {
+                    return Err("Composite primary key object is empty".to_string());
+                }
+                clauses.join(" AND ")
+            } else {
+                validate_simple_identifier(pk_col)?;
+                format!(
+                    "{} = {}",
+                    quote_ident(pk_col, mysql_style),
+                    sql_literal(&Value::String(s.clone()))
+                )
+            }
+        }
+        other => {
+            validate_simple_identifier(pk_col)?;
+            format!(
+                "{} = {}",
+                quote_ident(pk_col, mysql_style),
+                sql_literal(other)
+            )
+        }
+    };
+    Ok(format!(
+        "DELETE FROM {} WHERE {};",
+        quoted_table, where_clause
+    ))
+}
+
+pub async fn apply_staged_inserts(
+    pool: &AnyPool,
+    table: &str,
+    rows: Vec<StagedInsertRow>,
+    mysql_style: bool,
+) -> Result<u64, String> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("Failed to start transaction: {}", e))?;
+    let mut total: u64 = 0;
+    for row in rows {
+        let sql = build_insert_statement(table, &row, mysql_style)?;
+        let result = sqlx::query(&sql)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to insert row: {}", e))?;
+        total += result.rows_affected();
+    }
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit inserts: {}", e))?;
+    Ok(total)
+}
+
+pub async fn apply_staged_deletes(
+    pool: &AnyPool,
+    table: &str,
+    pk_col: &str,
+    rows: Vec<StagedDeleteRow>,
+    mysql_style: bool,
+) -> Result<u64, String> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("Failed to start transaction: {}", e))?;
+    let mut total: u64 = 0;
+    for row in rows {
+        let sql = build_delete_statement(table, pk_col, &row, mysql_style)?;
+        let result = sqlx::query(&sql)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to delete row: {}", e))?;
+        total += result.rows_affected();
+    }
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit deletes: {}", e))?;
+    Ok(total)
+}
+
 #[cfg(test)] // Conditional compilation attribute for unit tests
 mod tests { // Declare internal unit testing module
     use super::*; // Import parent module items into test scope
@@ -201,5 +355,22 @@ mod tests { // Declare internal unit testing module
         assert!(sql.contains("\"tenant_id\" = 1"));
         assert!(sql.contains("\"id\" = 2"));
         assert!(sql.contains("\"status\" = 'active'"));
+    }
+
+    #[test]
+    fn test_build_insert_and_delete() {
+        let ins = StagedInsertRow {
+            columns: vec!["name".into(), "email".into()],
+            values: vec![json!("Ada"), json!("ada@example.com")],
+        };
+        let sql = build_insert_statement("users", &ins, false).unwrap();
+        assert_eq!(
+            sql,
+            "INSERT INTO \"users\" (\"name\", \"email\") VALUES ('Ada', 'ada@example.com');"
+        );
+
+        let del = StagedDeleteRow { pk_value: json!(7) };
+        let dsql = build_delete_statement("users", "id", &del, true).unwrap();
+        assert_eq!(dsql, "DELETE FROM `users` WHERE `id` = 7;");
     }
 }

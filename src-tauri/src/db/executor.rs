@@ -112,6 +112,42 @@ pub async fn execute_dynamic_query(pool: &AnyPool, sql: &str) -> Result<QueryRes
         .await
         .map_err(|e| format!("Query execution failed: {}", e))?;
 
+    Ok(format_fetched_rows(rows, start_time))
+}
+
+/// Execute on a held pool connection (for open transactions).
+pub async fn execute_dynamic_query_on_connection(
+    conn: &mut sqlx::pool::PoolConnection<sqlx::Any>,
+    sql: &str,
+) -> Result<QueryResultPayload, String> {
+    let start_time = Instant::now();
+
+    if !expects_result_set(sql) {
+        let result = sqlx::query(sql)
+            .execute(&mut **conn)
+            .await
+            .map_err(|e| format!("Query execution failed: {}", e))?;
+
+        return Ok(QueryResultPayload {
+            columns: vec![ColumnHeader {
+                name: "affected_rows".to_string(),
+                type_name: "INTEGER".to_string(),
+            }],
+            rows: vec![vec![json!(result.rows_affected())]],
+            execution_time_ms: start_time.elapsed().as_millis() as u64,
+            affected_rows: result.rows_affected(),
+        });
+    }
+
+    let rows: Vec<AnyRow> = sqlx::query(sql)
+        .fetch_all(&mut **conn)
+        .await
+        .map_err(|e| format!("Query execution failed: {}", e))?;
+
+    Ok(format_fetched_rows(rows, start_time))
+}
+
+fn format_fetched_rows(rows: Vec<AnyRow>, start_time: Instant) -> QueryResultPayload {
     let mut columns = Vec::new();
     let mut result_rows = Vec::new();
 
@@ -132,15 +168,13 @@ pub async fn execute_dynamic_query(pool: &AnyPool, sql: &str) -> Result<QueryRes
         result_rows.push(row_values);
     }
 
-    let execution_time_ms = start_time.elapsed().as_millis() as u64;
     let affected_rows = rows.len() as u64;
-
-    Ok(QueryResultPayload {
+    QueryResultPayload {
         columns,
         rows: result_rows,
-        execution_time_ms,
+        execution_time_ms: start_time.elapsed().as_millis() as u64,
         affected_rows,
-    })
+    }
 }
 
 // Chunked stream payload for emitting partial query row blocks
