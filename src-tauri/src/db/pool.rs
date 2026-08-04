@@ -75,11 +75,10 @@ pub fn build_connection_url(details: &ConnectionDetails) -> Result<String, Strin
     // Reject engines that have UI entries but no real driver implementation.
     if matches!(
         db_kind.as_str(),
-        "mssql" | "oracle" | "snowflake" | "redis" | "mongodb" | "cassandra" | "clickhouse" | "bigquery"
+        "bigquery"
     ) {
         return Err(format!(
-            "Database engine '{}' is not supported directly by the current driver matrix. \
-             Supported engines: PostgreSQL, MySQL/MariaDB, SQLite, CockroachDB, Redshift, DuckDB, Turso.",
+            "Database engine '{}' is not supported directly by the current driver matrix.",
             details.db_type
         ));
     }
@@ -159,7 +158,12 @@ pub struct ManagedConnection {
     pub pg_pool: Option<sqlx::PgPool>,
     pub mysql_pool: Option<sqlx::MySqlPool>,
     pub mssql_pool: Option<Pool<MssqlConnectionManager>>,
+    pub mongo_client: Option<mongodb::Client>,
+    pub redis_client: Option<redis::aio::MultiplexedConnection>,
+    pub scylla_session: Option<std::sync::Arc<scylla::Session>>,
+    pub clickhouse_client: Option<clickhouse::Client>,
     pub db_type: String,
+    pub connection_url: String,
 }
 
 // Central connection manager struct holding active database pools
@@ -264,6 +268,10 @@ impl ConnectionManager {
         let mut pg_pool = None;
         let mut mysql_pool = None;
         let mut mssql_pool = None;
+        let mut mongo_client = None;
+        let mut redis_client = None;
+        let mut scylla_session = None;
+        let mut clickhouse_client = None;
 
         let pool = if matches!(db_lower.as_str(), "mssql" | "sqlserver") {
             let config = tiberius::Config::from_ado_string(url)
@@ -277,6 +285,34 @@ impl ConnectionManager {
                 .map_err(|e| format!("Failed to create MSSQL pool: {}", e))?;
             mssql_pool = Some(p);
             // Dummy AnyPool to satisfy the struct's ABI (will not be used for routing)
+            AnyPoolOptions::new().connect("sqlite::memory:").await.unwrap()
+        } else if matches!(db_lower.as_str(), "mongodb") {
+            // MongoDB init
+            let client_options = mongodb::options::ClientOptions::parse(url)
+                .await
+                .map_err(|e| format!("Invalid MongoDB connection string: {}", e))?;
+            let client = mongodb::Client::with_options(client_options)
+                .map_err(|e| format!("Failed to initialize MongoDB client: {}", e))?;
+            mongo_client = Some(client);
+            AnyPoolOptions::new().connect("sqlite::memory:").await.unwrap()
+        } else if matches!(db_lower.as_str(), "redis") {
+            // Redis init
+            let client = redis::Client::open(url)
+                .map_err(|e| format!("Invalid Redis connection string: {}", e))?;
+            let conn = client.get_multiplexed_tokio_connection().await
+                .map_err(|e| format!("Failed to connect to Redis: {}", e))?;
+            redis_client = Some(conn);
+            AnyPoolOptions::new().connect("sqlite::memory:").await.unwrap()
+        } else if matches!(db_lower.as_str(), "cassandra") {
+            // Scylla/Cassandra init
+            let session = scylla::SessionBuilder::new().known_node(url).build().await
+                .map_err(|e| format!("Failed to connect to Cassandra/Scylla: {}", e))?;
+            scylla_session = Some(std::sync::Arc::new(session));
+            AnyPoolOptions::new().connect("sqlite::memory:").await.unwrap()
+        } else if matches!(db_lower.as_str(), "clickhouse") {
+            // Clickhouse init
+            let client = clickhouse::Client::default().with_url(url);
+            clickhouse_client = Some(client);
             AnyPoolOptions::new().connect("sqlite::memory:").await.unwrap()
         } else {
             AnyPoolOptions::new()
@@ -320,7 +356,12 @@ impl ConnectionManager {
                 pg_pool,
                 mysql_pool,
                 mssql_pool,
+                mongo_client,
+                redis_client,
+                scylla_session,
+                clickhouse_client,
                 db_type: db_type.to_string(),
+                connection_url: url.to_string(),
             },
         );
         Ok(())
@@ -429,7 +470,7 @@ mod tests {
     #[test]
     fn test_unsupported_engine_rejected() {
         let details = ConnectionDetails {
-            db_type: "mongodb".to_string(),
+            db_type: "bigquery".to_string(),
             host: "localhost".to_string(),
             port: 27017,
             user: "admin".to_string(),

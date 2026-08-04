@@ -14,7 +14,7 @@ Thank you for your interest in contributing to **DevDash**! We welcome contribut
 ### Steps
 1. Fork and clone the repository:
    ```bash
-   git clone https://github.com/GUNPARK-GOOKIM/DevDash.git
+   git clone https://github.com/akshat-lakhera/DevDash.git
    cd DevDash
    ```
 2. Install frontend dependencies:

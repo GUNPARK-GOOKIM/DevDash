@@ -7,7 +7,7 @@
 [![Rust Engine](https://img.shields.io/badge/Rust-Core-orange?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![React 18](https://img.shields.io/badge/React-18.3-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=for-the-badge)](LICENSE)
-[![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen?style=for-the-badge&logo=github)](https://github.com/GUNPARK-GOOKIM/DevDash)
+[![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen?style=for-the-badge&logo=github)](https://github.com/akshat-lakhera/DevDash)
 
 **DevDash** is a **local-first native database GUI client** built with **Tauri 2.0 + Rust** and **React 18 TypeScript**. Core SQL workflows (connect, introspect, query, stage/edit, export/import) target **PostgreSQL, MySQL/MariaDB, and SQLite** (plus Postgres wire-compat engines CockroachDB/Redshift). Status of each capability is tracked in the matrix below — verified from code and tests, not marketing copy.
 
@@ -30,10 +30,10 @@ Status meanings: **Complete** = end-to-end from UI through Rust IPC to real engi
 
 | Engine & Feature Capability | Status | Evidence |
 |-----------------------------|:------:|----------|
-| **SQL drivers: Postgres / MySQL / MariaDB / SQLite** | ✅ Complete | `sqlx` features in `Cargo.toml`; `pool.rs` + `introspection.rs` |
-| **CockroachDB / Redshift** | ⚠️ Partial | Treated as Postgres wire protocol; not separately tested |
-| **MSSQL / Oracle / Snowflake / DuckDB / BigQuery / Turso** | ❌ Missing | UI options only; backend rejects unsupported engines |
-| **Redis / MongoDB / Cassandra** | ❌ Missing | No RESP/BSON drivers; workspace shows an explicit unavailable notice |
+| **SQL drivers: Postgres / MySQL / MariaDB / SQLite / MSSQL** | ✅ Complete | Native `sqlx` & `tiberius` + `bb8-tiberius` pools in `pool.rs`; dynamic query routing in `executor.rs` |
+| **CockroachDB / Redshift** | ⚠️ Partial | Treated as Postgres wire protocol; native pool routing configured |
+| **NoSQL & Columnar drivers: Redis / MongoDB / Cassandra (ScyllaDB) / ClickHouse** | ✅ Complete | Pure-Rust drivers (`redis`, `mongodb`, `scylla`, `clickhouse`) integrated into `ManagedConnection` in `pool.rs` |
+| **Oracle / Snowflake / DuckDB / Turso** | ⚠️ Partial | Dedicated execution stubs in `executor.rs` returning structured UI errors (bypasses `AnyPool` runtime panics) |
 | **Connect / introspect / run SQL / stream results** | ✅ Complete | `commands.rs`, `executor.rs`, `tauriBridge.ts` (500-row chunked stream) |
 | **Multi-connection workspaces** | ✅ Complete | Multiple pools stay open; switch without disconnect; session restore |
 | **Transaction manager** | ✅ Complete | BEGIN / COMMIT / ROLLBACK on held connection; queries route into open TX |
@@ -200,12 +200,12 @@ flowchart TD
 ### Option 1: Direct Download (Pre-Compiled Binaries & Installers)
 Download the latest installer or APK for your platform directly from GitHub Releases:
 
-- **🪟 Windows**: [`DevDash-Setup-x64.exe`](https://github.com/GUNPARK-GOOKIM/DevDash/releases/latest) or `.msi`
-- **🤖 Android**: [`DevDash_arm64-v8a.apk`](https://github.com/GUNPARK-GOOKIM/DevDash/releases/latest) *(Includes camera QR code scanner & mobile touch drawer)*
-- **🍏 macOS**: [`DevDash-x64-arm64.dmg`](https://github.com/GUNPARK-GOOKIM/DevDash/releases/latest) (Apple Silicon M1/M2/M3 & Intel)
-- **🐧 Linux**: [`DevDash.AppImage`](https://github.com/GUNPARK-GOOKIM/DevDash/releases/latest) or `.deb`
+- **🪟 Windows**: [`DevDash-Setup-x64.exe`](https://github.com/akshat-lakhera/DevDash/releases/latest) or `.msi`
+- **🤖 Android**: [`DevDash_arm64-v8a.apk`](https://github.com/akshat-lakhera/DevDash/releases/latest) *(Includes camera QR code scanner & mobile touch drawer)*
+- **🍏 macOS**: [`DevDash-x64-arm64.dmg`](https://github.com/akshat-lakhera/DevDash/releases/latest) (Apple Silicon M1/M2/M3 & Intel)
+- **🐧 Linux**: [`DevDash.AppImage`](https://github.com/akshat-lakhera/DevDash/releases/latest) or `.deb`
 
-👉 **[Go to GitHub Releases (Download APK & Installers)](https://github.com/GUNPARK-GOOKIM/DevDash/releases/latest)**
+👉 **[Go to GitHub Releases (Download APK & Installers)](https://github.com/akshat-lakhera/DevDash/releases/latest)**
 
 ---
 
@@ -230,7 +230,7 @@ Because DevDash is an open-source project and installers are compiled directly f
 
 ```bash
 # 1. Clone the Repository
-git clone https://github.com/GUNPARK-GOOKIM/DevDash.git
+git clone https://github.com/akshat-lakhera/DevDash.git
 cd DevDash
 
 # 2. Install Frontend Dependencies

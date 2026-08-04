@@ -35,6 +35,10 @@ bb8 = "0.9.1"
 bb8-tiberius = "0.16.0"
 tokio-util = "0.7.19"
 rust_decimal = "1.42.1"
+mongodb = "3.1"
+redis = { version = "0.27", features = ["tokio-comp"] }
+scylla = "0.14"
+clickhouse = "0.12"
 
 # Build configuration dependencies
 [build-dependencies] # Build dependencies section

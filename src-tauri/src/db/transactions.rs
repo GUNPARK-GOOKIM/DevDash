@@ -1,7 +1,9 @@
 //! Explicit multi-statement transaction sessions for GUI clients.
 //! Holds a dedicated pool connection per connection_id after BEGIN until COMMIT/ROLLBACK.
 
-use crate::db::executor::{execute_dynamic_query_on_connection, QueryResultPayload};
+use crate::db::executor::{execute_dynamic_query_on_connection, execute_mssql_query_on_conn, QueryResultPayload};
+use bb8_tiberius::ConnectionManager as MssqlConnectionManager;
+use crate::db::pool::ManagedConnection;
 use serde::{Deserialize, Serialize};
 use sqlx::pool::PoolConnection;
 use sqlx::{Any, AnyPool, Executor};
@@ -19,8 +21,17 @@ pub struct TxStatus {
     pub duration_ms: u64,
 }
 
+use tiberius::Client as TiberiusClient;
+use tokio::net::TcpStream;
+use tokio_util::compat::Compat;
+
+enum TxConn {
+    Sqlx(PoolConnection<Any>),
+    Mssql(TiberiusClient<Compat<TcpStream>>),
+}
+
 struct TxSession {
-    conn: PoolConnection<Any>,
+    conn: TxConn,
     started: Instant,
     started_at: String,
     statement_count: u64,
@@ -78,7 +89,7 @@ impl TransactionManager {
         guard.insert(
             connection_id.to_string(),
             TxSession {
-                conn,
+                conn: TxConn::Sqlx(conn),
                 started: Instant::now(),
                 started_at: chrono::Utc::now().to_rfc3339(),
                 statement_count: 0,
@@ -88,17 +99,75 @@ impl TransactionManager {
         Ok(self.status(connection_id).await)
     }
 
+    pub async fn begin_managed(
+        &self,
+        managed_conn: &ManagedConnection,
+        connection_id: &str,
+    ) -> Result<TxStatus, String> {
+        let db_type = managed_conn.db_type.to_lowercase();
+        if db_type == "mssql" || db_type == "sqlserver" {
+            let mut guard = self.inner.lock().await;
+            if guard.contains_key(connection_id) {
+                return Err("A transaction is already open for this connection".to_string());
+            }
+            let config = tiberius::Config::from_ado_string(&managed_conn.connection_url)
+                .map_err(|e| format!("Invalid MSSQL ADO connection string: {}", e))?;
+            let manager = MssqlConnectionManager::build(config)
+                .map_err(|e| format!("Failed to build MSSQL manager: {}", e))?;
+
+            use bb8::ManageConnection;
+            let mut conn = manager
+                .connect()
+                .await
+                .map_err(|e| format!("Failed to acquire MSSQL connection for TX: {}", e))?;
+
+            conn.execute("BEGIN TRAN", &[])
+                .await
+                .map_err(|e| format!("MSSQL BEGIN TRAN failed: {}", e))?;
+
+            guard.insert(
+                connection_id.to_string(),
+                TxSession {
+                    conn: TxConn::Mssql(conn),
+                    started: Instant::now(),
+                    started_at: chrono::Utc::now().to_rfc3339(),
+                    statement_count: 0,
+                },
+            );
+            drop(guard);
+            Ok(self.status(connection_id).await)
+        } else if matches!(
+            db_type.as_str(),
+            "redis" | "mongodb" | "cassandra" | "clickhouse" | "duckdb" | "oracle" | "snowflake"
+        ) {
+            Err(format!(
+                "Interactive UI transaction sessions are not supported for {} engine.",
+                managed_conn.db_type
+            ))
+        } else {
+            self.begin(&managed_conn.pool, connection_id).await
+        }
+    }
+
     pub async fn commit(&self, connection_id: &str) -> Result<TxStatus, String> {
         let mut guard = self.inner.lock().await;
         let mut session = guard
             .remove(connection_id)
             .ok_or_else(|| "No active transaction for this connection".to_string())?;
-        session
-            .conn
-            .execute("COMMIT")
-            .await
-            .map_err(|e| format!("COMMIT failed: {}", e))?;
-        // connection returns to pool on drop
+
+        match &mut session.conn {
+            TxConn::Sqlx(c) => {
+                c.execute("COMMIT")
+                    .await
+                    .map_err(|e| format!("COMMIT failed: {}", e))?;
+            }
+            TxConn::Mssql(c) => {
+                c.execute("COMMIT TRAN", &[])
+                    .await
+                    .map_err(|e| format!("MSSQL COMMIT TRAN failed: {}", e))?;
+            }
+        }
+
         Ok(TxStatus {
             active: false,
             connection_id: connection_id.to_string(),
@@ -113,7 +182,16 @@ impl TransactionManager {
         let mut session = guard
             .remove(connection_id)
             .ok_or_else(|| "No active transaction for this connection".to_string())?;
-        let _ = session.conn.execute("ROLLBACK").await;
+
+        match &mut session.conn {
+            TxConn::Sqlx(c) => {
+                let _ = c.execute("ROLLBACK").await;
+            }
+            TxConn::Mssql(c) => {
+                let _ = c.execute("ROLLBACK TRAN", &[]).await;
+            }
+        }
+
         Ok(TxStatus {
             active: false,
             connection_id: connection_id.to_string(),
@@ -133,7 +211,10 @@ impl TransactionManager {
         let Some(session) = guard.get_mut(connection_id) else {
             return Ok(None);
         };
-        let result = execute_dynamic_query_on_connection(&mut session.conn, sql).await?;
+        let result = match &mut session.conn {
+            TxConn::Sqlx(c) => execute_dynamic_query_on_connection(c, sql).await?,
+            TxConn::Mssql(c) => execute_mssql_query_on_conn(c, sql).await?,
+        };
         session.statement_count += 1;
         Ok(Some(result))
     }
@@ -142,7 +223,14 @@ impl TransactionManager {
     pub async fn force_drop(&self, connection_id: &str) {
         let mut guard = self.inner.lock().await;
         if let Some(mut session) = guard.remove(connection_id) {
-            let _ = session.conn.execute("ROLLBACK").await;
+            match &mut session.conn {
+                TxConn::Sqlx(c) => {
+                    let _ = c.execute("ROLLBACK").await;
+                }
+                TxConn::Mssql(c) => {
+                    let _ = c.execute("ROLLBACK TRAN", &[]).await;
+                }
+            }
         }
     }
 }

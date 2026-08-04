@@ -422,8 +422,25 @@ pub async fn run_sql_query( // Async command handler function
     
     // Spawn task to run query asynchronously on thread pool
     let handle = tokio::spawn(async move {
-        if conn_clone.db_type.to_lowercase() == "mssql" || conn_clone.db_type.to_lowercase() == "sqlserver" {
+        let db_type = conn_clone.db_type.to_lowercase();
+        if db_type == "mssql" || db_type == "sqlserver" {
             crate::db::executor::execute_mssql_query(&conn_clone, &sql_clone).await
+        } else if db_type == "mongodb" {
+            crate::db::executor::execute_mongo_query(&conn_clone, &sql_clone).await
+        } else if db_type == "redis" {
+            crate::db::executor::execute_redis_query(&conn_clone, &sql_clone).await
+        } else if db_type == "cassandra" {
+            crate::db::executor::execute_scylla_query(&conn_clone, &sql_clone).await
+        } else if db_type == "clickhouse" {
+            crate::db::executor::execute_clickhouse_query(&conn_clone, &sql_clone).await
+        } else if db_type == "duckdb" {
+            crate::db::executor::execute_duckdb_query(&conn_clone, &sql_clone).await
+        } else if db_type == "turso" {
+            crate::db::executor::execute_libsql_query(&conn_clone, &sql_clone).await
+        } else if db_type == "snowflake" {
+            crate::db::executor::execute_snowflake_query(&conn_clone, &sql_clone).await
+        } else if db_type == "oracle" {
+            crate::db::executor::execute_oracle_query(&conn_clone, &sql_clone).await
         } else {
             execute_dynamic_query(&conn_clone.pool, &sql_clone).await
         }
@@ -497,8 +514,8 @@ pub async fn begin_transaction(
     connection_id: String,
     state: State<'_, AppState>,
 ) -> Result<TxStatus, String> {
-    let pool = state.connection_manager.get_pool(&connection_id)?;
-    state.tx_manager.begin(&pool, &connection_id).await
+    let managed_conn = state.connection_manager.get_managed_connection(&connection_id)?;
+    state.tx_manager.begin_managed(&managed_conn, &connection_id).await
 }
 
 #[tauri::command]

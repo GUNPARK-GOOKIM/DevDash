@@ -298,6 +298,12 @@ mod tests { // Declare internal unit testing module
         assert_eq!(col.name, "id"); // Assert name field matches expected value
         assert_eq!(col.type_name, "INTEGER"); // Assert type_name field matches expected value
     } // End of test function
+
+    #[test]
+    fn test_split_redis_args_quoted_and_spaces() {
+        let args = split_redis_args("SET 'my key' \"hello world\" 100");
+        assert_eq!(args, vec!["SET", "my key", "hello world", "100"]);
+    }
 } // End of tests module
 
 #[cfg(test)]
@@ -342,20 +348,10 @@ mod integration_tests {
 use crate::db::pool::ManagedConnection;
 use tiberius::QueryItem;
 
-pub async fn execute_mssql_query(
-    managed_conn: &ManagedConnection,
+pub async fn execute_mssql_query_on_conn(
+    conn: &mut tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>,
     sql: &str,
 ) -> Result<QueryResultPayload, String> {
-    let pool = managed_conn
-        .mssql_pool
-        .as_ref()
-        .ok_or_else(|| "MSSQL pool not initialized".to_string())?;
-
-    let mut conn = pool
-        .get()
-        .await
-        .map_err(|e| format!("Failed to acquire MSSQL connection: {}", e))?;
-
     let start_time = Instant::now();
 
     if !expects_result_set(sql) {
@@ -416,6 +412,23 @@ pub async fn execute_mssql_query(
     })
 }
 
+pub async fn execute_mssql_query(
+    managed_conn: &ManagedConnection,
+    sql: &str,
+) -> Result<QueryResultPayload, String> {
+    let pool = managed_conn
+        .mssql_pool
+        .as_ref()
+        .ok_or_else(|| "MSSQL pool not initialized".to_string())?;
+
+    let mut conn = pool
+        .get()
+        .await
+        .map_err(|e| format!("Failed to acquire MSSQL connection: {}", e))?;
+
+    execute_mssql_query_on_conn(&mut *conn, sql).await
+}
+
 pub async fn stream_mssql_query<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     managed_conn: &ManagedConnection,
@@ -435,29 +448,26 @@ pub async fn stream_mssql_query<R: tauri::Runtime>(
         .map_err(|e| format!("Failed to acquire MSSQL connection: {}", e))?;
 
     let start_time = Instant::now();
+
     let mut stream = conn
         .simple_query(sql)
         .await
         .map_err(|e| format!("MSSQL execution failed: {}", e))?;
     
     let mut columns = Vec::new();
-    let mut current_chunk = Vec::with_capacity(chunk_size);
+    let mut chunk = Vec::new();
     let mut total_rows = 0;
-    let mut chunk_index = 0;
-    let mut header_emitted = false;
 
     while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? {
         match item {
             QueryItem::Metadata(metadata) => {
-                if !header_emitted {
+                if columns.is_empty() {
                     for col in metadata.columns() {
                         columns.push(ColumnHeader {
                             name: col.name().to_string(),
                             type_name: format!("{:?}", col.column_type()),
                         });
                     }
-                    let _ = app_handle.emit(&format!("query_columns_{}", query_id), &columns);
-                    header_emitted = true;
                 }
             }
             QueryItem::Row(row) => {
@@ -465,38 +475,33 @@ pub async fn stream_mssql_query<R: tauri::Runtime>(
                 for i in 0..row.columns().len() {
                     row_values.push(decode_mssql_cell(&row, i));
                 }
-                current_chunk.push(row_values);
+                chunk.push(row_values);
                 total_rows += 1;
 
-                if current_chunk.len() >= chunk_size {
-                    let payload = StreamChunkPayload {
-                        query_id: query_id.to_string(),
-                        chunk_index,
-                        rows: current_chunk.clone(),
+                if chunk.len() >= chunk_size {
+                    let payload = QueryResultPayload {
+                        columns: columns.clone(),
+                        rows: std::mem::take(&mut chunk),
+                        execution_time_ms: start_time.elapsed().as_millis() as u64,
+                        affected_rows: total_rows,
                     };
-                    let _ = app_handle.emit(&format!("query_rows_{}", query_id), &payload);
-                    current_chunk.clear();
-                    chunk_index += 1;
+                    let event_name = format!("query_chunk_{}", query_id);
+                    let _ = app_handle.emit(&event_name, payload);
                 }
             }
         }
     }
 
-    if !current_chunk.is_empty() {
-        let payload = StreamChunkPayload {
-            query_id: query_id.to_string(),
-            chunk_index,
-            rows: current_chunk,
+    if !chunk.is_empty() {
+        let payload = QueryResultPayload {
+            columns: columns.clone(),
+            rows: std::mem::take(&mut chunk),
+            execution_time_ms: start_time.elapsed().as_millis() as u64,
+            affected_rows: total_rows,
         };
-        let _ = app_handle.emit(&format!("query_rows_{}", query_id), &payload);
+        let event_name = format!("query_chunk_{}", query_id);
+        let _ = app_handle.emit(&event_name, payload);
     }
-
-    let done = StreamDonePayload {
-        query_id: query_id.to_string(),
-        execution_time_ms: start_time.elapsed().as_millis() as u64,
-        total_rows,
-    };
-    let _ = app_handle.emit(&format!("query_done_{}", query_id), &done);
 
     Ok(QueryResultPayload {
         columns,
@@ -508,62 +513,67 @@ pub async fn stream_mssql_query<R: tauri::Runtime>(
 
 fn decode_mssql_cell(row: &tiberius::Row, i: usize) -> Value {
     use tiberius::ColumnType;
-    let col_type = row.columns()[i].column_type();
-    
-    match col_type {
+
+    let col = &row.columns()[i];
+    match col.column_type() {
         ColumnType::Null => Value::Null,
         ColumnType::Bit => {
-            if let Ok(Some(v)) = row.try_get::<bool, _>(i) {
-                json!(v)
+            if let Ok(val) = row.try_get::<bool, _>(i) {
+                json!(val)
             } else {
                 Value::Null
             }
         }
-        ColumnType::Int1 | ColumnType::Int2 | ColumnType::Int4 => {
-            if let Ok(Some(v)) = row.try_get::<i32, _>(i) {
-                json!(v)
+        ColumnType::Int1 => {
+            if let Ok(val) = row.try_get::<u8, _>(i) {
+                json!(val)
+            } else {
+                Value::Null
+            }
+        }
+        ColumnType::Int2 => {
+            if let Ok(val) = row.try_get::<i16, _>(i) {
+                json!(val)
+            } else {
+                Value::Null
+            }
+        }
+        ColumnType::Int4 => {
+            if let Ok(val) = row.try_get::<i32, _>(i) {
+                json!(val)
             } else {
                 Value::Null
             }
         }
         ColumnType::Int8 => {
-            if let Ok(Some(v)) = row.try_get::<i64, _>(i) {
-                json!(v)
+            if let Ok(val) = row.try_get::<i64, _>(i) {
+                json!(val)
             } else {
                 Value::Null
             }
         }
         ColumnType::Float4 => {
-            if let Ok(Some(v)) = row.try_get::<f32, _>(i) {
-                json!(v)
+            if let Ok(val) = row.try_get::<f32, _>(i) {
+                json!(val)
             } else {
                 Value::Null
             }
         }
         ColumnType::Float8 => {
-            if let Ok(Some(v)) = row.try_get::<f64, _>(i) {
-                json!(v)
+            if let Ok(val) = row.try_get::<f64, _>(i) {
+                json!(val)
             } else {
                 Value::Null
             }
         }
-        ColumnType::NChar | ColumnType::NVarchar | 
-        ColumnType::BigVarChar | ColumnType::Text | ColumnType::NText | ColumnType::BigChar => {
-            if let Ok(Some(v)) = row.try_get::<&str, _>(i) {
-                json!(v)
-            } else {
-                Value::Null
-            }
-        }
-        ColumnType::Guid => {
-            if let Ok(Some(v)) = row.try_get::<uuid::Uuid, _>(i) {
-                json!(v.to_string())
+        ColumnType::NVarchar | ColumnType::BigVarChar | ColumnType::NChar | ColumnType::BigChar => {
+            if let Ok(val) = row.try_get::<&str, _>(i) {
+                json!(val)
             } else {
                 Value::Null
             }
         }
         _ => {
-            // Fallback for dates/others: attempt to fetch as string
             if let Ok(Some(v)) = row.try_get::<&str, _>(i) {
                 json!(v)
             } else {
@@ -571,4 +581,331 @@ fn decode_mssql_cell(row: &tiberius::Row, i: usize) -> Value {
             }
         }
     }
+}
+
+pub fn split_redis_args(raw: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut quote_char = ' ';
+
+    for ch in raw.chars() {
+        match ch {
+            '\'' | '"' if !in_quotes => {
+                in_quotes = true;
+                quote_char = ch;
+            }
+            c if in_quotes && c == quote_char => {
+                in_quotes = false;
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if !current.is_empty() {
+                    args.push(current.clone());
+                    current.clear();
+                }
+            }
+            c => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
+}
+
+fn format_redis_item(val: redis::Value) -> String {
+    match val {
+        redis::Value::Nil => "(nil)".to_string(),
+        redis::Value::Int(i) => i.to_string(),
+        redis::Value::BulkString(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+        redis::Value::SimpleString(s) => s,
+        redis::Value::Okay => "OK".to_string(),
+        other => format!("{:?}", other),
+    }
+}
+
+fn format_redis_value_to_payload(val: redis::Value, execution_time_ms: u64) -> Result<QueryResultPayload, String> {
+    match val {
+        redis::Value::Nil => Ok(QueryResultPayload {
+            columns: vec![ColumnHeader { name: "Response".to_string(), type_name: "NIL".to_string() }],
+            rows: vec![vec![json!(null)]],
+            execution_time_ms,
+            affected_rows: 0,
+        }),
+        redis::Value::Int(i) => Ok(QueryResultPayload {
+            columns: vec![ColumnHeader { name: "Response".to_string(), type_name: "INTEGER".to_string() }],
+            rows: vec![vec![json!(i)]],
+            execution_time_ms,
+            affected_rows: 1,
+        }),
+        redis::Value::BulkString(bytes) => {
+            let s = String::from_utf8_lossy(&bytes).to_string();
+            Ok(QueryResultPayload {
+                columns: vec![ColumnHeader { name: "Response".to_string(), type_name: "BULK_STRING".to_string() }],
+                rows: vec![vec![json!(s)]],
+                execution_time_ms,
+                affected_rows: 1,
+            })
+        }
+        redis::Value::SimpleString(s) => Ok(QueryResultPayload {
+            columns: vec![ColumnHeader { name: "Response".to_string(), type_name: "SIMPLE_STRING".to_string() }],
+            rows: vec![vec![json!(s)]],
+            execution_time_ms,
+            affected_rows: 1,
+        }),
+        redis::Value::Array(items) => {
+            let mut rows = Vec::new();
+            for (idx, item) in items.into_iter().enumerate() {
+                let formatted = format_redis_item(item);
+                rows.push(vec![json!(idx), json!(formatted)]);
+            }
+            let len = rows.len() as u64;
+            Ok(QueryResultPayload {
+                columns: vec![
+                    ColumnHeader { name: "Index".to_string(), type_name: "INTEGER".to_string() },
+                    ColumnHeader { name: "Value".to_string(), type_name: "STRING".to_string() },
+                ],
+                rows,
+                execution_time_ms,
+                affected_rows: len,
+            })
+        }
+        redis::Value::Map(pairs) => {
+            let mut rows = Vec::new();
+            for (k, v) in pairs {
+                rows.push(vec![json!(format_redis_item(k)), json!(format_redis_item(v))]);
+            }
+            let len = rows.len() as u64;
+            Ok(QueryResultPayload {
+                columns: vec![
+                    ColumnHeader { name: "Key / Field".to_string(), type_name: "STRING".to_string() },
+                    ColumnHeader { name: "Value".to_string(), type_name: "STRING".to_string() },
+                ],
+                rows,
+                execution_time_ms,
+                affected_rows: len,
+            })
+        }
+        redis::Value::Okay => Ok(QueryResultPayload {
+            columns: vec![ColumnHeader { name: "Response".to_string(), type_name: "OK".to_string() }],
+            rows: vec![vec![json!("OK")]],
+            execution_time_ms,
+            affected_rows: 1,
+        }),
+        _ => Ok(QueryResultPayload {
+            columns: vec![ColumnHeader { name: "Response".to_string(), type_name: "UNKNOWN".to_string() }],
+            rows: vec![vec![json!(format!("{:?}", val))]],
+            execution_time_ms,
+            affected_rows: 1,
+        }),
+    }
+}
+
+pub async fn execute_mongo_query(
+    managed_conn: &ManagedConnection,
+    sql: &str,
+) -> Result<QueryResultPayload, String> {
+    let client = managed_conn
+        .mongo_client
+        .as_ref()
+        .ok_or_else(|| "MongoDB client is not active or connected.".to_string())?;
+
+    let db_name = client
+        .default_database()
+        .map(|db| db.name().to_string())
+        .unwrap_or_else(|| "test".to_string());
+
+    let trimmed = sql.trim();
+    let json_val: serde_json::Value = serde_json::from_str(trimmed)
+        .map_err(|e| format!("Invalid MongoDB JSON command format: {}", e))?;
+
+    let bson_doc = mongodb::bson::to_document(&json_val)
+        .map_err(|e| format!("Failed to convert JSON to BSON Document: {}", e))?;
+
+    let start = Instant::now();
+    let res_doc = client
+        .database(&db_name)
+        .run_command(bson_doc)
+        .await
+        .map_err(|e| format!("MongoDB command execution failed: {}", e))?;
+
+    let elapsed = start.elapsed().as_millis() as u64;
+
+    if let Ok(cursor) = res_doc.get_document("cursor") {
+        if let Ok(first_batch) = cursor.get_array("firstBatch") {
+            let mut rows = Vec::new();
+            for item in first_batch {
+                if let Some(doc) = item.as_document() {
+                    let json_v: serde_json::Value = mongodb::bson::from_document(doc.clone()).unwrap_or(json!(null));
+                    rows.push(vec![json_v]);
+                }
+            }
+            let len = rows.len() as u64;
+            return Ok(QueryResultPayload {
+                columns: vec![ColumnHeader {
+                    name: "Document".to_string(),
+                    type_name: "BSON".to_string(),
+                }],
+                rows,
+                execution_time_ms: elapsed,
+                affected_rows: len,
+            });
+        }
+    }
+
+    let json_res: serde_json::Value = mongodb::bson::from_document(res_doc).unwrap_or(json!(null));
+    Ok(QueryResultPayload {
+        columns: vec![ColumnHeader {
+            name: "Result".to_string(),
+            type_name: "BSON".to_string(),
+        }],
+        rows: vec![vec![json_res]],
+        execution_time_ms: elapsed,
+        affected_rows: 1,
+    })
+}
+
+pub async fn execute_redis_query(
+    managed_conn: &ManagedConnection,
+    sql: &str,
+) -> Result<QueryResultPayload, String> {
+    let mut conn = managed_conn
+        .redis_client
+        .clone()
+        .ok_or_else(|| "Redis connection is not active or unavailable.".to_string())?;
+
+    let args = split_redis_args(sql.trim());
+    if args.is_empty() {
+        return Err("Empty Redis command provided.".to_string());
+    }
+
+    let start = Instant::now();
+    let mut cmd = redis::cmd(&args[0]);
+    for arg in &args[1..] {
+        cmd.arg(arg);
+    }
+
+    let val: redis::Value = cmd
+        .query_async(&mut conn)
+        .await
+        .map_err(|e| format!("Redis command failed: {}", e))?;
+
+    let elapsed = start.elapsed().as_millis() as u64;
+    format_redis_value_to_payload(val, elapsed)
+}
+
+pub async fn execute_scylla_query(
+    managed_conn: &ManagedConnection,
+    sql: &str,
+) -> Result<QueryResultPayload, String> {
+    let session = managed_conn
+        .scylla_session
+        .as_ref()
+        .ok_or_else(|| "Cassandra / ScyllaDB session is not active or connected.".to_string())?;
+
+    let start = Instant::now();
+    let query_result = session
+        .query_unpaged(sql, ())
+        .await
+        .map_err(|e| format!("Scylla/CQL query failed: {}", e))?;
+
+    let elapsed = start.elapsed().as_millis() as u64;
+
+    let columns: Vec<ColumnHeader> = query_result
+        .col_specs()
+        .iter()
+        .map(|col| ColumnHeader {
+            name: col.name.clone(),
+            type_name: format!("{:?}", col.typ),
+        })
+        .collect();
+
+    let mut rows = Vec::new();
+    if let Ok(cql_rows) = query_result.rows() {
+        for row in cql_rows {
+            let mut row_cells = Vec::new();
+            for col in &row.columns {
+                let json_val = match col {
+                    Some(val) => json!(format!("{:?}", val)),
+                    None => json!(null),
+                };
+                row_cells.push(json_val);
+            }
+            rows.push(row_cells);
+        }
+    }
+
+    let len = rows.len() as u64;
+    Ok(QueryResultPayload {
+        columns,
+        rows,
+        execution_time_ms: elapsed,
+        affected_rows: len,
+    })
+}
+
+pub async fn execute_clickhouse_query(
+    managed_conn: &ManagedConnection,
+    sql: &str,
+) -> Result<QueryResultPayload, String> {
+    let client = managed_conn
+        .clickhouse_client
+        .as_ref()
+        .ok_or_else(|| "ClickHouse client is not active or connected.".to_string())?;
+
+    let start = Instant::now();
+    let mut cursor = client
+        .query(sql)
+        .fetch::<String>()
+        .map_err(|e| format!("ClickHouse query failed: {}", e))?;
+
+    let mut rows = Vec::new();
+    while let Some(row) = cursor
+        .next()
+        .await
+        .map_err(|e| format!("Failed reading ClickHouse row stream: {}", e))?
+    {
+        rows.push(vec![json!(row)]);
+    }
+
+    let elapsed = start.elapsed().as_millis() as u64;
+    let len = rows.len() as u64;
+
+    Ok(QueryResultPayload {
+        columns: vec![ColumnHeader {
+            name: "Result".to_string(),
+            type_name: "STRING".to_string(),
+        }],
+        rows,
+        execution_time_ms: elapsed,
+        affected_rows: len,
+    })
+}
+
+pub async fn execute_duckdb_query(
+    _managed_conn: &ManagedConnection,
+    _sql: &str,
+) -> Result<QueryResultPayload, String> {
+    Err("DuckDB native execution is stubbed but not yet fully implemented.".to_string())
+}
+
+pub async fn execute_libsql_query(
+    _managed_conn: &ManagedConnection,
+    _sql: &str,
+) -> Result<QueryResultPayload, String> {
+    Err("Turso (libSQL) native execution is stubbed but not yet fully implemented.".to_string())
+}
+
+pub async fn execute_snowflake_query(
+    _managed_conn: &ManagedConnection,
+    _sql: &str,
+) -> Result<QueryResultPayload, String> {
+    Err("Snowflake native execution is stubbed but not yet fully implemented.".to_string())
+}
+
+pub async fn execute_oracle_query(
+    _managed_conn: &ManagedConnection,
+    _sql: &str,
+) -> Result<QueryResultPayload, String> {
+    Err("Oracle native execution is stubbed but not yet fully implemented.".to_string())
 }
