@@ -1,7 +1,10 @@
 //! Explicit multi-statement transaction sessions for GUI clients.
 //! Holds a dedicated pool connection per connection_id after BEGIN until COMMIT/ROLLBACK.
 
-use crate::db::executor::{execute_dynamic_query_on_connection, execute_mssql_query_on_conn, QueryResultPayload};
+use crate::db::executor::{
+    execute_dynamic_query_on_connection, execute_mssql_query_on_conn,
+    execute_pg_query_on_conn, execute_mysql_query_on_conn, QueryResultPayload,
+};
 use bb8_tiberius::ConnectionManager as MssqlConnectionManager;
 use crate::db::pool::ManagedConnection;
 use serde::{Deserialize, Serialize};
@@ -26,6 +29,8 @@ use tokio::net::TcpStream;
 use tokio_util::compat::Compat;
 
 enum TxConn {
+    Pg(PoolConnection<sqlx::Postgres>),
+    MySql(PoolConnection<sqlx::MySql>),
     Sqlx(PoolConnection<Any>),
     Mssql(TiberiusClient<Compat<TcpStream>>),
 }
@@ -105,6 +110,58 @@ impl TransactionManager {
         connection_id: &str,
     ) -> Result<TxStatus, String> {
         let db_type = managed_conn.db_type.to_lowercase();
+        if matches!(db_type.as_str(), "postgres" | "postgresql" | "cockroachdb" | "redshift") {
+            if let Some(ref pg_pool) = managed_conn.pg_pool {
+                let mut guard = self.inner.lock().await;
+                if guard.contains_key(connection_id) {
+                    return Err("A transaction is already open for this connection".to_string());
+                }
+                let mut conn = pg_pool
+                    .acquire()
+                    .await
+                    .map_err(|e| format!("Failed to acquire Postgres connection for TX: {}", e))?;
+                conn.execute("BEGIN")
+                    .await
+                    .map_err(|e| format!("BEGIN failed: {}", e))?;
+                guard.insert(
+                    connection_id.to_string(),
+                    TxSession {
+                        conn: TxConn::Pg(conn),
+                        started: Instant::now(),
+                        started_at: chrono::Utc::now().to_rfc3339(),
+                        statement_count: 0,
+                    },
+                );
+                drop(guard);
+                return Ok(self.status(connection_id).await);
+            }
+        } else if matches!(db_type.as_str(), "mysql" | "mariadb") {
+            if let Some(ref mysql_pool) = managed_conn.mysql_pool {
+                let mut guard = self.inner.lock().await;
+                if guard.contains_key(connection_id) {
+                    return Err("A transaction is already open for this connection".to_string());
+                }
+                let mut conn = mysql_pool
+                    .acquire()
+                    .await
+                    .map_err(|e| format!("Failed to acquire MySQL connection for TX: {}", e))?;
+                conn.execute("BEGIN")
+                    .await
+                    .map_err(|e| format!("BEGIN failed: {}", e))?;
+                guard.insert(
+                    connection_id.to_string(),
+                    TxSession {
+                        conn: TxConn::MySql(conn),
+                        started: Instant::now(),
+                        started_at: chrono::Utc::now().to_rfc3339(),
+                        statement_count: 0,
+                    },
+                );
+                drop(guard);
+                return Ok(self.status(connection_id).await);
+            }
+        }
+
         if db_type == "mssql" || db_type == "sqlserver" {
             let mut guard = self.inner.lock().await;
             if guard.contains_key(connection_id) {
@@ -156,6 +213,16 @@ impl TransactionManager {
             .ok_or_else(|| "No active transaction for this connection".to_string())?;
 
         match &mut session.conn {
+            TxConn::Pg(c) => {
+                c.execute("COMMIT")
+                    .await
+                    .map_err(|e| format!("COMMIT failed: {}", e))?;
+            }
+            TxConn::MySql(c) => {
+                c.execute("COMMIT")
+                    .await
+                    .map_err(|e| format!("COMMIT failed: {}", e))?;
+            }
             TxConn::Sqlx(c) => {
                 c.execute("COMMIT")
                     .await
@@ -184,6 +251,12 @@ impl TransactionManager {
             .ok_or_else(|| "No active transaction for this connection".to_string())?;
 
         match &mut session.conn {
+            TxConn::Pg(c) => {
+                let _ = c.execute("ROLLBACK").await;
+            }
+            TxConn::MySql(c) => {
+                let _ = c.execute("ROLLBACK").await;
+            }
             TxConn::Sqlx(c) => {
                 let _ = c.execute("ROLLBACK").await;
             }
@@ -212,6 +285,8 @@ impl TransactionManager {
             return Ok(None);
         };
         let result = match &mut session.conn {
+            TxConn::Pg(c) => execute_pg_query_on_conn(c, sql).await?,
+            TxConn::MySql(c) => execute_mysql_query_on_conn(c, sql).await?,
             TxConn::Sqlx(c) => execute_dynamic_query_on_connection(c, sql).await?,
             TxConn::Mssql(c) => execute_mssql_query_on_conn(c, sql).await?,
         };
@@ -224,6 +299,12 @@ impl TransactionManager {
         let mut guard = self.inner.lock().await;
         if let Some(mut session) = guard.remove(connection_id) {
             match &mut session.conn {
+                TxConn::Pg(c) => {
+                    let _ = c.execute("ROLLBACK").await;
+                }
+                TxConn::MySql(c) => {
+                    let _ = c.execute("ROLLBACK").await;
+                }
                 TxConn::Sqlx(c) => {
                     let _ = c.execute("ROLLBACK").await;
                 }

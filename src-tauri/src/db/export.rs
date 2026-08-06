@@ -1,9 +1,6 @@
 // Data export and import engine supporting CSV, JSON, and SQL dump formats
 use serde::{Deserialize, Serialize}; // Import Serde traits for payload serialization
 use serde_json::Value; // Import JSON Value enum for dynamic row data
-use sqlx::any::AnyRow; // Import AnyRow for result processing
-use sqlx::AnyPool; // Import AnyPool for database queries
-use sqlx::{Column, Row}; // Import Column and Row traits for schema access
 
 // Supported export format enumeration
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)] // Derive standard traits
@@ -21,9 +18,11 @@ pub struct ExportConfig { // Struct for export parameters
     pub include_headers: bool, // Whether to include column headers in output
 } // End of ExportConfig struct
 
+use crate::db::pool::ManagedConnection;
+
 // Fetch all rows from a table (optional WHERE fragment, already validated by caller)
 async fn fetch_table_data(
-    pool: &AnyPool,
+    managed_conn: &ManagedConnection,
     table_name: &str,
     mysql_style: bool,
     where_clause: Option<&str>,
@@ -46,60 +45,29 @@ async fn fetch_table_data(
             }
         }
     }
-    let rows: Vec<AnyRow> = sqlx::query(&sql)
-        .fetch_all(pool)
-        .await
-        .map_err(|e| format!("Export fetch failed: {}", e))?;
-
-    let mut col_names = Vec::new(); // Column names vector
-    let mut data_rows = Vec::new(); // Data rows matrix vector
-
-    if let Some(first) = rows.first() { // Extract column schema from first row
-        for col in first.columns() { // Iterate over columns
-            col_names.push(col.name().to_string()); // Store column name
-        } // End column iteration
-    } // End schema extraction
-
-    for row in &rows { // Iterate through all data rows
-        let mut vals = Vec::new(); // Values vector for current row
-        for i in 0..row.columns().len() { // Loop over column indices
-            let val = if let Ok(v) = row.try_get::<String, _>(i) { // Try string decode
-                Value::String(v) // String value
-            } else if let Ok(v) = row.try_get::<i64, _>(i) { // Try integer decode
-                serde_json::json!(v) // Integer value
-            } else if let Ok(v) = row.try_get::<f64, _>(i) { // Try float decode
-                serde_json::json!(v) // Float value
-            } else if let Ok(v) = row.try_get::<bool, _>(i) { // Try boolean decode
-                Value::Bool(v) // Boolean value
-            } else { // Fallback to null
-                Value::Null // Null value
-            }; // End value decode tree
-            vals.push(val); // Add value to row vector
-        } // End column loop
-        data_rows.push(vals); // Add row to matrix
-    } // End row loop
-
-    Ok((col_names, data_rows)) // Return column names and data
+    let payload = crate::db::executor::execute_query_for_managed(managed_conn, &sql).await?;
+    let col_names = payload.columns.into_iter().map(|c| c.name).collect();
+    Ok((col_names, payload.rows))
 } // End fetch_table_data function
 
 // Export table data to CSV format string
 pub async fn export_csv(
-    pool: &AnyPool,
+    conn: &ManagedConnection,
     table_name: &str,
     include_headers: bool,
     mysql_style: bool,
 ) -> Result<String, String> {
-    export_csv_filtered(pool, table_name, include_headers, mysql_style, None).await
+    export_csv_filtered(conn, table_name, include_headers, mysql_style, None).await
 }
 
 pub async fn export_csv_filtered(
-    pool: &AnyPool,
+    conn: &ManagedConnection,
     table_name: &str,
     include_headers: bool,
     mysql_style: bool,
     where_clause: Option<&str>,
 ) -> Result<String, String> {
-    let (cols, rows) = fetch_table_data(pool, table_name, mysql_style, where_clause).await?;
+    let (cols, rows) = fetch_table_data(conn, table_name, mysql_style, where_clause).await?;
     let mut output = String::new(); // Initialize output buffer string
 
     if include_headers { // Check if headers should be included
@@ -124,20 +92,20 @@ pub async fn export_csv_filtered(
 
 // Export table data to JSON array format string
 pub async fn export_json(
-    pool: &AnyPool,
+    conn: &ManagedConnection,
     table_name: &str,
     mysql_style: bool,
 ) -> Result<String, String> {
-    export_json_filtered(pool, table_name, mysql_style, None).await
+    export_json_filtered(conn, table_name, mysql_style, None).await
 }
 
 pub async fn export_json_filtered(
-    pool: &AnyPool,
+    conn: &ManagedConnection,
     table_name: &str,
     mysql_style: bool,
     where_clause: Option<&str>,
 ) -> Result<String, String> {
-    let (cols, rows) = fetch_table_data(pool, table_name, mysql_style, where_clause).await?;
+    let (cols, rows) = fetch_table_data(conn, table_name, mysql_style, where_clause).await?;
     let mut json_rows = Vec::new(); // Initialize JSON objects vector
 
     for row in &rows { // Iterate through data rows
@@ -155,20 +123,20 @@ pub async fn export_json_filtered(
 
 // Export table data to SQL INSERT dump format string
 pub async fn export_sql_dump(
-    pool: &AnyPool,
+    conn: &ManagedConnection,
     table_name: &str,
     mysql_style: bool,
 ) -> Result<String, String> {
-    export_sql_dump_filtered(pool, table_name, mysql_style, None).await
+    export_sql_dump_filtered(conn, table_name, mysql_style, None).await
 }
 
 pub async fn export_sql_dump_filtered(
-    pool: &AnyPool,
+    conn: &ManagedConnection,
     table_name: &str,
     mysql_style: bool,
     where_clause: Option<&str>,
 ) -> Result<String, String> {
-    let (cols, rows) = fetch_table_data(pool, table_name, mysql_style, where_clause).await?;
+    let (cols, rows) = fetch_table_data(conn, table_name, mysql_style, where_clause).await?;
     let mut output = String::new();
     let quoted_table = crate::db::identifiers::quote_table(table_name, mysql_style)?;
     let quoted_cols: Vec<String> = cols

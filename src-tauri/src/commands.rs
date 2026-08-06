@@ -1,7 +1,7 @@
 // Tauri IPC Command Handler Module for DevDash Frontend API Interface
 use crate::db::app_storage::{AppStorage, ConnectionGroup, QueryHistoryItem, SavedQueryItem}; // Import AppStorage, ConnectionGroup, QueryHistoryItem, and SavedQueryItem structs
 use crate::db::credentials; // Import credentials module for keyring secrets management
-use crate::db::executor::{execute_dynamic_query, QueryResultPayload}; // Import dynamic query execution function and payload struct
+use crate::db::executor::QueryResultPayload; // Import QueryResultPayload struct
 use crate::db::export; // Import export module for CSV, JSON, SQL dump operations
 use crate::db::introspection::{fetch_tables, fetch_columns, analyze_primary_keys, TableInfo, ColumnInfo, PkAnalysis}; // Import introspection functions and structs
 use crate::db::pool::{ConnectionManager, ConnectionDetails, TestConnectionResult}; // Import ConnectionManager, ConnectionDetails, and TestConnectionResult
@@ -422,28 +422,7 @@ pub async fn run_sql_query( // Async command handler function
     
     // Spawn task to run query asynchronously on thread pool
     let handle = tokio::spawn(async move {
-        let db_type = conn_clone.db_type.to_lowercase();
-        if db_type == "mssql" || db_type == "sqlserver" {
-            crate::db::executor::execute_mssql_query(&conn_clone, &sql_clone).await
-        } else if db_type == "mongodb" {
-            crate::db::executor::execute_mongo_query(&conn_clone, &sql_clone).await
-        } else if db_type == "redis" {
-            crate::db::executor::execute_redis_query(&conn_clone, &sql_clone).await
-        } else if db_type == "cassandra" {
-            crate::db::executor::execute_scylla_query(&conn_clone, &sql_clone).await
-        } else if db_type == "clickhouse" {
-            crate::db::executor::execute_clickhouse_query(&conn_clone, &sql_clone).await
-        } else if db_type == "duckdb" {
-            crate::db::executor::execute_duckdb_query(&conn_clone, &sql_clone).await
-        } else if db_type == "turso" {
-            crate::db::executor::execute_libsql_query(&conn_clone, &sql_clone).await
-        } else if db_type == "snowflake" {
-            crate::db::executor::execute_snowflake_query(&conn_clone, &sql_clone).await
-        } else if db_type == "oracle" {
-            crate::db::executor::execute_oracle_query(&conn_clone, &sql_clone).await
-        } else {
-            execute_dynamic_query(&conn_clone.pool, &sql_clone).await
-        }
+        crate::db::executor::execute_query_for_managed(&conn_clone, &sql_clone).await
     });
 
     // Register active query handle
@@ -751,11 +730,7 @@ pub async fn stream_sql_query(
 ) -> Result<QueryResultPayload, String> {
     let managed_conn = state.connection_manager.get_managed_connection(&connection_id)?;
     let size = chunk_size.unwrap_or(500);
-    if managed_conn.db_type.to_lowercase() == "mssql" || managed_conn.db_type.to_lowercase() == "sqlserver" {
-        crate::db::executor::stream_mssql_query(&app_handle, &managed_conn, &query_id, &sql, size).await
-    } else {
-        crate::db::executor::stream_dynamic_query(&app_handle, &managed_conn.pool, &query_id, &sql, size).await
-    }
+    crate::db::executor::stream_query_for_managed(&app_handle, &managed_conn, &query_id, &sql, size).await
 }
 
 // IPC Command: Get paginated query history
@@ -1100,22 +1075,18 @@ pub async fn export_table_data(
     where_clause: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let pool = state.connection_manager.get_pool(&connection_id)?;
-    let db_type = state
-        .connection_manager
-        .get_db_type(&connection_id)
-        .unwrap_or_else(|_| "postgres".to_string());
-    let mysql_style = crate::db::pool::ConnectionManager::is_mysql_style(&db_type);
+    let managed_conn = state.connection_manager.get_managed_connection(&connection_id)?;
+    let mysql_style = crate::db::pool::ConnectionManager::is_mysql_style(&managed_conn.db_type);
     let where_ref = where_clause.as_deref();
     match format.to_lowercase().as_str() {
         "csv" => {
-            export::export_csv_filtered(&pool, &table_name, true, mysql_style, where_ref).await
+            export::export_csv_filtered(&managed_conn, &table_name, true, mysql_style, where_ref).await
         }
         "json" => {
-            export::export_json_filtered(&pool, &table_name, mysql_style, where_ref).await
+            export::export_json_filtered(&managed_conn, &table_name, mysql_style, where_ref).await
         }
         "sql" | "sqldump" => {
-            export::export_sql_dump_filtered(&pool, &table_name, mysql_style, where_ref).await
+            export::export_sql_dump_filtered(&managed_conn, &table_name, mysql_style, where_ref).await
         }
         _ => Err(format!("Unsupported export format: {}", format)),
     }

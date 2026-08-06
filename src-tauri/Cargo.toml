@@ -1,7 +1,7 @@
 # Cargo package metadata manifest file for DevDash Tauri backend
 [package] # Declare package configuration section
 name = "devdash_backend" # Package identifier name
-version = "1.0.1" # Semver release version
+version = "1.0.2" # Semver release version
 edition = "2021" # Use modern Rust 2021 edition standards
 description = "Fast, minimal Rust backend engine for DevDash database GUI" # Brief description of backend crate
 
