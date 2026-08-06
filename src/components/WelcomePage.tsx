@@ -200,7 +200,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
         <div className="flex items-center space-x-2.5">
           <img src="/logo.png" alt="DevDash" className="w-6 h-6 object-contain rounded-full shadow-sm" />
           <span className="font-bold text-[14px] tracking-tight text-white font-sans">DevDash</span>
-          <span className="text-[10px] font-semibold text-textMuted/70 bg-surface2/60 px-1.5 py-0.5 rounded border border-border/30 font-mono">v1.8</span>
+          <span className="text-[10px] font-semibold text-textMuted/70 bg-surface2/60 px-1.5 py-0.5 rounded border border-border/30 font-mono">v1.0.2</span>
         </div>
         <button
           onClick={onOpenSettings}

@@ -326,13 +326,14 @@ impl ConnectionManager {
         match db_lower.as_str() {
             "postgres" | "postgresql" | "cockroachdb" | "redshift" => {
                 use sqlx::postgres::PgPoolOptions;
-                if let Ok(pg) = PgPoolOptions::new()
+                match PgPoolOptions::new()
                     .max_connections(max_conns)
                     .acquire_timeout(Duration::from_secs(10))
                     .connect(url)
                     .await
                 {
-                    pg_pool = Some(pg);
+                    Ok(pg) => pg_pool = Some(pg),
+                    Err(e) => eprintln!("Warning: Failed to create native PgPool: {}", e),
                 }
             }
             "mysql" | "mariadb" => {

@@ -3,7 +3,7 @@ use crate::db::app_storage::{AppStorage, ConnectionGroup, QueryHistoryItem, Save
 use crate::db::credentials; // Import credentials module for keyring secrets management
 use crate::db::executor::QueryResultPayload; // Import QueryResultPayload struct
 use crate::db::export; // Import export module for CSV, JSON, SQL dump operations
-use crate::db::introspection::{fetch_tables, fetch_columns, analyze_primary_keys, TableInfo, ColumnInfo, PkAnalysis}; // Import introspection functions and structs
+use crate::db::introspection::{fetch_tables_managed, fetch_columns_managed, analyze_primary_keys, TableInfo, ColumnInfo, PkAnalysis}; // Import introspection functions and structs
 use crate::db::pool::{ConnectionManager, ConnectionDetails, TestConnectionResult}; // Import ConnectionManager, ConnectionDetails, and TestConnectionResult
 use crate::db::safe_mode::{analyze_sql_safety, SafetyAnalysis}; // Import safe mode analysis function
 use crate::db::staged_edits::{
@@ -336,35 +336,35 @@ pub async fn disconnect_database( // Async command handler function
 #[tauri::command] // Tauri command macro annotation
 pub async fn get_database_tables( // Async command handler function
     connection_id: String, // Connection ID identifier
-    db_kind: String, // Database engine kind identifier string
+    _db_kind: String, // Database engine kind identifier string
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<Vec<TableInfo>, String> { // Command return signature
-    let pool = state.connection_manager.get_pool(&connection_id)?; // Lookup cached connection pool instance
-    fetch_tables(&pool, &db_kind).await // Call fetch_tables introspection function asynchronously
+    let conn = state.connection_manager.get_managed_connection(&connection_id)?; // Lookup cached managed connection
+    fetch_tables_managed(&conn).await // Call fetch_tables_managed introspection function asynchronously
 } // End of get_database_tables command
 
 // IPC Command: Fetch column details for a specific table
 #[tauri::command] // Tauri command macro annotation
 pub async fn get_table_columns( // Async command handler function
     connection_id: String, // Connection ID identifier
-    db_kind: String, // Database engine kind string
+    _db_kind: String, // Database engine kind string
     table_name: String, // Target table name string
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<Vec<ColumnInfo>, String> { // Command return signature
-    let pool = state.connection_manager.get_pool(&connection_id)?; // Lookup cached connection pool
-    fetch_columns(&pool, &db_kind, &table_name).await // Call fetch_columns introspection function
+    let conn = state.connection_manager.get_managed_connection(&connection_id)?; // Lookup cached managed connection
+    fetch_columns_managed(&conn, &table_name).await // Call fetch_columns_managed introspection function
 } // End of get_table_columns command
 
 // IPC Command: Analyze primary key status for editing safety
 #[tauri::command] // Tauri command macro annotation
 pub async fn get_pk_analysis( // Async command handler function
     connection_id: String, // Connection ID identifier
-    db_kind: String, // Database engine kind string
+    _db_kind: String, // Database engine kind string
     table_name: String, // Target table name string
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<PkAnalysis, String> { // Command return signature
-    let pool = state.connection_manager.get_pool(&connection_id)?; // Lookup cached connection pool
-    let columns = fetch_columns(&pool, &db_kind, &table_name).await?; // Fetch column metadata
+    let conn = state.connection_manager.get_managed_connection(&connection_id)?; // Lookup cached managed connection
+    let columns = fetch_columns_managed(&conn, &table_name).await?; // Fetch column metadata
     Ok(analyze_primary_keys(&columns)) // Analyze and return PK status
 } // End of get_pk_analysis command
 

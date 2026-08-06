@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize}; // Import Serde traits for JSON serializati
 use sqlx::Any; // Import Any database driver marker type from sqlx
 use sqlx::AnyPool; // Import AnyPool from sqlx for dynamic queries
 use sqlx::Row; // Import Row trait for accessing dynamic database columns
+use crate::db::pool::ManagedConnection;
 
 // Data structure representing metadata about a database table or view
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)] // Derive common standard traits
@@ -170,6 +171,178 @@ pub async fn fetch_tables(pool: &AnyPool, db_kind: &str) -> Result<Vec<TableInfo
     }
 
     Ok(tables)
+}
+
+/// Managed routing fetch_tables leveraging native drivers (pg_pool, mysql_pool, etc.).
+pub async fn fetch_tables_managed(conn: &ManagedConnection) -> Result<Vec<TableInfo>, String> {
+    let db_kind = conn.db_type.to_lowercase();
+    match db_kind.as_str() {
+        "postgres" | "postgresql" | "cockroachdb" | "redshift" => {
+            if let Some(ref pg_pool) = conn.pg_pool {
+                let sql = "SELECT table_schema, table_name, table_type
+                    FROM information_schema.tables
+                    WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                      AND table_schema NOT LIKE 'pg_temp_%'
+                      AND table_schema NOT LIKE 'pg_toast_temp_%'
+                    ORDER BY table_schema, table_type, table_name;";
+                let rows = sqlx::query(sql)
+                    .fetch_all(pg_pool)
+                    .await
+                    .map_err(|e| format!("Postgres table introspection error: {}", e))?;
+                let mut tables = Vec::new();
+                for row in rows {
+                    let schema: String = row.get(0);
+                    let name: String = row.get(1);
+                    let table_type: String = row.get(2);
+                    tables.push(TableInfo::new(&schema, &name, &table_type));
+                }
+                return Ok(tables);
+            }
+        }
+        "mysql" | "mariadb" => {
+            if let Some(ref mysql_pool) = conn.mysql_pool {
+                let sql = "SELECT table_schema, table_name, table_type
+                    FROM information_schema.tables
+                    WHERE table_schema = DATABASE()
+                    ORDER BY table_type, table_name;";
+                let rows = sqlx::query(sql)
+                    .fetch_all(mysql_pool)
+                    .await
+                    .map_err(|e| format!("MySQL table introspection error: {}", e))?;
+                let mut tables = Vec::new();
+                for row in rows {
+                    let schema: String = row.get(0);
+                    let name: String = row.get(1);
+                    let table_type: String = row.get(2);
+                    let mut info = TableInfo::new(&schema, &name, &table_type);
+                    info.qualified_name = name.clone();
+                    tables.push(info);
+                }
+                return Ok(tables);
+            }
+        }
+        "mongodb" => {
+            if let Some(ref client) = conn.mongo_client {
+                let db_name = if conn.connection_url.contains('/') {
+                    conn.connection_url.rsplit('/').next().unwrap_or("test").split('?').next().unwrap_or("test")
+                } else {
+                    "test"
+                };
+                if let Ok(names) = client.database(db_name).list_collection_names().await {
+                    let mut tables = Vec::new();
+                    for name in names {
+                        tables.push(TableInfo::new("mongodb", &name, "COLLECTION"));
+                    }
+                    return Ok(tables);
+                }
+            }
+        }
+        "redis" => {
+            return Ok(vec![
+                TableInfo::new("redis", "keys", "KEYSPACE"),
+            ]);
+        }
+        _ => {}
+    }
+    fetch_tables(&conn.pool, &conn.db_type).await
+}
+
+/// Managed routing fetch_columns leveraging native drivers.
+pub async fn fetch_columns_managed(
+    conn: &ManagedConnection,
+    table_name: &str,
+) -> Result<Vec<ColumnInfo>, String> {
+    validate_identifier(table_name)?;
+    let (schema_opt, bare_table) = split_schema_table(table_name);
+    let db_kind = conn.db_type.to_lowercase();
+
+    match db_kind.as_str() {
+        "postgres" | "postgresql" | "cockroachdb" | "redshift" => {
+            if let Some(ref pg_pool) = conn.pg_pool {
+                let schema = schema_opt.unwrap_or_else(|| "public".to_string());
+                let sql = "SELECT c.column_name, c.data_type, c.is_nullable,
+                            CASE WHEN kcu.column_name IS NOT NULL THEN true ELSE false END as is_pk
+                     FROM information_schema.columns c
+                     LEFT JOIN information_schema.table_constraints tc
+                       ON c.table_name = tc.table_name AND c.table_schema = tc.table_schema AND tc.constraint_type = 'PRIMARY KEY'
+                     LEFT JOIN information_schema.key_column_usage kcu
+                       ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema AND c.column_name = kcu.column_name
+                     WHERE c.table_name = $1 AND c.table_schema = $2
+                     ORDER BY c.ordinal_position";
+                let rows = sqlx::query(sql)
+                    .bind(&bare_table)
+                    .bind(&schema)
+                    .fetch_all(pg_pool)
+                    .await
+                    .map_err(|e| format!("Postgres column introspection error: {}", e))?;
+                let mut columns = Vec::new();
+                for row in rows {
+                    let name: String = row.get(0);
+                    let data_type: String = row.get(1);
+                    let is_nullable_str: String = row.get(2);
+                    let is_pk: bool = row.get(3);
+                    columns.push(ColumnInfo {
+                        name,
+                        data_type,
+                        is_nullable: is_nullable_str == "YES",
+                        is_primary_key: is_pk,
+                        is_foreign_key: false,
+                        fk_table: None,
+                        fk_column: None,
+                    });
+                }
+                return Ok(columns);
+            }
+        }
+        "mysql" | "mariadb" => {
+            if let Some(ref mysql_pool) = conn.mysql_pool {
+                let sql = if let Some(ref _schema) = schema_opt {
+                    "SELECT column_name, data_type, is_nullable, column_key
+                     FROM information_schema.columns
+                     WHERE table_name = ? AND table_schema = ?
+                     ORDER BY ordinal_position"
+                } else {
+                    "SELECT column_name, data_type, is_nullable, column_key
+                     FROM information_schema.columns
+                     WHERE table_name = ? AND table_schema = DATABASE()
+                     ORDER BY ordinal_position"
+                };
+                let rows = if let Some(ref schema) = schema_opt {
+                    sqlx::query(sql)
+                        .bind(&bare_table)
+                        .bind(schema)
+                        .fetch_all(mysql_pool)
+                        .await
+                        .map_err(|e| format!("MySQL column introspection error: {}", e))?
+                } else {
+                    sqlx::query(sql)
+                        .bind(&bare_table)
+                        .fetch_all(mysql_pool)
+                        .await
+                        .map_err(|e| format!("MySQL column introspection error: {}", e))?
+                };
+                let mut columns = Vec::new();
+                for row in rows {
+                    let name: String = row.get(0);
+                    let data_type: String = row.get(1);
+                    let is_nullable_str: String = row.get(2);
+                    let column_key: String = row.get(3);
+                    columns.push(ColumnInfo {
+                        name,
+                        data_type,
+                        is_nullable: is_nullable_str == "YES",
+                        is_primary_key: column_key == "PRI",
+                        is_foreign_key: false,
+                        fk_table: None,
+                        fk_column: None,
+                    });
+                }
+                return Ok(columns);
+            }
+        }
+        _ => {}
+    }
+    fetch_columns(&conn.pool, &conn.db_type, table_name).await
 }
 
 // Fetch column details for a table. Accepts bare name or schema.qualified name.

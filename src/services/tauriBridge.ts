@@ -111,15 +111,7 @@ export const getDatabaseTables = async (
   dbKind: string
 ): Promise<TableItem[]> => {
   if (!isTauriAvailable()) {
-    // Mock data for web browser UI testing
-    return [
-      { name: 'User', table_type: 'BASE TABLE', schema: 'public' },
-      { name: 'University', table_type: 'BASE TABLE', schema: 'public' },
-      { name: 'FriendRequest', table_type: 'BASE TABLE', schema: 'public' },
-      { name: 'Otp', table_type: 'BASE TABLE', schema: 'public' },
-      { name: 'ProfileVerification', table_type: 'BASE TABLE', schema: 'public' },
-      { name: 'Report', table_type: 'BASE TABLE', schema: 'public' },
-    ];
+    return [];
   }
 
   try {
