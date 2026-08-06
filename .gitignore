@@ -14,6 +14,7 @@ devdash_vault/
 *.tmp
 *.log
 *.enc
+*.png
 
 # OS junk
 .DS_Store
