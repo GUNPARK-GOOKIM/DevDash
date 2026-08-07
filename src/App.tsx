@@ -263,6 +263,9 @@ export const App: React.FC = () => {
       if (pwd === undefined || pwd === '') {
         pwd = (await getDbPassword(conn.id)) || undefined;
       }
+      if (pwd) {
+        await saveDbPassword(conn.id, pwd);
+      }
       await connectDatabase(conn, pwd);
 
       setActiveConnection({ ...conn, is_connected: true });
@@ -311,10 +314,11 @@ export const App: React.FC = () => {
           });
         return prev;
       });
-    } catch (err) {
+    } catch (err: any) {
       console.warn('Failed to connect to database or fetch tables:', err);
-      setActiveConnection({ ...conn, is_connected: false });
-      alert(`Connection failed: ${String(err)}`);
+      setActiveConnection(null);
+      setShowWelcome(true);
+      alert(`Connection failed: ${String(err?.message || err)}`);
     }
   }, [tablesByConn, schemaByConn, connections]);
 
@@ -485,7 +489,11 @@ export const App: React.FC = () => {
             setShowWelcome(false);
           }
         } catch {
-          /* leave offline */
+          /* Connection offline or authentication failed: reset active connection so open tabs don't throw catalog errors */
+          if (session.activeConnectionId === id) {
+            setActiveConnection(null);
+            setShowWelcome(true);
+          }
         }
       }
     })();
@@ -1490,6 +1498,7 @@ export const App: React.FC = () => {
       <div className="flex h-screen w-screen font-sans relative select-none bg-base text-text">
         <WelcomePage
           connections={connections}
+          queryHistory={queryHistory}
           onConnect={handleWelcomeConnect}
           onNewConnection={(kind) => {
             setSelectedDbKind(kind);
@@ -1500,6 +1509,13 @@ export const App: React.FC = () => {
           onImportConnections={handleImportConnections}
           onOpenSettings={() => setIsSettingsOpen(true)}
           recentConnectionIds={recentConnectionIds}
+          onSelectQuery={(sql: string) => {
+            if (activeConnection) {
+              setShowWelcome(false);
+            } else if (connections.length > 0) {
+              handleWelcomeConnect(connections[0]);
+            }
+          }}
         />
 
         {/* Connection Modal available from Welcome page */}

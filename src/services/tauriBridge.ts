@@ -347,27 +347,44 @@ export const streamSqlQuery = async (
   }
 };
 
-// ─── Credentials (OS keychain + Web Fallback) ────────────────────────
+// ─── Credentials (OS keychain + Web/LocalStorage Fallback) ────────────
 const webPasswordStore = new Map<string, string>();
 
 export const saveDbPassword = async (connectionId: string, password: string): Promise<void> => {
+  if (!connectionId) return;
   webPasswordStore.set(connectionId, password);
-  try { sessionStorage.setItem(`devdash_pwd_${connectionId}`, password); } catch { }
+  try {
+    sessionStorage.setItem(`devdash_pwd_${connectionId}`, password);
+    localStorage.setItem(`devdash_pwd_${connectionId}`, password);
+  } catch { }
   if (!isTauriAvailable()) return;
-  await invoke('save_db_password', { connectionId, password });
+  try {
+    await invoke('save_db_password', { connectionId, password });
+  } catch (e) {
+    console.warn('OS Keychain save failed, using persistent fallback storage:', e);
+  }
 };
 
 export const getDbPassword = async (connectionId: string): Promise<string | null> => {
-  if (!isTauriAvailable()) {
-    return webPasswordStore.get(connectionId) || sessionStorage.getItem(`devdash_pwd_${connectionId}`) || null;
+  if (!connectionId) return null;
+  if (isTauriAvailable()) {
+    try {
+      const pwd = await invoke<string>('get_db_password', { connectionId });
+      if (pwd) {
+        // Keep in-memory cache in sync
+        webPasswordStore.set(connectionId, pwd);
+        return pwd;
+      }
+    } catch {
+      /* fallthrough to fallback storage */
+    }
   }
-  try {
-    const pwd = await invoke<string>('get_db_password', { connectionId });
-    if (pwd) return pwd;
-  } catch {
-    /* fallthrough */
-  }
-  return webPasswordStore.get(connectionId) || sessionStorage.getItem(`devdash_pwd_${connectionId}`) || null;
+  return (
+    webPasswordStore.get(connectionId) ||
+    sessionStorage.getItem(`devdash_pwd_${connectionId}`) ||
+    localStorage.getItem(`devdash_pwd_${connectionId}`) ||
+    null
+  );
 };
 
 // ─── Safety / staging ────────────────────────────────────────────────

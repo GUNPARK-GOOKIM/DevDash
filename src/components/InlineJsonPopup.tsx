@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Copy, ChevronRight, ChevronDown, X } from 'lucide-react';
 
 interface InlineJsonPopupProps {
@@ -10,6 +10,24 @@ interface InlineJsonPopupProps {
 export const InlineJsonPopup: React.FC<InlineJsonPopupProps> = ({ data, anchorRect, onClose }) => {
   const popupRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
+
+  // Automatically attempt parsing stringified JSON payloads
+  const parsedData = useMemo(() => {
+    if (typeof data === 'string') {
+      try {
+        const trimmed = data.trim();
+        if (
+          (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+          (trimmed.startsWith('[') && trimmed.endsWith(']'))
+        ) {
+          return JSON.parse(trimmed);
+        }
+      } catch {
+        /* Fall back to raw string representation */
+      }
+    }
+    return data;
+  }, [data]);
 
   // Close on click outside or Escape
   useEffect(() => {
@@ -30,23 +48,30 @@ export const InlineJsonPopup: React.FC<InlineJsonPopupProps> = ({ data, anchorRe
   }, [onClose]);
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+    navigator.clipboard.writeText(
+      typeof parsedData === 'object' && parsedData !== null
+        ? JSON.stringify(parsedData, null, 2)
+        : String(parsedData)
+    );
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
 
-  // Position below the cell
+  // Position below cell with viewport overflow boundary safety
+  const safeLeft = Math.min(window.innerWidth - 440, Math.max(8, anchorRect.left - 40));
+  const safeTop = Math.min(window.innerHeight - 380, Math.max(8, anchorRect.top + anchorRect.height + 4));
+
   const style: React.CSSProperties = {
     position: 'fixed',
-    top: anchorRect.top + anchorRect.height + 4,
-    left: Math.max(8, anchorRect.left - 40),
+    top: safeTop,
+    left: safeLeft,
     zIndex: 9999,
-    maxWidth: 420,
+    width: 420,
     maxHeight: 360,
   };
 
   return (
-    <div ref={popupRef} style={style} className="bg-surface border border-border rounded-lg shadow-2xl overflow-hidden">
+    <div ref={popupRef} style={style} className="bg-surface border border-border rounded-lg shadow-2xl overflow-hidden animate-fadeIn">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-surface2">
         <span className="text-[10px] text-textMuted font-medium">JSON Inspector</span>
@@ -65,8 +90,8 @@ export const InlineJsonPopup: React.FC<InlineJsonPopupProps> = ({ data, anchorRe
       </div>
       
       {/* Tree */}
-      <div className="p-3 overflow-auto max-h-[300px] font-mono text-[11px] leading-relaxed">
-        <JsonNode value={data} depth={0} />
+      <div className="p-3 overflow-auto max-h-[300px] font-mono text-[11px] leading-relaxed select-text">
+        <JsonNode value={parsedData} depth={0} />
       </div>
     </div>
   );

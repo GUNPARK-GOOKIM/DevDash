@@ -48,13 +48,13 @@ Status meanings: **Complete** = end-to-end from UI through Rust IPC to real engi
 | **Query cancel** | ✅ Complete | AbortHandle map + Cancel button in SQL editor |
 | **Server-side table pagination** | ✅ Complete | `LIMIT/OFFSET` + `COUNT(*)` using Settings page size |
 | **FK-aware introspection + ERD** | ✅ Complete | Live FK catalog on columns; ERD loads full schema with relation edges |
-| **Persisted query history panel** | ✅ Complete | App SQLite history + side panel (footer → History) |
+| **Persisted query history panel** | ✅ Complete | App SQLite history + side panel + Welcome Workspace Recent Queries view with pagination |
 | **Connection read-only mode** | ✅ Complete | Blocks write/DDL from editor and runner |
 | **Git-style staged cell edits + transactional commit** | ✅ Complete | `staged_edits.rs` applies escaped `UPDATE`s in a transaction; UI stages + commit tab wired |
 | **Safe Mode destructive SQL gate** | ✅ Complete | `safe_mode.rs` + confirmation modal |
-| **OS keychain passwords** | ✅ Complete | `credentials.rs` via `keyring` |
+| **OS keychain passwords & dual-tier persistence** | ✅ Complete | `credentials.rs` via `keyring` + persistent `localStorage` fallback across app launches |
 | **SSH tunnel** | ⚠️ Partial | `ssh_tunnel.rs` opens local forward; session-per-connection is heavy / limited |
-| **Local AI (Ollama) + cloud LLM providers** | ⚠️ Partial | Browser `fetch` to Ollama/OpenAI/Claude from UI — works when configured; not embedded offline AI |
+| **Local AI (Ollama) + Cloud LLMs** | ✅ Complete | Schema-aware Text-to-SQL powered by offline Ollama (`qwen2.5-coder`), OpenAI, Claude, & DeepSeek with write safety interception |
 | **EXPLAIN plan visualizer** | ✅ Complete | `ExplainVisualizer.tsx` parses live PostgreSQL / MySQL / SQLite `EXPLAIN` JSON trees |
 | **Health / metrics grid** | ⚠️ Partial | Live metrics IPC for PG/MySQL/SQLite; QPS/slow queries depend on engine stats extensions |
 | **Routines manager** | ✅ Complete | Live catalog queries (`pg_proc` / `information_schema.ROUTINES` + triggers); execute / open in console |

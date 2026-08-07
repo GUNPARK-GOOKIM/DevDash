@@ -5,11 +5,23 @@ import {
   Plus, Search, Database, Upload, Star, Clock, Trash2,
   Server, ChevronRight, Zap, ArrowRight, FolderOpen,
   Edit3, Copy, ExternalLink, MoreHorizontal, Settings,
-  Users, Layers, Sparkles, Shield, AlertTriangle
+  Users, Layers, Sparkles, Shield, AlertTriangle, X
 } from 'lucide-react';
+
+export interface WelcomeQueryHistoryItem {
+  id: string;
+  sql: string;
+  connectionName?: string;
+  engine?: string;
+  timestamp: string;
+  executionTimeMs: number;
+  status: 'success' | 'error';
+  errorMessage?: string;
+}
 
 interface WelcomePageProps {
   connections: ConnectionConfig[];
+  queryHistory?: WelcomeQueryHistoryItem[];
   onConnect: (conn: ConnectionConfig) => void;
   onNewConnection: (kind?: DbKind) => void;
   onDeleteConnection: (id: string) => void;
@@ -17,6 +29,7 @@ interface WelcomePageProps {
   onImportConnections: (file: File) => void;
   onOpenSettings: () => void;
   recentConnectionIds: string[];
+  onSelectQuery?: (sql: string) => void;
 }
 
 // DB type metadata: icon color, label, icon emoji, default port, category
@@ -151,6 +164,7 @@ const SpotlightTiltCard: React.FC<{
 
 export const WelcomePage: React.FC<WelcomePageProps> = ({
   connections,
+  queryHistory = [],
   onConnect,
   onNewConnection,
   onDeleteConnection,
@@ -158,11 +172,15 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
   onImportConnections,
   onOpenSettings,
   recentConnectionIds,
+  onSelectQuery,
 }) => {
+  const [activeNavTab, setActiveNavTab] = useState<'connections' | 'shared' | 'queries'>('connections');
   const [search, setSearch] = useState('');
+  const [querySearch, setQuerySearch] = useState('');
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [activeCategory, setActiveCategory] = useState('all');
   const [deleteConfirm, setDeleteConfirm] = useState<ConnectionConfig | null>(null);
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -174,8 +192,19 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
     c.database.toLowerCase().includes(search.toLowerCase())
   );
 
+  const [historyLimit, setHistoryLimit] = useState(10);
+
   // Filter DB cards by active category
   const filteredDbCards = CATEGORY_DBS[activeCategory] || ALL_DBS;
+
+  // Filter query history by search
+  const filteredHistory = queryHistory.filter((h: WelcomeQueryHistoryItem) =>
+    !querySearch || h.sql.toLowerCase().includes(querySearch.toLowerCase()) ||
+    (h.connectionName && h.connectionName.toLowerCase().includes(querySearch.toLowerCase())) ||
+    (h.engine && h.engine.toLowerCase().includes(querySearch.toLowerCase()))
+  );
+
+  const displayedHistory = filteredHistory.slice(0, historyLimit);
 
   // Stagger container variants
   const containerVariants: Variants = {
@@ -248,32 +277,41 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
 
           {/* Navigation Links */}
           <div className="p-2 space-y-0.5 border-b border-border/30 shrink-0 text-xs">
-            <motion.button
-              whileHover={{ x: 4 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 25 }}
-              className="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl bg-accent/15 text-accent font-medium"
+            <button
+              onClick={() => setActiveNavTab('connections')}
+              className={`w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl font-medium transition-colors ${
+                activeNavTab === 'connections'
+                  ? 'bg-accent/15 text-accent font-semibold'
+                  : 'text-textMuted hover:text-text hover:bg-surface2/40'
+              }`}
             >
               <Database className="w-4 h-4 shrink-0" />
               <span>My Connections</span>
-            </motion.button>
+            </button>
 
-            <motion.button
-              whileHover={{ x: 4 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 25 }}
-              className="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-textMuted hover:text-text hover:bg-surface2/40 transition-colors"
+            <button
+              onClick={() => setActiveNavTab('shared')}
+              className={`w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl font-medium transition-colors ${
+                activeNavTab === 'shared'
+                  ? 'bg-accent/15 text-accent font-semibold'
+                  : 'text-textMuted hover:text-text hover:bg-surface2/40'
+              }`}
             >
               <Users className="w-4 h-4 shrink-0" />
               <span>Shared Projects</span>
-            </motion.button>
+            </button>
 
-            <motion.button
-              whileHover={{ x: 4 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 25 }}
-              className="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-textMuted hover:text-text hover:bg-surface2/40 transition-colors"
+            <button
+              onClick={() => setActiveNavTab('queries')}
+              className={`w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl font-medium transition-colors ${
+                activeNavTab === 'queries'
+                  ? 'bg-accent/15 text-accent font-semibold'
+                  : 'text-textMuted hover:text-text hover:bg-surface2/40'
+              }`}
             >
               <Clock className="w-4 h-4 shrink-0" />
               <span>Recent Queries</span>
-            </motion.button>
+            </button>
           </div>
 
           {/* Saved Connections List */}
@@ -354,93 +392,320 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
           {/* Central Hero Ambient Background Light Source */}
           <div className="absolute top-12 left-1/2 -translate-x-1/2 w-[600px] h-[350px] bg-gradient-to-b from-indigo-500/15 via-purple-500/8 to-transparent blur-3xl pointer-events-none rounded-full" />
 
-          {/* Central Content */}
-          <div className="max-w-4xl w-full mx-auto px-8 py-12 relative z-10 flex flex-col items-center">
+          {/* View 1: MY CONNECTIONS */}
+          {activeNavTab === 'connections' && (
+            <div className="max-w-4xl w-full mx-auto px-8 py-12 relative z-10 flex flex-col items-center">
+              <motion.div variants={itemVariants} className="text-center mb-10">
+                <motion.img
+                  src="/logo.png"
+                  alt="DevDash Logo"
+                  className="w-24 h-24 mx-auto mb-4 object-contain filter drop-shadow-2xl"
+                  whileHover={{ scale: 1.05, rotate: 2 }}
+                  transition={{ type: 'spring', stiffness: 300 }}
+                />
+                <h1 className="text-3xl font-bold text-white tracking-tight mb-2 font-sans">
+                  DevDash Workspace
+                </h1>
+                <p className="text-textMuted text-sm max-w-md mx-auto leading-relaxed">
+                  Connect and manage your data ecosystem.
+                </p>
+              </motion.div>
 
-            {/* Central Hero Header */}
-            <motion.div variants={itemVariants} className="text-center mb-10">
-              <motion.img
-                src="/logo.png"
-                alt="DevDash Logo"
-                className="w-24 h-24 mx-auto mb-4 object-contain filter drop-shadow-2xl"
-                whileHover={{ scale: 1.05, rotate: 2 }}
-                transition={{ type: 'spring', stiffness: 300 }}
-              />
-              <h1 className="text-3xl font-bold text-white tracking-tight mb-2 font-sans">
-                DevDash Workspace
-              </h1>
-              <p className="text-textMuted text-sm max-w-md mx-auto leading-relaxed">
-                Connect and manage your data ecosystem.
-              </p>
-            </motion.div>
+              {/* Category Filter Bar */}
+              <motion.div variants={itemVariants} className="mb-10">
+                <div className="flex items-center space-x-1 p-1.5 rounded-2xl bg-surface2/30 border border-border/40 backdrop-blur-md">
+                  {CATEGORIES.map((cat) => {
+                    const isActive = activeCategory === cat.id;
+                    return (
+                      <button
+                        key={cat.id}
+                        onClick={() => setActiveCategory(cat.id)}
+                        className={`relative px-4 py-1.5 rounded-xl text-xs font-mono transition-colors z-10 ${
+                          isActive ? 'text-white font-semibold' : 'text-textMuted hover:text-text'
+                        }`}
+                      >
+                        {isActive && (
+                          <motion.div
+                            layoutId="activeCategoryPill"
+                            className="absolute inset-0 rounded-xl bg-surface2/80 border border-border/80 shadow-inner shadow-white/5 backdrop-blur-md"
+                            transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+                          />
+                        )}
+                        <span className="relative z-10">{cat.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </motion.div>
 
-            {/* Category Filter Bar (Framer Motion Animated Active Indicator) */}
-            <motion.div variants={itemVariants} className="mb-10">
-              <div className="flex items-center space-x-1 p-1.5 rounded-2xl bg-surface2/30 border border-border/40 backdrop-blur-md">
-                {CATEGORIES.map((cat) => {
-                  const isActive = activeCategory === cat.id;
+              {/* Quick Connect Cards Grid */}
+              <motion.div
+                variants={itemVariants}
+                className="w-full grid grid-cols-4 gap-3.5 mb-10"
+              >
+                {filteredDbCards.map((dbType) => {
+                  const meta = DB_META[dbType];
                   return (
-                    <button
-                      key={cat.id}
-                      onClick={() => setActiveCategory(cat.id)}
-                      className={`relative px-4 py-1.5 rounded-xl text-xs font-mono transition-colors z-10 ${
-                        isActive ? 'text-white font-semibold' : 'text-textMuted hover:text-text'
-                      }`}
-                    >
-                      {isActive && (
-                        <motion.div
-                          layoutId="activeCategoryPill"
-                          className="absolute inset-0 rounded-xl bg-surface2/80 border border-border/80 shadow-inner shadow-white/5 backdrop-blur-md"
-                          transition={{ type: 'spring', stiffness: 400, damping: 30 }}
-                        />
-                      )}
-                      <span className="relative z-10">{cat.label}</span>
-                    </button>
+                    <SpotlightTiltCard
+                      key={dbType}
+                      dbType={dbType}
+                      meta={meta}
+                      onConnect={() => onNewConnection(dbType)}
+                    />
                   );
                 })}
+              </motion.div>
+
+              {/* Import file drop trigger */}
+              <motion.div variants={itemVariants} className="w-full text-center pt-4 border-t border-border/20">
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="inline-flex items-center space-x-2 text-xs text-textMuted hover:text-accent transition-colors"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Import connection config file (.json or .devdash)</span>
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".json,.devdash"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) onImportConnections(file);
+                  }}
+                />
+              </motion.div>
+            </div>
+          )}
+
+          {/* View 2: SHARED PROJECTS */}
+          {activeNavTab === 'shared' && (
+            <div className="max-w-4xl w-full mx-auto px-8 py-12 relative z-10 flex flex-col items-center">
+              <div className="text-center mb-8">
+                <div className="w-12 h-12 rounded-2xl bg-accent/20 border border-accent/30 flex items-center justify-center mx-auto mb-3 text-accent">
+                  <Users className="w-6 h-6" />
+                </div>
+                <h2 className="text-2xl font-bold text-white tracking-tight mb-1 font-sans">
+                  Shared Team Projects & Vaults
+                </h2>
+                <p className="text-xs text-textMuted max-w-md mx-auto leading-relaxed">
+                  Import shared project bundles, AES-256 encrypted QR codes, or team connection vaults.
+                </p>
               </div>
-            </motion.div>
 
-            {/* Quick Connect Cards Grid (Spotlight + 3D Tilt) */}
-            <motion.div
-              variants={itemVariants}
-              className="w-full grid grid-cols-4 gap-3.5 mb-10"
-            >
-              {filteredDbCards.map((dbType) => {
-                const meta = DB_META[dbType];
-                return (
-                  <SpotlightTiltCard
-                    key={dbType}
-                    dbType={dbType}
-                    meta={meta}
-                    onConnect={() => onNewConnection(dbType)}
+              {/* Shared Vault Actions */}
+              <div className="grid grid-cols-2 gap-4 w-full mb-8">
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  className="p-5 rounded-2xl bg-surface2/30 border border-border/40 hover:border-accent/50 cursor-pointer transition-all space-y-3 group"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center">
+                    <FolderOpen className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-white group-hover:text-accent transition-colors">
+                      Import Team Bundle (.devdash)
+                    </h3>
+                    <p className="text-xs text-textMuted mt-1 leading-relaxed">
+                      Load an encrypted team workspace bundle or standard connection JSON file.
+                    </p>
+                  </div>
+                  <button className="text-xs text-accent font-medium inline-flex items-center space-x-1">
+                    <span>Browse Files</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                <div
+                  onClick={() => onNewConnection()}
+                  className="p-5 rounded-2xl bg-surface2/30 border border-border/40 hover:border-accent/50 cursor-pointer transition-all space-y-3 group"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center">
+                    <Zap className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-white group-hover:text-accent transition-colors">
+                      Add Shared Vault Link
+                    </h3>
+                    <p className="text-xs text-textMuted mt-1 leading-relaxed">
+                      Paste a connection string or encrypted payload shared by your team member.
+                    </p>
+                  </div>
+                  <button className="text-xs text-purple-400 font-medium inline-flex items-center space-x-1">
+                    <span>Paste Vault Payload</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Shared Connections List */}
+              <div className="w-full bg-surface/30 border border-border/40 rounded-2xl p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-white">Available Shared Connections ({connections.length})</span>
+                  <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+                    AES-256 Keyring Protected
+                  </span>
+                </div>
+
+                {connections.length === 0 ? (
+                  <div className="p-8 text-center text-xs text-textMuted">
+                    No shared connection bundles imported yet. Click "Import Team Bundle" above to import.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-3">
+                    {connections.map((c) => (
+                      <div
+                        key={c.id}
+                        onClick={() => onConnect(c)}
+                        className="p-3.5 rounded-xl bg-surface2/40 border border-border/30 hover:border-accent/50 cursor-pointer transition-all flex items-center justify-between"
+                      >
+                        <div className="flex items-center space-x-3 min-w-0">
+                          <div className="w-8 h-8 rounded-lg bg-accent/20 text-accent flex items-center justify-center font-bold text-xs uppercase">
+                            {c.db_type.slice(0, 2)}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-xs font-semibold text-white truncate">{c.name}</div>
+                            <div className="text-[10px] text-textMuted font-mono truncate">{c.host}:{c.port}</div>
+                          </div>
+                        </div>
+                        <ArrowRight className="w-4 h-4 text-textMuted group-hover:text-accent" />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* View 3: RECENT QUERIES */}
+          {activeNavTab === 'queries' && (
+            <div className="max-w-4xl w-full mx-auto px-8 py-12 relative z-10 flex flex-col items-center">
+              <div className="text-center mb-6">
+                <div className="w-12 h-12 rounded-2xl bg-accent/20 border border-accent/30 flex items-center justify-center mx-auto mb-3 text-accent">
+                  <Clock className="w-6 h-6" />
+                </div>
+                <h2 className="text-2xl font-bold text-white tracking-tight mb-1 font-sans">
+                  Recent Query Log
+                </h2>
+                <p className="text-xs text-textMuted max-w-md mx-auto leading-relaxed">
+                  Cross-database query execution audit log across all active connections.
+                </p>
+              </div>
+
+              {/* History Search Bar */}
+              <div className="w-full mb-6">
+                <div className="flex items-center bg-surface2/40 border border-border/40 rounded-xl px-3.5 py-2.5 text-xs">
+                  <Search className="w-4 h-4 text-textMuted mr-2.5 shrink-0" />
+                  <input
+                    type="text"
+                    value={querySearch}
+                    onChange={(e) => setQuerySearch(e.target.value)}
+                    placeholder="Search queries by SQL keyword, connection, or engine..."
+                    className="w-full bg-transparent outline-none text-text placeholder-textMuted/60 text-xs"
                   />
-                );
-              })}
-            </motion.div>
+                  {querySearch && (
+                    <button onClick={() => setQuerySearch('')} className="text-textMuted hover:text-white">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
 
-            {/* Import file drop trigger */}
-            <motion.div variants={itemVariants} className="w-full text-center pt-4 border-t border-border/20">
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="inline-flex items-center space-x-2 text-xs text-textMuted hover:text-accent transition-colors"
-              >
-                <Upload className="w-3.5 h-3.5" />
-                <span>Import connection config file (.json or .devdash)</span>
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".json,.devdash"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) onImportConnections(file);
-                }}
-              />
-            </motion.div>
+              {/* Query History Log List */}
+              <div className="w-full space-y-2.5">
+                {filteredHistory.length === 0 ? (
+                  <div className="p-12 text-center bg-surface/30 border border-border/30 rounded-2xl space-y-2">
+                    <Clock className="w-8 h-8 text-textMuted/40 mx-auto" />
+                    <div className="text-xs text-textMuted">No recent query executions logged yet.</div>
+                    <div className="text-[11px] text-textMuted/60">Queries executed in SQL Editor or NoSQL inspector will appear here automatically.</div>
+                  </div>
+                ) : (
+                  <>
+                    {displayedHistory.map((item: WelcomeQueryHistoryItem, idx: number) => (
+                      <div
+                        key={item.id || idx}
+                        className="p-4 rounded-xl bg-surface/40 border border-border/40 hover:border-border/80 transition-all space-y-2.5"
+                      >
+                        <div className="flex items-center justify-between text-xs">
+                          <div className="flex items-center space-x-2">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase ${
+                              item.status === 'success'
+                                ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                                : 'bg-error/15 text-error border border-error/30'
+                            }`}>
+                              {item.status}
+                            </span>
+                            {item.engine && (
+                              <span className="text-[10px] font-mono text-textMuted bg-surface2/60 px-2 py-0.5 rounded border border-border/30">
+                                {item.engine}
+                              </span>
+                            )}
+                            {item.connectionName && (
+                              <span className="text-[11px] font-semibold text-text">
+                                {item.connectionName}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center space-x-3 text-[11px] text-textMuted font-mono">
+                            <span>{item.executionTimeMs}ms</span>
+                            <span>•</span>
+                            <span>{new Date(item.timestamp).toLocaleTimeString()}</span>
+                          </div>
+                        </div>
 
-          </div>
+                        {/* SQL Code Block */}
+                        <pre className="bg-[#0B0B0D] p-3 rounded-lg border border-border/30 font-mono text-xs text-accent/90 overflow-x-auto whitespace-pre-wrap leading-relaxed">
+                          {item.sql}
+                        </pre>
+
+                        {item.errorMessage && (
+                          <div className="text-[11px] text-error bg-error/10 border border-error/20 p-2 rounded-lg leading-relaxed">
+                            {item.errorMessage}
+                          </div>
+                        )}
+
+                        {/* Quick Action Bar */}
+                        <div className="flex items-center justify-end space-x-2 pt-1">
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(item.sql);
+                              setCopiedIndex(idx);
+                              setTimeout(() => setCopiedIndex(null), 1500);
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-surface2/50 hover:bg-surface2 text-textMuted hover:text-text text-[11px] flex items-center space-x-1 transition-colors"
+                          >
+                            <Copy className="w-3 h-3" />
+                            <span>{copiedIndex === idx ? 'Copied!' : 'Copy SQL'}</span>
+                          </button>
+                          {onSelectQuery && (
+                            <button
+                              onClick={() => onSelectQuery(item.sql)}
+                              className="px-2.5 py-1 rounded-lg bg-accent/20 hover:bg-accent/30 text-accent text-[11px] font-medium flex items-center space-x-1 transition-colors"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                              <span>Open Query</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+
+                    {filteredHistory.length > historyLimit && (
+                      <div className="text-center pt-3">
+                        <button
+                          onClick={() => setHistoryLimit(prev => prev + 10)}
+                          className="px-4 py-2 rounded-xl bg-surface2/60 hover:bg-surface2 text-accent border border-border/40 text-xs font-semibold transition-all shadow-sm"
+                        >
+                          Show More Queries (+10) — Showing {displayedHistory.length} of {filteredHistory.length}
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </main>
       </motion.div>
 
