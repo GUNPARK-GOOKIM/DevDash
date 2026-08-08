@@ -41,6 +41,9 @@ use crate::db::transactions::{TransactionManager, TxStatus};
 use crate::db::diagnostics::{run_connection_diagnostics, ConnectionDiagnostics};
 use crate::db::profiler::{profile_query, QueryProfile};
 use crate::db::migrations_log::{self, MigrationRun};
+use crate::db::migration_apply::{self, ApplyMigrationResult};
+use crate::db::admin_catalog::{self, DbProcess, DbRole, DbRoutine};
+use crate::db::ai_assist::{self, AiAssistRequest, AiAssistResponse};
 use crate::db::redis::{self, RedisKeyInfo};
 use crate::db::duckdb_engine::DuckDbManager;
 use crate::db::result_snapshots::{
@@ -752,16 +755,6 @@ pub async fn profile_sql_query(
 }
 
 // ─── Migration apply workflow ────────────────────────────────────────
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct ApplyMigrationResult {
-    pub success: bool,
-    pub dry_run: bool,
-    pub statements_run: i64,
-    pub duration_ms: f64,
-    pub error: Option<String>,
-    pub run_id: String,
-}
-
 #[tauri::command]
 pub async fn apply_migration_sql(
     connection_id: String,
@@ -771,114 +764,20 @@ pub async fn apply_migration_sql(
     dry_run: bool,
     state: State<'_, AppState>,
 ) -> Result<ApplyMigrationResult, String> {
-    use std::time::Instant;
     if !dry_run {
         state.connection_manager.ensure_writes_allowed(&connection_id)?;
     }
-    let start = Instant::now();
     let pool = state.connection_manager.get_pool(&connection_id)?;
-    let run_id = migrations_log::new_run_id();
-
-    // Split on ; outside strings (simple)
-    let statements: Vec<String> = split_sql_simple(&sql_script);
-    if statements.is_empty() {
-        return Err("No SQL statements to apply".into());
-    }
-
-    if dry_run {
-        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
-        let run = MigrationRun {
-            id: run_id.clone(),
-            source_connection: source_label,
-            target_connection: target_label,
-            sql_script,
-            dry_run: true,
-            success: true,
-            error: None,
-            statements_run: statements.len() as i64,
-            duration_ms,
-            created_at: chrono::Utc::now().to_rfc3339(),
-        };
-        let _ = migrations_log::log_migration_run(state.storage.pool(), &run).await;
-        return Ok(ApplyMigrationResult {
-            success: true,
-            dry_run: true,
-            statements_run: statements.len() as i64,
-            duration_ms,
-            error: None,
-            run_id,
-        });
-    }
-
-    // Apply inside a real transaction
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| format!("Failed to begin migration transaction: {}", e))?;
-    let mut ran = 0i64;
-    for stmt in &statements {
-        match sqlx::query(stmt).execute(&mut *tx).await {
-            Ok(_) => ran += 1,
-            Err(e) => {
-                let _ = tx.rollback().await;
-                let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
-                let err = format!("Statement {} failed: {}", ran + 1, e);
-                let run = MigrationRun {
-                    id: run_id.clone(),
-                    source_connection: source_label,
-                    target_connection: target_label,
-                    sql_script,
-                    dry_run: false,
-                    success: false,
-                    error: Some(err.clone()),
-                    statements_run: ran,
-                    duration_ms,
-                    created_at: chrono::Utc::now().to_rfc3339(),
-                };
-                let _ = migrations_log::log_migration_run(state.storage.pool(), &run).await;
-                return Ok(ApplyMigrationResult {
-                    success: false,
-                    dry_run: false,
-                    statements_run: ran,
-                    duration_ms,
-                    error: Some(err),
-                    run_id,
-                });
-            }
-        }
-    }
-    tx.commit()
-        .await
-        .map_err(|e| format!("Migration COMMIT failed: {}", e))?;
-    let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
-    let run = MigrationRun {
-        id: run_id.clone(),
-        source_connection: source_label,
-        target_connection: target_label,
-        sql_script,
-        dry_run: false,
-        success: true,
-        error: None,
-        statements_run: ran,
-        duration_ms,
-        created_at: chrono::Utc::now().to_rfc3339(),
-    };
-    let _ = migrations_log::log_migration_run(state.storage.pool(), &run).await;
-    let _ = audit::log_action(
+    migration_apply::apply_migration_sql(
+        &pool,
+        state.storage.pool(),
         &connection_id,
-        "MIGRATION",
-        &format!("Applied {} statements", ran),
-        ran as u64,
-        "SUCCESS",
-    );
-    Ok(ApplyMigrationResult {
-        success: true,
-        dry_run: false,
-        statements_run: ran,
-        duration_ms,
-        error: None,
-        run_id,
-    })
+        &source_label,
+        &target_label,
+        &sql_script,
+        dry_run,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -887,92 +786,6 @@ pub async fn list_migration_runs(
     state: State<'_, AppState>,
 ) -> Result<Vec<MigrationRun>, String> {
     migrations_log::list_migration_runs(state.storage.pool(), limit.unwrap_or(50)).await
-}
-
-/// Split SQL on `;` outside quotes, skipping line/block comments (aligned with frontend splitter).
-fn split_sql_simple(sql: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-    let chars: Vec<char> = sql.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        let next = chars.get(i + 1).copied();
-
-        if in_line_comment {
-            cur.push(c);
-            if c == '\n' {
-                in_line_comment = false;
-            }
-            i += 1;
-            continue;
-        }
-        if in_block_comment {
-            cur.push(c);
-            if c == '*' && next == Some('/') {
-                cur.push('/');
-                i += 2;
-                in_block_comment = false;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-
-        if !in_single && !in_double {
-            if c == '-' && next == Some('-') {
-                cur.push(c);
-                in_line_comment = true;
-                i += 1;
-                continue;
-            }
-            if c == '/' && next == Some('*') {
-                cur.push(c);
-                in_block_comment = true;
-                i += 1;
-                continue;
-            }
-        }
-
-        if c == '\'' && !in_double {
-            if in_single && next == Some('\'') {
-                cur.push('\'');
-                cur.push('\'');
-                i += 2;
-                continue;
-            }
-            in_single = !in_single;
-            cur.push(c);
-            i += 1;
-            continue;
-        }
-        if c == '"' && !in_single {
-            in_double = !in_double;
-            cur.push(c);
-            i += 1;
-            continue;
-        }
-        if c == ';' && !in_single && !in_double {
-            let t = cur.trim().to_string();
-            if !t.is_empty() {
-                out.push(t);
-            }
-            cur.clear();
-            i += 1;
-            continue;
-        }
-        cur.push(c);
-        i += 1;
-    }
-    let t = cur.trim().to_string();
-    if !t.is_empty() {
-        out.push(t);
-    }
-    out
 }
 
 // IPC Command: Stream dynamic query rows in chunks of 500 rows over Tauri IPC events
@@ -1551,5 +1364,51 @@ pub async fn fetch_redis_keys(
     let mut client = redis::RedisClient::connect(&host, port, password.as_deref()).await?;
     let pat = pattern.as_deref().unwrap_or("*");
     client.fetch_keys(pat).await
+}
+
+#[tauri::command]
+pub async fn list_database_processes(
+    connection_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<DbProcess>, String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let db_kind = state
+        .connection_manager
+        .get_db_type(&connection_id)
+        .unwrap_or_else(|_| "postgres".into());
+    admin_catalog::list_processes(&pool, &db_kind).await
+}
+
+#[tauri::command]
+pub async fn list_db_roles(
+    connection_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<DbRole>, String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let db_kind = state
+        .connection_manager
+        .get_db_type(&connection_id)
+        .unwrap_or_else(|_| "postgres".into());
+    admin_catalog::list_roles(&pool, &db_kind).await
+}
+
+#[tauri::command]
+pub async fn list_db_routines(
+    connection_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<DbRoutine>, String> {
+    let pool = state.connection_manager.get_pool(&connection_id)?;
+    let db_kind = state
+        .connection_manager
+        .get_db_type(&connection_id)
+        .unwrap_or_else(|_| "postgres".into());
+    admin_catalog::list_routines(&pool, &db_kind).await
+}
+
+#[tauri::command]
+pub async fn generate_sql_assist(req: AiAssistRequest) -> Result<AiAssistResponse, String> {
+    tokio::task::spawn_blocking(move || ai_assist::complete_sql_blocking(&req))
+        .await
+        .map_err(|e| format!("AI assist task failed: {e}"))?
 }
 

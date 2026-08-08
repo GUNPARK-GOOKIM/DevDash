@@ -11,7 +11,7 @@
 
 **DevDash** is a **local-first native database GUI client** built with **Tauri 2.0 + Rust** and **React 18 TypeScript**. Core SQL workflows (connect, introspect, query, stage/edit, export/import) target **PostgreSQL, MySQL/MariaDB, and SQLite** (plus Postgres wire-compat engines CockroachDB/Redshift). Status of each capability is tracked in the matrix below — verified from code and tests, not marketing copy.
 
-[Architecture Reference](docs/ARCHITECTURE.md) • [Capability Status](#-capability--status-matrix) • [Key Features](#-key-features) • [Download](#-download--installation) • [OS Bypass Guide](#-os-security--bypass-guide)
+[Architecture Reference](docs/ARCHITECTURE.md) • [Capability Status](#-capability--status-matrix) • [Key Features](#-key-features) • [DevDash CLI](#-devdash-cli) • [Download](#-download--installation) • [OS Bypass Guide](#-os-security--bypass-guide)
 
 </div>
 
@@ -80,6 +80,7 @@ Status meanings: **Complete** = end-to-end from UI through Rust IPC to real engi
 | **Environment-aware connections** | ✅ Complete | `dev`/`staging`/`prod`/`other` tags; **prod forces RO** unless explicit write opt-in (`connectionEnv.ts`) |
 | **Staging → SQL patch export** | ✅ Complete | Checked stages → `BEGIN…COMMIT` script via `stagingSqlPatch.ts` |
 | **Query result snapshots + diff** | ✅ Complete | Local AppStorage meta+rows; paged added/removed/changed (first-col key, max 100k rows) |
+| **DevDash CLI** | ✅ Complete | `devdash` binary (`--features cli`); install script; shared catalog + keyring + AppStorage with the GUI |
 | **Cloud IAM auth** | ❌ Missing | Struct stub only (`CloudIamConfig`) |
 | **&lt;20MB RAM claim** | ❓ Unverified | Not measured in CI |
 
@@ -230,6 +231,30 @@ Because DevDash is an open-source project and installers are compiled directly f
 
 ---
 
+## 🖥️ DevDash CLI
+
+**DevDash Desktop** is the visual workspace. **DevDash CLI** is its terminal companion: same Rust core, same OS keyring, same `~/.config/devdash/` catalog and AppStorage.
+
+Full v1 guide (quick start, command tree, config precedence, exit codes, scripting, troubleshooting): **[`docs/CLI.md`](docs/CLI.md)**.
+
+Install from a clone (the `curl …/main/…` one-liner is published only after this lands on `main`):
+
+```bash
+cargo install --path src-tauri --bin devdash --locked --no-default-features --features cli
+```
+
+Quick start:
+
+```bash
+devdash doctor
+devdash connect add --name local --url 'postgres://user@localhost:5432/app'
+devdash connect test
+devdash sql 'select 1'
+devdash repl
+```
+
+---
+
 ## 🚀 Developer Quickstart & Verification
 
 ```bash
@@ -246,8 +271,8 @@ npx tsc --noEmit
 # 4. Run Architecture Integrity Audit
 python scripts/check-architecture.py
 
-# 5. Run Rust unit/integration tests
-cd src-tauri && cargo test --lib && cd ..
+# 5. Run Rust unit/integration tests (GUI lib + CLI)
+cd src-tauri && cargo test --lib --features cli && cd ..
 
 # 6. Run in Development Mode (Vite only, or full Tauri)
 npm run dev

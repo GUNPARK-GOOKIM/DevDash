@@ -25,6 +25,19 @@ pub enum EngineDialect {
     Sqlite,
 }
 
+impl EngineDialect {
+    pub fn from_db_kind(kind: &str) -> Result<Self, String> {
+        match kind.to_lowercase().as_str() {
+            "postgres" | "postgresql" | "cockroachdb" | "redshift" => Ok(Self::Postgres),
+            "mysql" | "mariadb" => Ok(Self::Mysql),
+            "sqlite" | "duckdb" | "turso" => Ok(Self::Sqlite),
+            other => Err(format!(
+                "No SQL dialect mapping for '{other}' (need postgres, mysql, or sqlite family)"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MigrationDiffResult {
     pub table_name: String,

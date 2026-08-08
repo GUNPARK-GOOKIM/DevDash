@@ -310,6 +310,7 @@ fn format_fetched_rows(rows: Vec<AnyRow>, start_time: Instant) -> QueryResultPay
 }
 
 // Chunked stream payload for emitting partial query row blocks
+#[cfg(feature = "gui")]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StreamChunkPayload {
     pub query_id: String,
@@ -318,6 +319,7 @@ pub struct StreamChunkPayload {
 }
 
 // Event payload emitted when dynamic query stream finishes
+#[cfg(feature = "gui")]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StreamDonePayload {
     pub query_id: String,
@@ -368,6 +370,7 @@ pub async fn cancel_backend_process(pool: &AnyPool, pid_or_thread_id: u32, db_ki
 }
 
 // Stream dynamic query results in chunks of chunk_size (default 500) to prevent RAM bloating
+#[cfg(feature = "gui")]
 pub async fn stream_dynamic_query<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     pool: &AnyPool,
@@ -562,6 +565,7 @@ pub async fn execute_pg_query_on_conn(
     })
 }
 
+#[cfg(feature = "gui")]
 pub async fn stream_pg_query<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     pool: &sqlx::PgPool,
@@ -754,6 +758,7 @@ pub async fn execute_mysql_query_on_conn(
     })
 }
 
+#[cfg(feature = "gui")]
 pub async fn stream_mysql_query<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     pool: &sqlx::MySqlPool,
@@ -867,6 +872,7 @@ pub async fn execute_query_for_managed(
     execute_dynamic_query(&conn.pool, sql).await
 }
 
+#[cfg(feature = "gui")]
 pub async fn stream_query_for_managed<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     conn: &ManagedConnection,
@@ -1030,6 +1036,7 @@ pub async fn execute_mssql_query(
     execute_mssql_query_on_conn(&mut *conn, sql).await
 }
 
+#[cfg(feature = "gui")]
 pub async fn stream_mssql_query<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     managed_conn: &ManagedConnection,

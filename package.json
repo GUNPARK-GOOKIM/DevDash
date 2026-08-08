@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test:smoke": "node scripts/smoke-frontend.mjs",
-    "test:arch": "python3 scripts/check-architecture.py"
+    "test:arch": "python3 scripts/check-architecture.py",
+    "devdash": "cargo run --manifest-path src-tauri/Cargo.toml --bin devdash --no-default-features --features cli --"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

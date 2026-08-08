@@ -1,15 +1,24 @@
 // Main library module defining DevDash Tauri application builder and setup
+#[cfg(feature = "gui")]
 pub mod commands; // Export commands module containing IPC command handlers
 pub mod db; // Export database module containing core DB components
+#[cfg(feature = "cli")]
+pub mod cli; // Terminal companion (devdash binary)
 
+#[cfg(feature = "gui")]
 use commands::AppState; // Import AppState struct from commands module
+#[cfg(feature = "gui")]
 use db::app_storage::AppStorage; // Import AppStorage struct from db::app_storage module
+#[cfg(feature = "gui")]
 use db::pool::ConnectionManager; // Import ConnectionManager struct from db::pool module
+#[cfg(feature = "gui")]
 use std::sync::Arc; // Import Arc from standard library for thread-safe state sharing
 
+#[cfg(feature = "gui")]
 use db::ssh_tunnel::SshTunnelManager; // Import SshTunnelManager struct
 
 // Initialize and configure Tauri application instance
+#[cfg(feature = "gui")]
 pub fn run() { // Entry point library run function for Tauri application
     ConnectionManager::init_drivers(); // Initialize sqlx dynamic database drivers for Postgres, MySQL, and SQLite
     
@@ -123,6 +132,10 @@ pub fn run() { // Entry point library run function for Tauri application
             commands::apply_migration_sql,
             commands::list_migration_runs,
             commands::fetch_redis_keys,
+            commands::list_database_processes,
+            commands::list_db_roles,
+            commands::list_db_routines,
+            commands::generate_sql_assist,
         ])
         .run(tauri::generate_context!()) // Run Tauri application context
         .expect("error while running devdash tauri application"); // Handle application runtime errors
