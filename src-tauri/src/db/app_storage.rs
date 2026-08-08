@@ -123,6 +123,11 @@ impl AppStorage { // Implementation block for AppStorage struct
             );",
         ).execute(&pool).await.map_err(|e| format!("Failed migration 4: {}", e))?;
 
+        // Result snapshots (meta + rows) — local query result capture / diff
+        crate::db::result_snapshots::ensure_snapshot_schema(&pool)
+            .await
+            .map_err(|e| format!("Failed migration snapshots: {}", e))?;
+
         Ok(Self { pool }) // Return initialized AppStorage instance
     } // End of AppStorage constructor
 

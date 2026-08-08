@@ -8,6 +8,7 @@ pub enum ExportFormat { // Define export format enum
     Csv, // Comma-separated values format
     Json, // JSON array format
     SqlDump, // SQL INSERT statement dump format
+    Parquet, // Apache Parquet (binary; returned as base64 from IPC)
 } // End of ExportFormat enum
 
 // Export configuration payload struct
@@ -172,6 +173,108 @@ pub async fn export_sql_dump_filtered(
     Ok(output)
 }
 
+/// Build Apache Parquet bytes from column names + stringified cell values (nullable Utf8).
+pub fn write_parquet_from_columns(
+    col_names: &[String],
+    column_data: &[Vec<Option<String>>],
+) -> Result<Vec<u8>, String> {
+    use std::sync::Arc;
+
+    use arrow_array::{ArrayRef, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use parquet::arrow::ArrowWriter;
+    use parquet::basic::Compression;
+    use parquet::file::properties::WriterProperties;
+
+    if col_names.is_empty() {
+        return Err("Cannot write Parquet without columns".to_string());
+    }
+    if column_data.len() != col_names.len() {
+        return Err("Column name / data length mismatch".to_string());
+    }
+    let row_count = column_data[0].len();
+    if column_data.iter().any(|c| c.len() != row_count) {
+        return Err("Jagged column lengths".to_string());
+    }
+
+    let fields: Vec<Field> = col_names
+        .iter()
+        .map(|n| Field::new(n.as_str(), DataType::Utf8, true))
+        .collect();
+    let schema = Arc::new(Schema::new(fields));
+
+    let arrays: Vec<ArrayRef> = column_data
+        .iter()
+        .map(|col| {
+            let arr = StringArray::from(col.clone());
+            Arc::new(arr) as ArrayRef
+        })
+        .collect();
+
+    let batch = RecordBatch::try_new(schema.clone(), arrays)
+        .map_err(|e| format!("Parquet RecordBatch failed: {}", e))?;
+
+    let mut buffer: Vec<u8> = Vec::new();
+    {
+        let props = WriterProperties::builder()
+            .set_compression(Compression::SNAPPY)
+            .build();
+        let mut writer = ArrowWriter::try_new(&mut buffer, schema, Some(props))
+            .map_err(|e| format!("Parquet writer init failed: {}", e))?;
+        writer
+            .write(&batch)
+            .map_err(|e| format!("Parquet write failed: {}", e))?;
+        writer
+            .close()
+            .map_err(|e| format!("Parquet close failed: {}", e))?;
+    }
+    Ok(buffer)
+}
+
+fn json_value_to_optional_string(v: &Value) -> Option<String> {
+    match v {
+        Value::Null => None,
+        Value::String(s) => Some(s.clone()),
+        other => Some(other.to_string()),
+    }
+}
+
+/// Full-table Parquet via the managed connection query path.
+pub async fn export_parquet_filtered(
+    conn: &ManagedConnection,
+    table_name: &str,
+    mysql_style: bool,
+    where_clause: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    let (cols, rows) = fetch_table_data(conn, table_name, mysql_style, where_clause).await?;
+    if cols.is_empty() {
+        return write_parquet_from_columns(
+            &["_empty".to_string()],
+            &[Vec::<Option<String>>::new()],
+        );
+    }
+    export_parquet_from_json_rows(&cols, &rows)
+}
+
+/// Parquet from pre-materialized JSON rows (current page / client-side export path).
+pub fn export_parquet_from_json_rows(
+    columns: &[String],
+    rows: &[Vec<Value>],
+) -> Result<Vec<u8>, String> {
+    if columns.is_empty() {
+        return Err("No columns for Parquet export".to_string());
+    }
+    let mut column_data: Vec<Vec<Option<String>>> =
+        columns.iter().map(|_| Vec::with_capacity(rows.len())).collect();
+    for row in rows {
+        for (i, _) in columns.iter().enumerate() {
+            let cell = row.get(i).unwrap_or(&Value::Null);
+            column_data[i].push(json_value_to_optional_string(cell));
+        }
+    }
+    write_parquet_from_columns(columns, &column_data)
+}
+
 // Parse CSV string and return as structured data
 pub fn parse_csv(csv_data: &str, has_headers: bool) -> Result<(Vec<String>, Vec<Vec<String>>), String> { // CSV parser function
     let mut lines = csv_data.lines(); // Split input into line iterator
@@ -223,5 +326,19 @@ mod tests { // Unit test module
         assert_eq!(ExportFormat::Csv, ExportFormat::Csv); // Assert CSV equality
         assert_ne!(ExportFormat::Csv, ExportFormat::Json); // Assert CSV != JSON
         assert_ne!(ExportFormat::Json, ExportFormat::SqlDump); // Assert JSON != SqlDump
+        assert_ne!(ExportFormat::Parquet, ExportFormat::Csv);
     } // End test function
+
+    #[test]
+    fn test_write_parquet_roundtrip_bytes() {
+        let cols = vec!["id".to_string(), "name".to_string()];
+        let data = vec![
+            vec![Some("1".to_string()), Some("2".to_string())],
+            vec![Some("alice".to_string()), None],
+        ];
+        let bytes = write_parquet_from_columns(&cols, &data).unwrap();
+        assert!(bytes.len() > 8);
+        assert_eq!(&bytes[0..4], b"PAR1");
+        assert_eq!(&bytes[bytes.len() - 4..], b"PAR1");
+    }
 } // End tests module

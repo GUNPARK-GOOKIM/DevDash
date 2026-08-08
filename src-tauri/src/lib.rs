@@ -38,6 +38,7 @@ pub fn run() { // Entry point library run function for Tauri application
         active_queries: tokio::sync::Mutex::new(std::collections::HashMap::new()), // Initialize query tracker map
         ssh_tunnel_manager, // Set ssh_tunnel_manager field
         tx_manager: db::transactions::TransactionManager::new(),
+        duckdb: db::duckdb_engine::DuckDbManager::new(),
     }; // End of AppState instantiation
 
     tauri::Builder::default() // Create default Tauri application builder
@@ -101,6 +102,11 @@ pub fn run() { // Entry point library run function for Tauri application
             commands::import_csv_content,
             commands::export_encrypted_data,
             commands::import_encrypted_data,
+            commands::export_rows_parquet,
+            commands::save_result_snapshot,
+            commands::list_result_snapshots,
+            commands::delete_result_snapshot,
+            commands::diff_result_snapshots,
             commands::export_connections_to_text,
             commands::import_connections_from_text,
             commands::get_audit_log,

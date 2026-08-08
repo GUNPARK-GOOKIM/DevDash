@@ -1,6 +1,9 @@
-import React, { useState, useRef } from 'react';
-import { Download, Key, Shield, CheckCircle, AlertTriangle, X, Lock, Camera, QrCode } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  Download, Key, Shield, CheckCircle, AlertTriangle, X, Lock, FileText, Camera, QrCode,
+} from 'lucide-react';
 import { importConnectionsFromText } from '../services/tauriBridge';
+import { decodeQrFromImageData, decodeQrFromImageFile } from '../utils/qrShare';
 
 interface SecureImportModalProps {
   isOpen: boolean;
@@ -18,37 +21,106 @@ export const SecureImportModal: React.FC<SecureImportModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successCount, setSuccessCount] = useState<number | null>(null);
-  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const [scanning, setScanning] = useState(false);
+  const textFileRef = useRef<HTMLInputElement>(null);
+  const imageFileRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const scanTimerRef = useRef<number | null>(null);
+
+  const stopCamera = () => {
+    if (scanTimerRef.current != null) {
+      window.clearInterval(scanTimerRef.current);
+      scanTimerRef.current = null;
+    }
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    setScanning(false);
+  };
+
+  useEffect(() => {
+    if (!isOpen) stopCamera();
+    return () => stopCamera();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
-  const handleCameraCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleTextFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onload = (event) => {
-      const resultStr = event.target?.result as string;
-      if (resultStr) {
-        // If file is JSON or plain text containing encrypted file payload
-        try {
-          if (resultStr.includes('salt_b64') || resultStr.includes('ciphertext_b64')) {
-            setEncryptedPayload(resultStr.trim());
-            setError(null);
-          } else {
-            setEncryptedPayload(resultStr.trim());
-          }
-        } catch {
-          setEncryptedPayload(resultStr.trim());
-        }
-      }
+      const resultStr = (event.target?.result as string) || '';
+      setEncryptedPayload(resultStr.trim());
+      setError(null);
     };
     reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  const handleQrImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await decodeQrFromImageFile(file);
+      setEncryptedPayload(data);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to decode QR from image');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const startCameraScan = async () => {
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false,
+      });
+      streamRef.current = stream;
+      setScanning(true);
+      // Wait for video element mount
+      requestAnimationFrame(() => {
+        const video = videoRef.current;
+        if (!video) return;
+        video.srcObject = stream;
+        video.play().catch(() => undefined);
+        scanTimerRef.current = window.setInterval(() => {
+          const v = videoRef.current;
+          if (!v || v.readyState < 2) return;
+          const canvas = document.createElement('canvas');
+          canvas.width = v.videoWidth;
+          canvas.height = v.videoHeight;
+          if (canvas.width < 8 || canvas.height < 8) return;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return;
+          ctx.drawImage(v, 0, 0);
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const data = decodeQrFromImageData(imageData);
+          if (data) {
+            setEncryptedPayload(data);
+            setError(null);
+            stopCamera();
+          }
+        }, 400);
+      });
+    } catch (err: any) {
+      setScanning(false);
+      setError(
+        err?.message ||
+          'Camera access denied or unavailable. Use QR image file or paste text instead.'
+      );
+    }
   };
 
   const handleImport = async () => {
     if (!encryptedPayload.trim()) {
-      setError('Please paste the encrypted connection payload string.');
+      setError('Please paste the encrypted payload, load a file, or scan a QR code.');
       return;
     }
     if (!passphrase.trim()) {
@@ -78,8 +150,7 @@ export const SecureImportModal: React.FC<SecureImportModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-      <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col">
-        {/* Modal Header */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/50">
           <div className="flex items-center space-x-3">
             <div className="p-2 bg-indigo-500/10 border border-indigo-500/20 rounded-lg text-indigo-400">
@@ -93,20 +164,22 @@ export const SecureImportModal: React.FC<SecureImportModalProps> = ({
                 </span>
               </h3>
               <p className="text-xs text-slate-400">
-                Paste an encrypted payload from Slack/Email to restore connection profiles.
+                Paste encrypted text, load a file, or scan a QR code from image/camera.
               </p>
             </div>
           </div>
           <button
-            onClick={onClose}
+            onClick={() => {
+              stopCamera();
+              onClose();
+            }}
             className="text-slate-400 hover:text-slate-200 p-1.5 rounded-lg hover:bg-slate-800 transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Modal Body */}
-        <div className="p-6 space-y-4">
+        <div className="p-6 space-y-4 overflow-y-auto">
           {error && (
             <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 rounded-lg text-rose-400 text-sm flex items-start gap-2">
               <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
@@ -125,35 +198,68 @@ export const SecureImportModal: React.FC<SecureImportModalProps> = ({
           ) : (
             <>
               <div>
-                <div className="flex items-center justify-between mb-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
                   <label className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                    Encrypted Payload (Paste Base64/JSON string)
+                    Encrypted Payload
                   </label>
-                  <input
-                    type="file"
-                    ref={cameraInputRef}
-                    accept="image/*"
-                    capture="environment"
-                    className="hidden"
-                    onChange={handleCameraCapture}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => cameraInputRef.current?.click()}
-                    className="flex items-center space-x-1.5 px-2.5 py-1 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded-lg text-xs font-medium transition-colors"
-                  >
-                    <Camera className="w-3.5 h-3.5" />
-                    <span>Scan QR / Image</span>
-                  </button>
+                  <div className="flex flex-wrap gap-1.5">
+                    <input
+                      type="file"
+                      ref={textFileRef}
+                      accept=".json,.txt,.devdash,text/*"
+                      className="hidden"
+                      onChange={handleTextFile}
+                    />
+                    <input
+                      type="file"
+                      ref={imageFileRef}
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handleQrImage}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => textFileRef.current?.click()}
+                      className="flex items-center space-x-1 px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-[11px] font-medium"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      <span>Text file</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => imageFileRef.current?.click()}
+                      className="flex items-center space-x-1 px-2 py-1 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded-lg text-[11px] font-medium"
+                    >
+                      <QrCode className="w-3.5 h-3.5" />
+                      <span>QR image</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => (scanning ? stopCamera() : startCameraScan())}
+                      className="flex items-center space-x-1 px-2 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-lg text-[11px] font-medium"
+                    >
+                      <Camera className="w-3.5 h-3.5" />
+                      <span>{scanning ? 'Stop camera' : 'Camera scan'}</span>
+                    </button>
+                  </div>
                 </div>
                 <textarea
                   rows={4}
-                  placeholder="Paste encrypted payload from Slack, Email, or QR scan..."
+                  placeholder="Paste encrypted payload, or scan a QR…"
                   value={encryptedPayload}
                   onChange={(e) => setEncryptedPayload(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
                 />
               </div>
+
+              {scanning && (
+                <div className="rounded-lg overflow-hidden border border-slate-700 bg-black">
+                  <video ref={videoRef} className="w-full max-h-48 object-cover" muted playsInline />
+                  <p className="text-[10px] text-center text-slate-400 py-1.5 bg-slate-950">
+                    Point the camera at a DevDash share QR code…
+                  </p>
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
@@ -174,17 +280,19 @@ export const SecureImportModal: React.FC<SecureImportModalProps> = ({
               <div className="p-3 bg-slate-950/60 border border-slate-800/80 rounded-lg text-xs text-slate-400 flex items-center gap-2">
                 <Shield className="w-4 h-4 text-emerald-400 shrink-0" />
                 <span>
-                  Decryption occurs entirely offline in native Rust binaries. No keys leave your computer.
+                  Decryption is local. Do not share the passphrase in the same channel as the QR/text payload.
                 </span>
               </div>
             </>
           )}
         </div>
 
-        {/* Modal Footer */}
         <div className="px-6 py-4 border-t border-slate-800 flex items-center justify-end space-x-3 bg-slate-950/50">
           <button
-            onClick={onClose}
+            onClick={() => {
+              stopCamera();
+              onClose();
+            }}
             className="px-4 py-2 text-sm font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors"
           >
             Cancel
@@ -196,7 +304,7 @@ export const SecureImportModal: React.FC<SecureImportModalProps> = ({
               className="px-4 py-2 text-sm font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg transition-colors flex items-center space-x-2 shadow-lg shadow-indigo-600/20"
             >
               <Lock className="w-4 h-4" />
-              <span>{loading ? 'Decrypting...' : 'Decrypt & Import Connection'}</span>
+              <span>{loading ? 'Working…' : 'Decrypt & Import Connection'}</span>
             </button>
           )}
         </div>

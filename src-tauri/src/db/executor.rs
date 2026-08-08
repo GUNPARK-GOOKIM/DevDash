@@ -325,13 +325,40 @@ pub struct StreamDonePayload {
     pub total_rows: u64,
 }
 
+/// Best-effort backend session id used for protocol-level cancel (PG/MySQL).
+pub async fn fetch_backend_pid(
+    conn: &mut sqlx::pool::PoolConnection<sqlx::Any>,
+    db_kind: &str,
+) -> Option<u32> {
+    let sql = match db_kind.to_lowercase().as_str() {
+        "postgres" | "postgresql" | "cockroachdb" | "redshift" => "SELECT pg_backend_pid()",
+        "mysql" | "mariadb" => "SELECT CONNECTION_ID()",
+        _ => return None,
+    };
+    let row = sqlx::query(sql).fetch_one(&mut **conn).await.ok()?;
+    if let Ok(v) = row.try_get::<i64, _>(0) {
+        return Some(v as u32);
+    }
+    if let Ok(v) = row.try_get::<i32, _>(0) {
+        return Some(v as u32);
+    }
+    None
+}
+
 // GAP 12: Protocol-level Backend Process Termination
 pub async fn cancel_backend_process(pool: &AnyPool, pid_or_thread_id: u32, db_kind: &str) -> Result<(), String> {
     let cancel_sql = match db_kind.to_lowercase().as_str() {
-        "postgres" | "cockroachdb" | "redshift" => format!("SELECT pg_cancel_backend({})", pid_or_thread_id),
+        "postgres" | "postgresql" | "cockroachdb" | "redshift" => {
+            format!("SELECT pg_cancel_backend({})", pid_or_thread_id)
+        }
         "mysql" | "mariadb" => format!("KILL QUERY {}", pid_or_thread_id),
         "mssql" => format!("KILL {}", pid_or_thread_id),
-        _ => return Err(format!("Engine {} does not support remote protocol query cancellation", db_kind)),
+        _ => {
+            return Err(format!(
+                "Engine {} does not support remote protocol query cancellation",
+                db_kind
+            ))
+        }
     };
     sqlx::query(&cancel_sql)
         .execute(pool)

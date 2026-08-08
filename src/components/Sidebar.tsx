@@ -205,6 +205,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   )}
                   <Server className="w-3.5 h-3.5 text-accent shrink-0" />
                   <span className="truncate text-[13px]">{conn.name}</span>
+                  {conn.environment && (
+                    <span
+                      className={`shrink-0 text-[8px] font-bold px-1 py-0.5 rounded border leading-none ${
+                        conn.environment === 'prod'
+                          ? 'bg-rose-500/15 text-rose-400 border-rose-500/40'
+                          : conn.environment === 'staging'
+                            ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+                            : conn.environment === 'dev'
+                              ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                              : 'bg-slate-500/15 text-slate-300 border-slate-500/30'
+                      }`}
+                    >
+                      {conn.environment === 'prod'
+                        ? 'PROD'
+                        : conn.environment === 'staging'
+                          ? 'STG'
+                          : conn.environment === 'dev'
+                            ? 'DEV'
+                            : 'OTH'}
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center space-x-1">
                   {isSelected && <CheckCircle2 className="w-3.5 h-3.5 text-accent shrink-0" />}

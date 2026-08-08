@@ -59,7 +59,8 @@ pub fn log_action(
         sql: sql.to_string(),
         affected_rows,
         status: status.to_string(),
-        client_ip: "127.0.0.1".to_string(),
+        // Desktop app has no remote client; record local loopback explicitly as "local".
+        client_ip: "local".to_string(),
     };
     append_audit_entry(&default_audit_dir(), &entry)
 }

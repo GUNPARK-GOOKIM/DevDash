@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { StagedChange } from '../types';
-import { CheckSquare, Square, Pencil, Plus, Trash2 } from 'lucide-react';
+import { CheckSquare, Square, Pencil, Plus, Trash2, FileDown, Copy, Check } from 'lucide-react';
 
 interface StagingCommitProps {
   stagedChanges: StagedChange[];
@@ -8,6 +8,10 @@ interface StagingCommitProps {
   onToggleAll: (checked: boolean) => void;
   onCommit: (message: string) => void;
   onDiscard: (id: string) => void;
+  /** Build + download SQL patch for checked changes (does not apply). */
+  onExportSqlPatch?: (message: string) => void;
+  /** Copy SQL patch to clipboard. */
+  onCopySqlPatch?: (message: string) => void;
 }
 
 export const StagingCommit: React.FC<StagingCommitProps> = ({
@@ -16,6 +20,8 @@ export const StagingCommit: React.FC<StagingCommitProps> = ({
   onToggleAll,
   onCommit,
   onDiscard,
+  onExportSqlPatch,
+  onCopySqlPatch,
 }) => {
   const autoMessage = useMemo(() => {
     const grouped: Record<string, { updates: number; inserts: number; deletes: number }> = {};
@@ -37,6 +43,7 @@ export const StagingCommit: React.FC<StagingCommitProps> = ({
   }, [stagedChanges]);
 
   const [commitMessage, setCommitMessage] = useState('');
+  const [copiedPatch, setCopiedPatch] = useState(false);
   const displayMessage = commitMessage || autoMessage;
 
   const allChecked = stagedChanges.length > 0 && stagedChanges.every(c => c.checked);
@@ -122,12 +129,42 @@ export const StagingCommit: React.FC<StagingCommitProps> = ({
               className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text placeholder-textMuted resize-none h-20 focus:border-accent/50 focus:outline-none transition-colors"
             />
           </div>
+          <div className="flex gap-2">
+            {onCopySqlPatch && (
+              <button
+                type="button"
+                onClick={() => {
+                  onCopySqlPatch(displayMessage);
+                  setCopiedPatch(true);
+                  setTimeout(() => setCopiedPatch(false), 2000);
+                }}
+                disabled={checkedCount === 0}
+                className="flex-1 py-2 rounded-lg font-medium text-xs transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-surface2 border border-border text-text hover:bg-surface flex items-center justify-center gap-1.5"
+                title="Copy SQL patch (BEGIN…COMMIT) without applying"
+              >
+                {copiedPatch ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                {copiedPatch ? 'Copied' : 'Copy SQL'}
+              </button>
+            )}
+            {onExportSqlPatch && (
+              <button
+                type="button"
+                onClick={() => onExportSqlPatch(displayMessage)}
+                disabled={checkedCount === 0}
+                className="flex-1 py-2 rounded-lg font-medium text-xs transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-surface2 border border-border text-text hover:bg-surface flex items-center justify-center gap-1.5"
+                title="Download .sql patch without applying"
+              >
+                <FileDown className="w-3.5 h-3.5" />
+                Export .sql
+              </button>
+            )}
+          </div>
           <button
             onClick={() => onCommit(displayMessage)}
             disabled={checkedCount === 0}
             className="w-full py-2.5 rounded-lg font-medium text-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-success hover:bg-success/90 text-white"
           >
-            Commit (Cmd+Enter)
+            Apply to database (Cmd+Enter)
           </button>
         </div>
       )}

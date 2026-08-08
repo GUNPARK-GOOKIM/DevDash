@@ -1,31 +1,40 @@
 # Security Policy
 
-## 🛡️ Supported Versions
+## Supported Versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 1.0.x   | :white_check_mark: |
-| < 1.0   | :x:                |
+| Version | Supported |
+| ------- | --------- |
+| 0.1.x / 1.0.x (current app) | Yes (best-effort) |
+| Unreleased / untagged builds | Use at your own risk |
 
----
+## Reporting a Vulnerability
 
-## 🔒 Reporting a Vulnerability
+If you discover a security vulnerability in DevDash (credential exposure, SQL injection in app-generated SQL, IPC issues):
 
-The DevDash core team takes the security of our application and users very seriously.
+1. **Do not open a public GitHub issue** for unfixed vulnerabilities.
+2. Report privately to the project maintainers.
+3. Include steps to reproduce and impact.
 
-If you discover a security vulnerability in DevDash (e.g. credential exposure, SQL injection vectors, or IPC sandbox escape):
+Response time is best-effort (this is an open-source project, not a commercial SLA).
 
-1. **Do NOT open a public GitHub issue**.
-2. Please report the vulnerability privately via security contact or by emailing the project maintainers directly.
-3. Include detailed steps to reproduce the issue along with proof-of-concept code where applicable.
+## Security Features (Implemented in Code)
 
-We will respond to your report within **24 hours** and provide periodic updates regarding patch deployment.
+| Feature | Reality |
+| ------- | ------- |
+| **OS keyring passwords** | Passwords saved via the `keyring` crate (`src-tauri/src/db/credentials.rs`), not in plain text connection JSON. |
+| **Encrypted connection export** | Passphrase + PBKDF2 + AES-256-GCM (`encrypted_export.rs`). Text + real QR encode/decode (`src/utils/qrShare.ts`). Large multi-profile payloads may exceed QR capacity — text always works. |
+| **Safe Mode** | Destructive SQL detection in `safe_mode.rs`; UI confirmation modal; server rejects destructive SQL unless `allow_destructive` is set after confirm (or Safe Mode is off). |
+| **Connection read-only** | Stored on the pool; server blocks write/DDL SQL and mutation IPC. |
+| **Local audit log** | Append-only JSONL under the user config dir (`audit.rs`). **Not** SOC 2, HIPAA, or any certified control. |
 
----
+## What We Do **Not** Claim
 
-## 🔐 Security Features in DevDash
+- SOC 2 Type II, HIPAA, GDPR certification, or compliance product status  
+- Tamper-proof or signed audit trails  
+- Cloud IAM authentication  
+- Perfect SQL injection immunity on every code path  
+- Mobile/Android signed store distribution  
 
-- **Native OS Keyring Isolation**: Database credentials are saved securely in native system keyrings (`keyring` Rust crate) rather than plain-text configuration files.
-- **Passphrase-Protected AES-256-GCM Encrypted Backups**: Configuration backups are encrypted using authenticated AES-256-GCM payloads.
-- **Safe Mode Destructive Query Shield**: Destructive SQL queries (`DROP`, `TRUNCATE`, un-bounded `UPDATE`/`DELETE`) trigger mandatory user confirmation dialogs before execution.
-- **SOC2 & HIPAA Audit Trail**: All database queries and administrative actions are logged to an append-only `audit_log.jsonl` file.
+## Recommendation for Production Databases
+
+Treat DevDash like any powerful database client: use least-privilege DB users, prefer read-only connections for production, enable Safe Mode, and do not paste production credentials into cloud LLM settings unless you accept that risk.

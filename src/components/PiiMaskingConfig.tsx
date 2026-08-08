@@ -53,7 +53,7 @@ export const PiiMaskingConfig: React.FC<PiiMaskingConfigProps> = ({
         <div className="px-5 py-3.5 border-b border-border flex items-center justify-between bg-surface/90">
           <div className="flex items-center space-x-2 text-indigo-400 font-semibold text-sm">
             <EyeOff className="w-4 h-4" />
-            <span className="text-text">Data Masking & PII Protection Engine (GDPR/HIPAA)</span>
+            <span className="text-text">Data Masking Rules (local display / export)</span>
           </div>
           <button onClick={onClose} className="p-1 rounded text-textMuted hover:text-text hover:bg-surface2 transition-colors">
             <X className="w-4 h-4" />
@@ -101,7 +101,7 @@ export const PiiMaskingConfig: React.FC<PiiMaskingConfigProps> = ({
                     <option value="FULL">•••••••• (FULL)</option>
                     <option value="LAST_FOUR">••••-••••-1234 (LAST 4)</option>
                     <option value="PARTIAL_EMAIL">a***e@example.com</option>
-                    <option value="HASH_SHA256">SHA-256 Hash</option>
+                    <option value="HASH_SHA256">Stable fingerprint (not crypto SHA-256)</option>
                   </select>
                   <button onClick={() => deleteRule(r.id)} className="text-textMuted hover:text-red-400">
                     <Trash2 className="w-3.5 h-3.5" />

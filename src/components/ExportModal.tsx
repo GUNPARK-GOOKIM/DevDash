@@ -33,7 +33,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     { id: 'sql', label: 'SQL Dump', sub: 'INSERT Statements', icon: <FileText className="w-5 h-5 text-purple-400" /> },
     { id: 'jsonl', label: 'JSON Lines', sub: 'Streaming / BigData', icon: <FileCode className="w-5 h-5 text-sky-400" /> },
     { id: 'markdown', label: 'Markdown', sub: 'GFM Markdown Table', icon: <Layers className="w-5 h-5 text-pink-400" /> },
-    { id: 'parquet', label: 'Parquet', sub: 'Not implemented', icon: <Download className="w-5 h-5 text-slate-600" />, disabled: true },
+    { id: 'parquet', label: 'Parquet', sub: 'Apache Parquet (Snappy)', icon: <Download className="w-5 h-5 text-orange-400" /> },
   ];
 
   return (

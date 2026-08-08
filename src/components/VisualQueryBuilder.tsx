@@ -91,12 +91,18 @@ export const VisualQueryBuilder: React.FC<VisualQueryBuilderProps> = ({
       sql += `\n${j.joinType} JOIN ${j.targetTable} ON ${selectedTable}.${j.leftColumn} = ${j.targetTable}.${j.rightColumn}`;
     });
 
-    // Add Filters
+    // Add Filters (escape string literals; quote identifiers simply as bare names from UI lists)
     if (filters.length > 0) {
       const whereClauses = filters.map((f) => {
         if (f.operator === 'IS NULL') return `${selectedTable}.${f.column} IS NULL`;
-        const val = isNaN(Number(f.value)) ? `'${f.value}'` : f.value;
-        return `${selectedTable}.${f.column} ${f.operator} ${val}`;
+        const raw = f.value;
+        // Numeric literals without quotes when the whole value is a finite number
+        if (raw.trim() !== '' && !isNaN(Number(raw)) && Number.isFinite(Number(raw))) {
+          return `${selectedTable}.${f.column} ${f.operator} ${Number(raw)}`;
+        }
+        // Escape single quotes for SQL string literals
+        const escaped = raw.replace(/'/g, "''");
+        return `${selectedTable}.${f.column} ${f.operator} '${escaped}'`;
       });
       sql += `\nWHERE ${whereClauses.join(' AND ')}`;
     }

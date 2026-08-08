@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
-import { Shield, Key, Copy, Check, QrCode, Lock, Share2, X, AlertTriangle } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Shield, Key, Copy, Check, Lock, Share2, X, AlertTriangle, QrCode } from 'lucide-react';
 import { exportConnectionsToText } from '../services/tauriBridge';
+import { canEncodeAsQr, encodePayloadToQrDataUrl } from '../utils/qrShare';
 
 interface SecureShareModalProps {
   isOpen: boolean;
@@ -20,10 +21,46 @@ export const SecureShareModal: React.FC<SecureShareModalProps> = ({
   );
   const [passphrase, setPassphrase] = useState('');
   const [encryptedOutput, setEncryptedOutput] = useState<string | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [qrError, setQrError] = useState<string | null>(null);
+  const [view, setView] = useState<'text' | 'qr'>('text');
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'text' | 'qr'>('text');
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (!encryptedOutput) {
+        setQrDataUrl(null);
+        setQrError(null);
+        return;
+      }
+      if (!canEncodeAsQr(encryptedOutput)) {
+        setQrDataUrl(null);
+        setQrError(
+          `Payload too large for QR (${encryptedOutput.length} chars). Use the text tab or select fewer profiles.`
+        );
+        return;
+      }
+      try {
+        const url = await encodePayloadToQrDataUrl(encryptedOutput);
+        if (!cancelled) {
+          setQrDataUrl(url);
+          setQrError(null);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setQrDataUrl(null);
+          setQrError(String(e instanceof Error ? e.message : e));
+        }
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [encryptedOutput]);
 
   if (!isOpen) return null;
 
@@ -50,6 +87,7 @@ export const SecureShareModal: React.FC<SecureShareModalProps> = ({
     try {
       const output = await exportConnectionsToText(selectedIds, passphrase);
       setEncryptedOutput(output);
+      setView(canEncodeAsQr(output) ? 'qr' : 'text');
     } catch (err: any) {
       setError(err?.message || 'Failed to encrypt and export connections.');
     } finally {
@@ -67,7 +105,6 @@ export const SecureShareModal: React.FC<SecureShareModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
       <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-        {/* Modal Header */}
         <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/50">
           <div className="flex items-center space-x-3">
             <div className="p-2 bg-indigo-500/10 border border-indigo-500/20 rounded-lg text-indigo-400">
@@ -75,13 +112,13 @@ export const SecureShareModal: React.FC<SecureShareModalProps> = ({
             </div>
             <div>
               <h3 className="text-lg font-semibold text-slate-100 flex items-center gap-2">
-                100% Offline Secure Connection Share
+                Encrypted Connection Share
                 <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">
                   AES-256-GCM
                 </span>
               </h3>
               <p className="text-xs text-slate-400">
-                Encrypt and share connection parameters safely via Slack, Email, or QR Code.
+                Encrypt profiles to a passphrase-protected payload. Share as text or scan a real QR code.
               </p>
             </div>
           </div>
@@ -93,7 +130,6 @@ export const SecureShareModal: React.FC<SecureShareModalProps> = ({
           </button>
         </div>
 
-        {/* Modal Body */}
         <div className="p-6 overflow-y-auto space-y-5 flex-1">
           {error && (
             <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 rounded-lg text-rose-400 text-sm flex items-start gap-2">
@@ -104,7 +140,6 @@ export const SecureShareModal: React.FC<SecureShareModalProps> = ({
 
           {!encryptedOutput ? (
             <>
-              {/* Select Connections */}
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
                   Select Profiles to Package
@@ -138,7 +173,6 @@ export const SecureShareModal: React.FC<SecureShareModalProps> = ({
                 </div>
               </div>
 
-              {/* Passphrase Input */}
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
                   Set Shared Encryption Passphrase
@@ -153,47 +187,45 @@ export const SecureShareModal: React.FC<SecureShareModalProps> = ({
                     className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-10 pr-4 py-2.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
                   />
                 </div>
-                <p className="text-[11px] text-slate-500 mt-1.5">
-                  Your teammate will enter this exact passphrase to decrypt and import the profiles.
-                </p>
               </div>
 
               <div className="p-3.5 bg-slate-950/60 border border-slate-800/80 rounded-lg text-xs text-slate-400 space-y-1">
                 <div className="flex items-center text-slate-300 font-medium gap-1.5">
-                  <Shield className="w-4 h-4 text-emerald-400" /> 100% Zero-Trust Privacy
+                  <Shield className="w-4 h-4 text-emerald-400" /> Passphrase + AES-256-GCM + optional QR
                 </div>
                 <p>
-                  Passwords are key-derived locally with PBKDF2 (100,000 iterations). Plaintext credentials never touch network servers.
+                  Large multi-profile payloads may exceed QR capacity; text copy always works.
                 </p>
               </div>
             </>
           ) : (
             <div className="space-y-4">
-              {/* Output Tab Controls */}
               <div className="flex border-b border-slate-800">
                 <button
-                  onClick={() => setActiveTab('text')}
+                  type="button"
+                  onClick={() => setView('text')}
                   className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
-                    activeTab === 'text'
+                    view === 'text'
                       ? 'border-indigo-500 text-indigo-400'
                       : 'border-transparent text-slate-400 hover:text-slate-200'
                   }`}
                 >
-                  <Copy className="w-4 h-4" /> Encrypted Text Payload
+                  <Copy className="w-4 h-4" /> Text
                 </button>
                 <button
-                  onClick={() => setActiveTab('qr')}
+                  type="button"
+                  onClick={() => setView('qr')}
                   className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
-                    activeTab === 'qr'
+                    view === 'qr'
                       ? 'border-indigo-500 text-indigo-400'
                       : 'border-transparent text-slate-400 hover:text-slate-200'
                   }`}
                 >
-                  <QrCode className="w-4 h-4" /> Visual QR Code
+                  <QrCode className="w-4 h-4" /> QR Code
                 </button>
               </div>
 
-              {activeTab === 'text' ? (
+              {view === 'text' ? (
                 <div>
                   <div className="relative">
                     <textarea
@@ -218,31 +250,38 @@ export const SecureShareModal: React.FC<SecureShareModalProps> = ({
                     </button>
                   </div>
                   <p className="text-xs text-slate-400 mt-2">
-                    Paste this encrypted blob into Slack, Teams, or Email for your teammate.
+                    Paste this encrypted blob into Slack, Teams, or Email.
                   </p>
                 </div>
               ) : (
-                <div className="flex flex-col items-center justify-center p-6 bg-slate-950 rounded-lg border border-slate-800 space-y-3">
-                  <div className="p-4 bg-white rounded-xl shadow-lg">
-                    {/* SVG Based QR Code Representation */}
-                    <div className="w-48 h-48 bg-slate-900 rounded flex flex-col items-center justify-center text-center p-3 text-slate-400 text-xs space-y-2 border border-slate-700">
-                      <QrCode className="w-16 h-16 text-indigo-400 animate-pulse" />
-                      <span className="font-mono text-[10px] text-slate-300 break-all line-clamp-3 px-2">
-                        {encryptedOutput.substring(0, 40)}...
-                      </span>
-                      <span className="text-[10px] text-emerald-400 font-semibold uppercase">
-                        Scan with DevDash Mobile
-                      </span>
+                <div className="flex flex-col items-center justify-center p-4 bg-slate-950 rounded-lg border border-slate-800 space-y-3">
+                  {qrDataUrl ? (
+                    <>
+                      <img
+                        src={qrDataUrl}
+                        alt="Encrypted connection share QR code"
+                        className="w-64 h-64 rounded-lg bg-white p-2 shadow-lg"
+                      />
+                      <p className="text-xs text-slate-400 text-center">
+                        Scan with DevDash import (image) or any QR reader that returns the text payload.
+                      </p>
+                    </>
+                  ) : (
+                    <div className="text-center text-xs text-amber-300/90 space-y-2 p-4">
+                      <AlertTriangle className="w-8 h-8 mx-auto text-amber-400" />
+                      <p>{qrError || 'Generating QR…'}</p>
                     </div>
-                  </div>
-                  <p className="text-xs text-slate-400 text-center">
-                    Point DevDash Mobile or laptop camera to instantly pair connection profiles.
-                  </p>
+                  )}
                 </div>
               )}
 
               <button
-                onClick={() => setEncryptedOutput(null)}
+                onClick={() => {
+                  setEncryptedOutput(null);
+                  setQrDataUrl(null);
+                  setQrError(null);
+                  setView('text');
+                }}
                 className="text-xs text-slate-400 hover:text-slate-200 underline"
               >
                 &larr; Re-encrypt with different passphrase or profiles
@@ -251,7 +290,6 @@ export const SecureShareModal: React.FC<SecureShareModalProps> = ({
           )}
         </div>
 
-        {/* Modal Footer */}
         <div className="px-6 py-4 border-t border-slate-800 flex items-center justify-end space-x-3 bg-slate-950/50">
           <button
             onClick={onClose}

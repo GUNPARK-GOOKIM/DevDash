@@ -238,7 +238,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     onChange={(e) => setLocalSettings({ ...localSettings, queryTimeoutSec: Number(e.target.value) })}
                     className="w-full bg-surface2/60 border border-border rounded-lg px-3 py-1.5 text-text focus:border-accent/50 outline-none"
                   />
-                  <p className="text-[10px] text-textMuted mt-1">Queries taking longer than this limit will be automatically aborted.</p>
+                  <p className="text-[10px] text-textMuted mt-1">
+                    Queries longer than this are aborted server-side (0 = no timeout). Backend cancel is best-effort on Postgres/MySQL.
+                  </p>
                 </div>
 
                 <div className="space-y-2 pt-2 border-t border-border/50">
@@ -306,10 +308,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <label className="block font-medium text-textMuted mb-1.5">AI Provider</label>
                       <div className="grid grid-cols-2 gap-2">
                         {[
-                          { id: 'ollama', name: 'Ollama / Local', desc: '100% Free & Offline', icon: <Cpu className="w-3.5 h-3.5 text-success" /> },
-                          { id: 'claude', name: 'Anthropic Claude', desc: 'Claude Sonnet 4.6', icon: <Sparkles className="w-3.5 h-3.5 text-accent" /> },
-                          { id: 'openai', name: 'OpenAI', desc: 'GPT-4o / Mini', icon: <Globe className="w-3.5 h-3.5 text-blue-400" /> },
-                          { id: 'custom', name: 'Custom OpenAI API', desc: 'DeepSeek / Groq / vLLM', icon: <Key className="w-3.5 h-3.5 text-warning" /> },
+                          { id: 'ollama', name: 'Ollama / Local', desc: 'Requires local Ollama running', icon: <Cpu className="w-3.5 h-3.5 text-success" /> },
+                          { id: 'claude', name: 'Anthropic Claude', desc: 'Cloud API (network + key)', icon: <Sparkles className="w-3.5 h-3.5 text-accent" /> },
+                          { id: 'openai', name: 'OpenAI', desc: 'Cloud API (network + key)', icon: <Globe className="w-3.5 h-3.5 text-blue-400" /> },
+                          { id: 'custom', name: 'Custom OpenAI API', desc: 'Any OpenAI-compatible endpoint', icon: <Key className="w-3.5 h-3.5 text-warning" /> },
                         ].map((p) => (
                           <button
                             key={p.id}

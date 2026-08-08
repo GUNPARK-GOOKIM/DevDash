@@ -10,6 +10,7 @@ export interface ConnectionDetailsPayload {
   password?: string;
   database: string;
   ssl_mode?: string;
+  is_read_only?: boolean;
 }
 
 export interface TestConnectionResultPayload {
@@ -98,6 +99,7 @@ export const connectDatabase = async (
     password: password || '',
     database: conn.database,
     ssl_mode: conn.ssl_mode || 'require',
+    is_read_only: !!conn.is_read_only,
   };
 
   await invoke('connect_database_config', {
@@ -183,13 +185,21 @@ export const getTableColumns = async (
   }
 };
 
+/** Fail-closed PK analysis: never assume a table is editable when analysis is unavailable. */
+const PK_ANALYSIS_UNAVAILABLE: PkInfo = {
+  has_single_pk: false,
+  pk_column_name: undefined,
+  is_read_only: true,
+  read_only_reason: 'Primary key analysis unavailable; grid edits are disabled for safety.',
+};
+
 export const getPkAnalysis = async (
   connectionId: string,
   dbKind: string,
   tableName: string
 ): Promise<PkInfo> => {
   if (!isTauriAvailable()) {
-    return { has_single_pk: true, pk_column_name: 'id', is_read_only: false };
+    return { ...PK_ANALYSIS_UNAVAILABLE };
   }
 
   try {
@@ -199,16 +209,41 @@ export const getPkAnalysis = async (
       tableName,
     });
   } catch (err) {
-    return { has_single_pk: true, pk_column_name: 'id', is_read_only: false };
+    console.warn('get_pk_analysis failed; treating table as read-only:', err);
+    return {
+      ...PK_ANALYSIS_UNAVAILABLE,
+      read_only_reason: `Primary key analysis failed: ${String(err)}. Grid edits are disabled for safety.`,
+    };
   }
 };
 
 export const runSqlQuery = async (
   connectionId: string,
   sql: string,
-  queryId?: string
+  queryId?: string,
+  /** Required for destructive SQL when server Safe Mode is on (default false). */
+  allowDestructive?: boolean,
+  /** Abort after N seconds (0 / undefined = no limit). */
+  queryTimeoutSec?: number
 ): Promise<QueryResultPayload> => {
   if (!isTauriAvailable()) {
+    const lower = sql.toLowerCase().trim();
+    // Browser preview: do not pretend writes succeeded
+    if (
+      /^(insert|update|delete|drop|alter|truncate|create|grant|revoke|replace)\b/i.test(lower)
+    ) {
+      throw new Error(
+        '[Web Preview] Write/DDL is not executed in the browser. Run the native Tauri app.'
+      );
+    }
+    if (/\bcount\s*\(\s*\*\s*\)/i.test(sql) && !lower.includes('group by')) {
+      return {
+        columns: [{ name: 'count', type_name: 'INTEGER' }],
+        rows: [[42]],
+        execution_time_ms: 2,
+        affected_rows: 1,
+      };
+    }
     // Return mock data for web browser preview
     return {
       columns: [
@@ -231,6 +266,11 @@ export const runSqlQuery = async (
     connectionId,
     queryId: qid,
     sql,
+    allowDestructive: allowDestructive === true,
+    queryTimeoutSec:
+      typeof queryTimeoutSec === 'number' && queryTimeoutSec > 0
+        ? Math.floor(queryTimeoutSec)
+        : null,
   });
 };
 
@@ -306,7 +346,8 @@ export const streamSqlQuery = async (
   sql: string,
   onColumns: (columns: { name: string; type_name: string }[]) => void,
   onChunk: (chunk: any[][]) => void,
-  onDone: (executionTimeMs: number, totalRows: number) => void
+  onDone: (executionTimeMs: number, totalRows: number) => void,
+  allowDestructive?: boolean
 ): Promise<void> => {
   if (!isTauriAvailable()) {
     onColumns([{ name: 'id', type_name: 'INTEGER' }, { name: 'data', type_name: 'TEXT' }]);
@@ -338,6 +379,7 @@ export const streamSqlQuery = async (
       queryId,
       sql,
       chunkSize: 500,
+      allowDestructive: allowDestructive === true,
     });
   } catch (err) {
     unlistenCols();
@@ -527,11 +569,12 @@ export const getTableIndexes = async (
   });
 };
 
-/** Full-table export from the engine (not limited to the current UI page). */
+/** Full-table export from the engine (not limited to the current UI page).
+ *  For `parquet`, the string is base64-encoded binary. */
 export const exportTableData = async (
   connectionId: string,
   tableName: string,
-  format: 'csv' | 'json' | 'sql',
+  format: 'csv' | 'json' | 'sql' | 'parquet',
   whereClause?: string
 ): Promise<string> => {
   if (!isTauriAvailable()) {
@@ -570,6 +613,37 @@ export const fetchRedisKeys = async (
   });
 };
 
+/** Current-page / in-memory rows → Parquet base64. */
+export const exportRowsParquet = async (
+  columns: string[],
+  rows: unknown[][]
+): Promise<string> => {
+  if (!isTauriAvailable()) {
+    throw new Error('Parquet export requires the native Tauri desktop app');
+  }
+  return await invoke<string>('export_rows_parquet', { columns, rows });
+};
+
+function base64ToUint8Array(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+export function downloadBase64Parquet(b64: string, filename: string): void {
+  const bytes = base64ToUint8Array(b64);
+  // Copy into a plain ArrayBuffer-backed view for Blob typing across TS versions
+  const ab = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(ab).set(bytes);
+  const blob = new Blob([ab], { type: 'application/vnd.apache.parquet' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename.endsWith('.parquet') ? filename : `${filename}.parquet`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 // ─── Live metrics ────────────────────────────────────────────────────
 export interface DatabaseLiveMetrics {
@@ -610,6 +684,88 @@ export interface AuditLogEntryPayload {
 export const getAuditLog = async (limit = 200): Promise<AuditLogEntryPayload[]> => {
   if (!isTauriAvailable()) return [];
   return await invoke<AuditLogEntryPayload[]>('get_audit_log', { limit });
+};
+
+// ─── Result snapshots (local capture + paged diff) ───────────────────
+export interface SnapshotMeta {
+  id: string;
+  name: string;
+  connection_id: string;
+  connection_name: string;
+  sql_text: string;
+  columns: string[];
+  row_count: number;
+  created_at: string;
+}
+
+export type SnapshotDiffKind = 'added' | 'removed' | 'changed';
+
+export interface SnapshotDiffRow {
+  kind: SnapshotDiffKind;
+  row_key: string;
+  left_row?: unknown[] | null;
+  right_row?: unknown[] | null;
+}
+
+export interface SnapshotDiffResult {
+  left_id: string;
+  right_id: string;
+  added: number;
+  removed: number;
+  changed: number;
+  unchanged: number;
+  rows: SnapshotDiffRow[];
+  total_diff_rows: number;
+  offset: number;
+  limit: number;
+}
+
+export const saveResultSnapshot = async (payload: {
+  name: string;
+  connectionId: string;
+  connectionName: string;
+  sqlText: string;
+  columns: string[];
+  rows: unknown[][];
+}): Promise<SnapshotMeta> => {
+  if (!isTauriAvailable()) {
+    throw new Error('Result snapshots require the native Tauri desktop app');
+  }
+  return await invoke<SnapshotMeta>('save_result_snapshot', {
+    name: payload.name,
+    connectionId: payload.connectionId,
+    connectionName: payload.connectionName,
+    sqlText: payload.sqlText,
+    columns: payload.columns,
+    rows: payload.rows,
+  });
+};
+
+export const listResultSnapshots = async (limit = 100): Promise<SnapshotMeta[]> => {
+  if (!isTauriAvailable()) return [];
+  return await invoke<SnapshotMeta[]>('list_result_snapshots', { limit });
+};
+
+export const deleteResultSnapshot = async (id: string): Promise<void> => {
+  if (!isTauriAvailable()) return;
+  await invoke('delete_result_snapshot', { id });
+};
+
+export const diffResultSnapshots = async (
+  leftId: string,
+  rightId: string,
+  offset = 0,
+  limit = 100
+): Promise<SnapshotDiffResult> => {
+  if (!isTauriAvailable()) {
+    throw new Error('Snapshot diff requires the native Tauri desktop app');
+  }
+  return await invoke<SnapshotDiffResult>('diff_result_snapshots', {
+    leftId,
+    rightId,
+    offset,
+    limit,
+  });
 };
 
 // ─── Structure editor ────────────────────────────────────────────────
@@ -863,13 +1019,25 @@ export const generateMigrationSql = async (
   engine: EngineDialect
 ): Promise<MigrationDiffResultPayload> => {
   if (!isTauriAvailable()) {
-    // Lightweight browser fallback mirroring schema_migration.rs
+    // Lightweight browser fallback mirroring schema_migration.rs (validated idents)
+    const safeIdent = (name: string) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && name.length <= 128;
+    const safeTable = (name: string) =>
+      /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(name) && name.length <= 257;
+    if (!safeTable(current.table_name)) {
+      throw new Error(`Invalid table identifier: ${current.table_name}`);
+    }
     const snap = new Map(snapshot.columns.map((c) => [c.name.toLowerCase(), c]));
     const cur = new Map(current.columns.map((c) => [c.name.toLowerCase(), c]));
     const added = current.columns.filter((c) => !snap.has(c.name.toLowerCase()));
     const removed = snapshot.columns
       .filter((c) => !cur.has(c.name.toLowerCase()))
       .map((c) => c.name);
+    for (const col of [...added, ...snapshot.columns, ...current.columns]) {
+      if (!safeIdent(col.name)) throw new Error(`Invalid column identifier: ${col.name}`);
+    }
+    for (const name of removed) {
+      if (!safeIdent(name)) throw new Error(`Invalid column identifier: ${name}`);
+    }
     const q = (id: string) => (engine === 'mysql' ? `\`${id}\`` : `"${id}"`);
     const sql: string[] = [];
     for (const col of added) {

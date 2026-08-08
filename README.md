@@ -33,7 +33,8 @@ Status meanings: **Complete** = end-to-end from UI through Rust IPC to real engi
 | **SQL drivers: Postgres / MySQL / MariaDB / SQLite / MSSQL** | ✅ Complete | Native `sqlx` & `tiberius` + `bb8-tiberius` pools in `pool.rs`; dynamic query routing in `executor.rs` |
 | **CockroachDB / Redshift** | ⚠️ Partial | Treated as Postgres wire protocol; native pool routing configured |
 | **NoSQL & Columnar drivers: Redis / MongoDB / Cassandra (ScyllaDB) / ClickHouse** | ✅ Complete | Pure-Rust drivers (`redis`, `mongodb`, `scylla`, `clickhouse`) integrated into `ManagedConnection` in `pool.rs` |
-| **Oracle / Snowflake / DuckDB / Turso** | ⚠️ Partial | Dedicated execution stubs in `executor.rs` returning structured UI errors (bypasses `AnyPool` runtime panics) |
+| **DuckDB** | ✅ Complete | Dedicated engine (`duckdb_engine.rs`); file path or `:memory:`; connect / SQL / tables / columns |
+| **Oracle / Snowflake / Turso** | ⚠️ Partial | Dedicated execution stubs in `executor.rs` returning structured UI errors (bypasses `AnyPool` runtime panics) |
 | **Connect / introspect / run SQL / stream results** | ✅ Complete | `commands.rs`, `executor.rs`, `tauriBridge.ts` (500-row chunked stream) |
 | **Multi-connection workspaces** | ✅ Complete | Multiple pools stay open; switch without disconnect; session restore |
 | **Transaction manager** | ✅ Complete | BEGIN / COMMIT / ROLLBACK on held connection; queries route into open TX |
@@ -73,9 +74,12 @@ Status meanings: **Complete** = end-to-end from UI through Rust IPC to real engi
 | **Visual query builder** | ⚠️ Partial | Frontend SQL generator; no server validation |
 | **Mock data generator** | ✅ Complete | Client-side synthetic rows + batched `INSERT` against the open table |
 | **Virtualized grid + TSV copy** | ✅ Complete | `@tanstack/react-virtual` windowed rows; multi-cell TSV copy |
-| **Encrypted connection export & QR** | ✅ Complete | `encrypted_export.rs` + Web Crypto PBKDF2/AES-256-GCM string export & camera QR scanner |
+| **Encrypted connection export & QR** | ✅ Complete | AES-256-GCM text export + `qrcode` encode / `jsqr` decode (image + camera); large payloads fall back to text |
 | **Mobile touch adaptation** | ✅ Complete | `MobileViewport.tsx`, `MobileBottomNav.tsx`, `MobileDrawer.tsx`, `useMediaQuery.ts` |
-| **Parquet export** | ❌ Missing | UI option disabled; binary Parquet writer not implemented |
+| **Parquet export** | ✅ Complete | Rust `parquet`+Arrow (Snappy); full table + current page via IPC base64 |
+| **Environment-aware connections** | ✅ Complete | `dev`/`staging`/`prod`/`other` tags; **prod forces RO** unless explicit write opt-in (`connectionEnv.ts`) |
+| **Staging → SQL patch export** | ✅ Complete | Checked stages → `BEGIN…COMMIT` script via `stagingSqlPatch.ts` |
+| **Query result snapshots + diff** | ✅ Complete | Local AppStorage meta+rows; paged added/removed/changed (first-col key, max 100k rows) |
 | **Cloud IAM auth** | ❌ Missing | Struct stub only (`CloudIamConfig`) |
 | **&lt;20MB RAM claim** | ❓ Unverified | Not measured in CI |
 

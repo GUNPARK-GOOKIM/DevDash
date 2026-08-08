@@ -39,8 +39,8 @@
     ],
     "publisher": "DevDash Team",
     "copyright": "Copyright © 2026 DevDash",
-    "shortDescription": "Fast, open-source native database GUI client with AI-assisted SQL workflows, git-style staging, and TablePlus ergonomics.",
-    "longDescription": "DevDash is a ultra-fast native database client built with Tauri (Rust + React 18). Features git-style diff review, real-time bento telemetry, interactive ERD visualizer, and local/offline AI SQL assistant.",
+    "shortDescription": "Local-first open-source SQL GUI (Postgres, MySQL/MariaDB, SQLite) with staging, Safe Mode, and keychain credentials.",
+    "longDescription": "DevDash is a local-first desktop database client built with Tauri (Rust + React 18). Supports PostgreSQL, MySQL/MariaDB, and SQLite with git-style staged edits, Safe Mode, OS keychain passwords, and optional AI SQL assist via external APIs.",
     "windows": {
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
