@@ -1,7 +1,8 @@
 <div align="center">
 
-# ⚡ DevDash
-### Local-First Database Engineering Platform & Native GUI Client
+# DevDash
+
+**Local-first desktop SQL client, with a terminal companion on the same Rust engine.**
 
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2.0-blue?style=for-the-badge&logo=tauri&logoColor=white)](https://tauri.app/)
 [![Rust Engine](https://img.shields.io/badge/Rust-Core-orange?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
@@ -9,241 +10,214 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=for-the-badge)](LICENSE)
 [![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen?style=for-the-badge&logo=github)](https://github.com/akshat-lakhera/DevDash)
 
-**DevDash** is a **local-first native database GUI client** built with **Tauri 2.0 + Rust** and **React 18 TypeScript**. Core SQL workflows (connect, introspect, query, stage/edit, export/import) target **PostgreSQL, MySQL/MariaDB, and SQLite** (plus Postgres wire-compat engines CockroachDB/Redshift). Status of each capability is tracked in the matrix below — verified from code and tests, not marketing copy.
+[Architecture](docs/ARCHITECTURE.md) · [CLI guide](docs/CLI.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Releases](https://github.com/akshat-lakhera/DevDash/releases/latest)
 
-[Architecture Reference](docs/ARCHITECTURE.md) • [Capability Status](#-capability--status-matrix) • [Key Features](#-key-features) • [DevDash CLI](#-devdash-cli) • [Download](#-download--installation) • [OS Bypass Guide](#-os-security--bypass-guide)
+</div>
 
+DevDash is a **local-first** database client. You connect to databases from your machine; queries run in a **Rust** backend; the UI is **React**. Nothing about your data is sent to a DevDash cloud.
+
+There are two front-ends and **one engine**:
+
+| Product | What it is |
+|---------|------------|
+| **DevDash Desktop** | Native GUI (Tauri 2 + React 18). Visual grid, SQL editor, staging, schema tools. |
+| **DevDash CLI** (`devdash`) | Terminal companion. Same connections, keyring, Safe Mode, and query path. |
+
+If you are new to the repo: start with the demo below, skim [What works today](#what-works-today), then jump to [Run from source](#run-from-source) or [DevDash CLI](#devdash-cli).
+
+---
+
+## Demo
+
+Live workspace interaction:
+
+<div align="center">
+  <img src="docs/images/devdash_demo_animation.webp" alt="DevDash live workspace demo animation" width="95%" />
+</div>
+
+Typical connect → explore → query flow:
+
+<div align="center">
+  <img src="docs/images/devdash_workspace_flow.webp" alt="DevDash animated workspace flow" width="95%" />
 </div>
 
 ---
 
-<div align="center">
-  <h3>📹 Live Workspace Interaction & Animation</h3>
-  <img src="docs/images/devdash_demo_animation.webp" alt="DevDash Live Interactive Demo Animation" width="95%" style="border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.5);" />
-</div>
-
----
-
-## 📊 Capability & Status Matrix
-
-Status meanings: **Complete** = end-to-end from UI through Rust IPC to real engines · **Partial** = real backend pieces but incomplete UX/wiring · **UI prototype** = frontend demo data only · **Missing** = not implemented.
-
-| Engine & Feature Capability | Status | Evidence |
-|-----------------------------|:------:|----------|
-| **SQL drivers: Postgres / MySQL / MariaDB / SQLite / MSSQL** | ✅ Complete | Native `sqlx` & `tiberius` + `bb8-tiberius` pools in `pool.rs`; dynamic query routing in `executor.rs` |
-| **CockroachDB / Redshift** | ⚠️ Partial | Treated as Postgres wire protocol; native pool routing configured |
-| **NoSQL & Columnar drivers: Redis / MongoDB / Cassandra (ScyllaDB) / ClickHouse** | ✅ Complete | Pure-Rust drivers (`redis`, `mongodb`, `scylla`, `clickhouse`) integrated into `ManagedConnection` in `pool.rs` |
-| **DuckDB** | ✅ Complete | Dedicated engine (`duckdb_engine.rs`); file path or `:memory:`; connect / SQL / tables / columns |
-| **Oracle / Snowflake / Turso** | ⚠️ Partial | Dedicated execution stubs in `executor.rs` returning structured UI errors (bypasses `AnyPool` runtime panics) |
-| **Connect / introspect / run SQL / stream results** | ✅ Complete | `commands.rs`, `executor.rs`, `tauriBridge.ts` (500-row chunked stream) |
-| **Multi-connection workspaces** | ✅ Complete | Multiple pools stay open; switch without disconnect; session restore |
-| **Transaction manager** | ✅ Complete | BEGIN / COMMIT / ROLLBACK on held connection; queries route into open TX |
-| **Query profiling** | ✅ Complete | EXPLAIN / EXPLAIN ANALYZE (PG/MySQL/SQLite) with plan nodes |
-| **Connection diagnostics** | ✅ Complete | Version, user, size, latency, privilege/connection checks |
-| **Migration apply workflow** | ✅ Complete | Diff → dry-run / transactional apply + local migration run history |
-| **Workspace/session persistence** | ✅ Complete | Tabs, connections, connected IDs restored (passwords in keychain) |
-| **Multi-schema object explorer** | ✅ Complete | Hierarchical sidebar: schemas → tables / views; schema-qualified SQL |
-| **Views in catalog** | ✅ Complete | Listed under Views folders; openable in browser (PK-based edit rules apply) |
-| **Schema-aware SQL autocomplete** | ✅ Complete | `autocomplete.rs` + CodeMirror `lang-sql` schema map (tables/columns) |
-| **Multi-statement execution + result tabs** | ✅ Complete | Quote-aware splitter; one result tab per statement |
-| **Query cancel** | ✅ Complete | AbortHandle map + Cancel button in SQL editor |
-| **Server-side table pagination** | ✅ Complete | `LIMIT/OFFSET` + `COUNT(*)` using Settings page size |
-| **FK-aware introspection + ERD** | ✅ Complete | Live FK catalog on columns; ERD loads full schema with relation edges |
-| **Persisted query history panel** | ✅ Complete | App SQLite history + side panel + Welcome Workspace Recent Queries view with pagination |
-| **Connection read-only mode** | ✅ Complete | Blocks write/DDL from editor and runner |
-| **Git-style staged cell edits + transactional commit** | ✅ Complete | `staged_edits.rs` applies escaped `UPDATE`s in a transaction; UI stages + commit tab wired |
-| **Safe Mode destructive SQL gate** | ✅ Complete | `safe_mode.rs` + confirmation modal |
-| **OS keychain passwords & dual-tier persistence** | ✅ Complete | `credentials.rs` via `keyring` + persistent `localStorage` fallback across app launches |
-| **SSH tunnel** | ⚠️ Partial | `ssh_tunnel.rs` opens local forward; session-per-connection is heavy / limited |
-| **Local AI (Ollama) + Cloud LLMs** | ✅ Complete | Schema-aware Text-to-SQL powered by offline Ollama (`qwen2.5-coder`), OpenAI, Claude, & DeepSeek with write safety interception |
-| **EXPLAIN plan visualizer** | ✅ Complete | `ExplainVisualizer.tsx` parses live PostgreSQL / MySQL / SQLite `EXPLAIN` JSON trees |
-| **Health / metrics grid** | ⚠️ Partial | Live metrics IPC for PG/MySQL/SQLite; QPS/slow queries depend on engine stats extensions |
-| **Routines manager** | ✅ Complete | Live catalog queries (`pg_proc` / `information_schema.ROUTINES` + triggers); execute / open in console |
-| **Roles / privilege matrix** | ✅ Complete | Live `pg_roles` / `mysql.user` + `role_table_grants` / table privileges |
-| **Process manager** | ✅ Complete | Live `pg_stat_activity` / `PROCESSLIST` + kill via `pg_cancel_backend` / `KILL QUERY` |
-| **Command palette** | ✅ Complete | Mounted; **Cmd/Ctrl+P** searches tables, connections, queries, and commands |
-| **Audit log (local JSONL)** | ⚠️ Partial | Append-only JSONL + IPC reader; **not** SOC2/HIPAA certified |
-| **Schema diff (connected DBs)** | ✅ Complete | Live table/column compare via `generate_migration_sql` / `schema_migration.rs` |
-| **Per-table migration SQL helper** | ✅ Complete | Backend `schema_migration.rs` + Schema Diff modal over two connected databases |
-| **PII masking engine** | ✅ Complete | Rules persist; applied to grid display **and** CSV/JSON/JSONL/Markdown/SQL exports (HASH mode is a stable fingerprint, not crypto SHA-256) |
-| **CSV import** | ✅ Complete | Backend CSV import with type coercion + failed-row report |
-| **SQL dump import** | ✅ Complete | Multi-statement script runner (stops on first error) |
-| **Full-table server export** | ✅ Complete | `export_table_data` with optional WHERE (CSV/JSON/SQL INSERT dump) |
-| **Live CREATE TABLE DDL + indexes** | ✅ Complete | `ddl.rs` generates PK/FK/index DDL from catalog; Structure view |
-| **Staged INSERT / DELETE rows** | ✅ Complete | Grid Add/Delete Row → transactional commit (with UPDATEs) |
-| **Visual query builder** | ⚠️ Partial | Frontend SQL generator; no server validation |
-| **Mock data generator** | ✅ Complete | Client-side synthetic rows + batched `INSERT` against the open table |
-| **Virtualized grid + TSV copy** | ✅ Complete | `@tanstack/react-virtual` windowed rows; multi-cell TSV copy |
-| **Encrypted connection export & QR** | ✅ Complete | AES-256-GCM text export + `qrcode` encode / `jsqr` decode (image + camera); large payloads fall back to text |
-| **Mobile touch adaptation** | ✅ Complete | `MobileViewport.tsx`, `MobileBottomNav.tsx`, `MobileDrawer.tsx`, `useMediaQuery.ts` |
-| **Parquet export** | ✅ Complete | Rust `parquet`+Arrow (Snappy); full table + current page via IPC base64 |
-| **Environment-aware connections** | ✅ Complete | `dev`/`staging`/`prod`/`other` tags; **prod forces RO** unless explicit write opt-in (`connectionEnv.ts`) |
-| **Staging → SQL patch export** | ✅ Complete | Checked stages → `BEGIN…COMMIT` script via `stagingSqlPatch.ts` |
-| **Query result snapshots + diff** | ✅ Complete | Local AppStorage meta+rows; paged added/removed/changed (first-col key, max 100k rows) |
-| **DevDash CLI** | ✅ Complete | `devdash` binary (`--features cli`); install script; shared catalog + keyring + AppStorage with the GUI |
-| **Cloud IAM auth** | ❌ Missing | Struct stub only (`CloudIamConfig`) |
-| **&lt;20MB RAM claim** | ❓ Unverified | Not measured in CI |
-
----
-
-## 📸 Interactive Workspace Showcase
+## Screenshots
 
 <div align="center">
-  <img src="docs/images/devdash_workspace_flow.webp" alt="DevDash Animated Workspace Flow" width="95%" style="border-radius: 12px; margin-bottom: 16px;" />
+  <img src="docs/images/devdash_dashboard.png" alt="DevDash dashboard" width="95%" />
 </div>
 
 <div align="center">
-  <img src="docs/images/table_grid.png" alt="DevDash Virtualized Grid View" width="48%" />
-  <img src="docs/images/sql_editor.png" alt="DevDash CodeMirror SQL Editor" width="48%" />
+  <img src="docs/images/table_grid.png" alt="Virtualized result grid" width="48%" />
+  <img src="docs/images/sql_editor.png" alt="CodeMirror SQL editor" width="48%" />
 </div>
 
-<div align="center" style="margin-top: 16px;">
-  <img src="docs/images/dialect_selector.png" alt="DevDash Dialect Selector" width="48%" />
-  <img src="docs/images/devdash_welcome.png" alt="DevDash Connection Manager" width="48%" />
+<div align="center">
+  <img src="docs/images/dialect_selector.png" alt="Database dialect selector" width="48%" />
+  <img src="docs/images/devdash_welcome.png" alt="Welcome / connection manager" width="48%" />
 </div>
 
 ---
 
-## 🏗️ Architecture & System Execution Flow
+## Contents
+
+1. [Who this is for](#who-this-is-for)
+2. [What works today](#what-works-today)
+3. [Architecture](#architecture)
+4. [Download Desktop](#download-desktop)
+5. [First launch on macOS and Windows](#first-launch-on-macos-and-windows)
+6. [DevDash CLI](#devdash-cli)
+7. [Run from source](#run-from-source)
+8. [Repository map](#repository-map)
+9. [How to contribute](#how-to-contribute)
+10. [Further reading](#further-reading)
+11. [License](#license)
+
+---
+
+## Who this is for
+
+- **Application developers** who want a fast local GUI for Postgres, MySQL/MariaDB, SQLite, DuckDB, and related engines.
+- **People who live in a terminal** and want the same connections and safety rules as the GUI (`devdash sql`, `devdash repl`).
+- **New contributors** who want a clear map of the codebase and a short path to `npm run tauri dev`.
+
+You do **not** need prior Tauri experience. You do need Node.js, Rust, and (for a native app window) the [Tauri Linux/macOS/Windows system libraries](https://v2.tauri.app/start/prerequisites/).
+
+---
+
+## What works today
+
+Status is from the current code, not a roadmap. Meanings:
+
+| Status | Meaning |
+|--------|---------|
+| **Complete** | UI (or CLI) through Rust IPC to a real engine |
+| **Partial** | Real backend pieces; UX, coverage, or engine support is incomplete |
+| **Missing** | Not implemented (UI option may still exist) |
+| **Unverified** | Claim exists; not measured in CI |
+
+### Engines
+
+| Capability | Status | Where to look |
+|------------|:------:|---------------|
+| PostgreSQL, MySQL/MariaDB, SQLite | Complete | `sqlx` in `src-tauri/Cargo.toml`, `pool.rs`, `executor.rs` |
+| MSSQL | Complete | `tiberius` + `bb8-tiberius` native pool |
+| Redis, MongoDB, Cassandra/Scylla, ClickHouse | Complete | Native clients on `ManagedConnection` |
+| DuckDB | Complete | `duckdb_engine.rs` (file path or `:memory:`) |
+| CockroachDB / Redshift | Partial | Postgres wire protocol; not separately tested |
+| Oracle / Snowflake / Turso | Partial | Dedicated stubs; connect/query return structured errors |
+| BigQuery | Missing | UI option; backend rejects |
+| Cloud IAM | Missing | Struct stub only |
+
+### Core workflows
+
+| Capability | Status | Notes |
+|------------|:------:|-------|
+| Connect, introspect, run SQL, stream results | Complete | 500-row IPC chunks |
+| Multi-connection workspaces | Complete | Switch pools without disconnect |
+| Transactions | Complete | BEGIN / COMMIT / ROLLBACK on a held connection |
+| Staging + transactional commit | Complete | Escaped-literal SQL, not bind parameters |
+| Safe Mode | Complete | Blocks DROP / unbounded DELETE–UPDATE until confirm |
+| Prod environment tag | Complete | Production connections are read-only unless you opt in |
+| OS keychain passwords | Complete | `keyring` service `devdash_app` |
+| Schema explorer, views, autocomplete | Complete | Strongest on Postgres-family catalogs |
+| Schema diff + migration apply | Complete | Two connected DBs; dry-run or transactional apply |
+| Diagnostics, EXPLAIN profiling | Complete | PG / MySQL / SQLite (plan quality varies) |
+| Process / roles / routines managers | Complete | Live catalog SQL on PG/MySQL; N/A for SQLite |
+| CSV / SQL import, full-table export, Parquet | Complete | Parquet via Arrow + Snappy |
+| Result snapshots + row diff | Complete | Local AppStorage; first-column key; 100k row cap |
+| Encrypted connection share + QR | Complete | AES-256-GCM; large payloads fall back to text |
+| DevDash CLI | Complete | Same engine; see [`docs/CLI.md`](docs/CLI.md) |
+| SSH tunnel | Partial | Local forward works; session model is limited |
+| Health / metrics grid | Partial | Depends on engine stats extensions |
+| Visual query builder | Partial | Client SQL generator only |
+| Audit log | Partial | Local JSONL — not SOC 2 / HIPAA |
+| PII masking | Partial | Display + export; HASH is a fingerprint, not crypto SHA-256 |
+| Native Android/iOS store apps | Missing | Narrow-viewport CSS exists; desktop release CI only |
+| RAM / binary-size claims | Unverified | Not measured in CI |
+
+---
+
+## Architecture
+
+React never talks to databases directly. Components call helpers in `src/services/tauriBridge.ts`, which invoke Rust commands. The CLI skips the UI and calls the same `src-tauri/src/db/*` modules.
 
 ```mermaid
 flowchart TD
-    UI[React 18 UI] -->|IPC| Bridge[src/services/tauriBridge.ts]
-    Bridge -->|Tauri invoke| Rust[Rust Core]
-    Rust --> Pool[sqlx::AnyPool]
-    Pool --> SQL[(PostgreSQL / MySQL / SQLite)]
-    Rust --> Audit[Local audit_log.jsonl]
+    UI[React 18 Desktop UI] -->|typed helpers| Bridge[src/services/tauriBridge.ts]
+    Bridge -->|Tauri invoke| Cmd[commands.rs]
+    CLI[devdash CLI] --> Core[src-tauri/src/db]
+    Cmd --> Core
+    Core --> Pool[Connection pools]
+    Pool --> SQL[(Postgres / MySQL / SQLite / MSSQL / DuckDB / ...)]
+    Core --> Store[AppStorage SQLite + OS keyring]
 ```
 
 <div align="center">
-  <img src="docs/images/architecture_diagram.png" alt="DevDash System Architecture Diagram" width="85%" />
+  <img src="docs/images/architecture_diagram.png" alt="DevDash system architecture diagram" width="85%" />
 </div>
 
----
+Rules worth knowing before you edit code:
 
-## ✨ Key Features
+1. UI components must not call raw `invoke('...')` — go through `tauriBridge.ts` (`npm run test:arch` checks this).
+2. Passwords belong in the OS keyring, not in `connections.json` or git.
+3. Destructive SQL is analyzed in `safe_mode.rs` on the server, not only in the UI.
+4. Desktop uses Cargo feature `gui` (default). CLI uses `--no-default-features --features cli` and does not link WebKit.
 
-### 🛡️ Git-Style Transaction Staging & Safe Mode
-- **Review Before Commit**: Edits made in the virtualized grid are staged locally as color-coded cell diffs (`old_value → new_value`). Nothing touches production until you review and click **Apply Staged Edits** / **Commit** on the Staging tab.
-- **Safe Mode Shield**: Destructive SQL queries (`DROP`, `TRUNCATE`, or `UPDATE`/`DELETE` without a `WHERE` clause) trigger a high-visibility warning modal with query analysis before execution.
-
-### 🤖 Optional AI SQL Assistant
-- **Local Ollama**: When enabled in Settings, the UI calls your local Ollama HTTP API for NL→SQL (schema context is sent from the client).
-- **Cloud LLM Support**: Optional OpenAI-compatible / Anthropic endpoints via API key (network required).
-- **Cmd+K**: Focuses the AI bar when AI is enabled. **Cmd/Ctrl+P** opens the command palette.
-
-### 🔐 Offline AES-256 Connection Sharing & QR Scanner
-- **Zero-Trust Encryption**: Share database connection profiles securely using PBKDF2 + AES-256-GCM authenticated encryption.
-- **Copyable Text & QR Codes**: Export connection profiles as Base64/JSON strings (Slack/Email friendly) or visual QR codes.
-- **Mobile Camera Decoder**: Scan QR codes using the device camera to import profiles.
-
-### 📱 Mobile Touch Viewport Adaptation
-- **Ergonomic Touch Drawer**: Slide-over drawer for switching connections and selecting tables on screens `< 768px`.
-- **Bottom Touch Navigation Bar**: Profiles, Tables, Console, Staging, and Settings with safe-area notch support (`env(safe-area-inset-bottom)`).
-
-### ⚡ Native Performance Path
-- **Rust Engine Core**: Multi-pool database execution managed by `sqlx::AnyPool`, with dedicated native driver routing (`bb8-tiberius`, `sqlx::PgPool`, `sqlx::MySqlPool`) for enterprise compliance and type safety across 16+ dialects.
-- **Virtualized Data Grid**: Uses `@tanstack/react-virtual` for large result sets (windowed row rendering).
-- **Server-Side Pagination**: Table browser pages via `LIMIT/OFFSET` with configurable page size (Settings).
-- **Chunked Result Streaming**: Optional stream of query results over Tauri IPC in 500-row chunks.
-
-### 🧠 SQL Editor (DataGrip-class basics)
-- **Schema Autocomplete**: Table/column completion from live catalog after connect.
-- **Multi-Statement Scripts**: Run a full script; each statement gets its own result tab.
-- **Cancel Running Query**: Stop mid-flight queries from the editor toolbar.
-- **Read-Only Connections**: Connection flag blocks write/DDL paths.
-
-### 🔌 Multi-Connection Workspaces
-- Keep several database pools open at once; switch without tearing down the previous session.
-- Per-connection catalog/autocomplete cache; status bar shows **N open** connections.
-- Workspace session restore reconnects prior pools and restores tabs (credentials via OS keychain).
-
-### 🔁 Transaction Manager
-- Explicit **Begin / Commit / Rollback** bar above the workspace.
-- While a transaction is open, SQL from the editor runs on the held connection until commit/rollback.
-
-### 📈 Profiling, Diagnostics & Monitoring
-- **Profile**: EXPLAIN / EXPLAIN ANALYZE with plan node breakdown (Postgres JSON, MySQL, SQLite QUERY PLAN).
-- **Diagnose**: server version, user, DB size, latency, connection counts, catalog checks.
-- **Health** grid continues to surface live engine metrics where available.
-
-### 🚚 Migration Workflow
-- Schema Diff compares two connected databases, then **Dry-run** or **Apply to Target** inside a transaction.
-- Migration runs are logged locally for audit/history.
-
-### 🗂️ Database Object Explorer (TablePlus-style)
-- **Multi-schema tree**: Postgres/Cockroach/Redshift list every user schema (not just `public`).
-- **Tables & Views**: Separate collapsible folders per schema with live counts.
-- **Schema-qualified paths**: Opening `analytics.events` runs against the correct schema; FK/index/DDL follow.
-- **Filter**: Search across schema, table, and view names.
-
-### 🗺️ Schema Intelligence
-- **Foreign Keys**: Column introspection marks FKs with target table/column.
-- **Indexes**: Structure view lists unique/primary/secondary indexes from the live catalog.
-- **CREATE TABLE DDL**: One-click DDL export with PK, FK, and index statements.
-- **ERD**: Opening Schema Visualizer loads columns + FK edges for base tables (batched).
-- **Query History**: Local persistent history with re-run from the History side panel.
-
-### 📦 Data Movement
-- **Full-table export**: Server-side CSV / JSON / SQL INSERT dump (optional WHERE), not just the current page.
-- **CSV import**: Typed bulk insert with per-row failure reporting.
-- **SQL dump import**: Run multi-statement scripts against the active connection.
-- **Grid row ops**: Stage INSERT (Add Row) and DELETE for selected rows, then commit transactionally.
-
-### 🧰 Admin & Schema Tools
-- **Routines & Triggers**: Browse and execute functions/procedures from live database catalogs (Postgres/MySQL).
-- **Roles & Privileges**: Inspect roles/users and table-level grants from catalog views.
-- **Process Manager**: List and cancel backend sessions (Postgres `pg_stat_activity`, MySQL `PROCESSLIST`).
-- **Schema Diff**: Compare two **connected** databases and generate `ALTER TABLE` migration SQL for column differences.
-- **Mock Data Seeding**: Generate synthetic rows and batch-`INSERT` them into the open table.
-- **PII Masking**: Pattern-based field masking on the grid and on exported files.
+Deeper write-up: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
-## 💻 Download & Installation
+## Download Desktop
 
-### Option 1: Direct Download (Pre-Compiled Binaries & Installers)
-Download the latest installer or APK for your platform directly from GitHub Releases:
+Pre-built installers, when published, are on [GitHub Releases](https://github.com/akshat-lakhera/DevDash/releases/latest):
 
-- **🪟 Windows**: [`DevDash-Setup-x64.exe`](https://github.com/akshat-lakhera/DevDash/releases/latest) or `.msi`
-- **🤖 Android**: [`DevDash_arm64-v8a.apk`](https://github.com/akshat-lakhera/DevDash/releases/latest) *(Includes camera QR code scanner & mobile touch drawer)*
-- **🍏 macOS**: [`DevDash-x64-arm64.dmg`](https://github.com/akshat-lakhera/DevDash/releases/latest) (Apple Silicon M1/M2/M3 & Intel)
-- **🐧 Linux**: [`DevDash.AppImage`](https://github.com/akshat-lakhera/DevDash/releases/latest) or `.deb`
+| Platform | Typical asset |
+|----------|----------------|
+| Windows | `DevDash-Setup-x64.exe` or `.msi` |
+| macOS | `DevDash-x64-arm64.dmg` (Apple Silicon and Intel) |
+| Linux | `.AppImage` or `.deb` |
 
-👉 **[Go to GitHub Releases (Download APK & Installers)](https://github.com/akshat-lakhera/DevDash/releases/latest)**
+Release CI currently targets **desktop only** (Windows, macOS, Linux). There is no Android APK job in this repository. Narrow-viewport layout still works in the desktop window.
 
----
-
-## 🛡️ OS Security & Bypass Guide
-
-Because DevDash is an open-source project and installers are compiled directly from source without paid corporate developer certificates, macOS Gatekeeper and Windows SmartScreen may display a security prompt on initial launch.
-
-### 🍏 macOS Fix (If blocked by Gatekeeper):
-* **Method 1 (Right-Click Open - Recommended)**: Right-click `DevDash.app` in Finder → Click **Open** → Click **Open Anyway**.
-* **Method 2 (Terminal Command)**: Open Terminal and run:
-  ```bash
-  xattr -d com.apple.quarantine /Applications/DevDash.app
-  ```
-* **Method 3 (Allow Anywhere)**: Open Terminal and run `sudo spctl --master-disable`, then select "Anywhere" in **System Settings → Privacy & Security**.
-
-### 🪟 Windows Fix (If blocked by SmartScreen):
-* When the blue "Windows protected your PC" dialog appears, click **More info** → Click **Run anyway**.
+If a release is missing for your OS, [build from source](#run-from-source).
 
 ---
 
-## 🖥️ DevDash CLI
+## First launch on macOS and Windows
 
-**DevDash Desktop** is the visual workspace. **DevDash CLI** is its terminal companion: same Rust core, same OS keyring, same `~/.config/devdash/` catalog and AppStorage.
+Installers are built from this open-source tree **without** a paid Apple/Microsoft developer certificate. Gatekeeper and SmartScreen often warn on first open. That is expected.
 
-Full v1 guide (quick start, command tree, config precedence, exit codes, scripting, troubleshooting): **[`docs/CLI.md`](docs/CLI.md)**.
+**macOS**
 
-Install from a clone (the `curl …/main/…` one-liner is published only after this lands on `main`):
+1. Preferred: in Finder, right-click `DevDash.app` → **Open** → **Open Anyway**.
+2. Or remove the quarantine flag:
+
+```bash
+xattr -d com.apple.quarantine /Applications/DevDash.app
+```
+
+Do not disable Gatekeeper system-wide unless you understand the risk.
+
+**Windows**
+
+On “Windows protected your PC”, click **More info** → **Run anyway**.
+
+---
+
+## DevDash CLI
+
+The CLI is the same product in a terminal: same catalog (`~/.config/devdash/connections.json`), same keyring, same Safe Mode, same AppStorage history and snapshots.
+
+Until the install script is on `main`, install from a clone:
 
 ```bash
 cargo install --path src-tauri --bin devdash --locked --no-default-features --features cli
 ```
 
-Quick start:
+Then:
 
 ```bash
 devdash doctor
@@ -253,44 +227,139 @@ devdash sql 'select 1'
 devdash repl
 ```
 
+Full v1 guide (command tree, config precedence, exit codes, scripting, troubleshooting): **[`docs/CLI.md`](docs/CLI.md)**.
+
 ---
 
-## 🚀 Developer Quickstart & Verification
+## Run from source
+
+### Prerequisites
+
+| Tool | Version (practical minimum) |
+|------|-----------------------------|
+| Node.js | 18+ (CI uses 22) |
+| npm | comes with Node |
+| Rust + Cargo | stable (1.75+ is a reasonable floor) |
+| C/C++ toolchain | required for bundled DuckDB |
+| Python 3 | architecture check script |
+| Tauri system deps | [platform list](https://v2.tauri.app/start/prerequisites/) (GTK/WebKit on Linux) |
+
+### 1. Clone
 
 ```bash
-# 1. Clone the Repository
 git clone https://github.com/akshat-lakhera/DevDash.git
 cd DevDash
+```
 
-# 2. Install Frontend Dependencies
+Fork first if you plan to open a pull request.
+
+### 2. Install JavaScript dependencies
+
+```bash
 npm install
+```
 
-# 3. Type-check Frontend
-npx tsc --noEmit
+### 3. Frontend only (no native window)
 
-# 4. Run Architecture Integrity Audit
-python scripts/check-architecture.py
+Useful to poke at React. Database IPC will not work in a plain browser.
 
-# 5. Run Rust unit/integration tests (GUI lib + CLI)
-cd src-tauri && cargo test --lib --features cli && cd ..
-
-# 6. Run in Development Mode (Vite only, or full Tauri)
+```bash
 npm run dev
-# npm run tauri dev
+```
 
-# 7. Compile Production Desktop Installers
+### 4. Full desktop app
+
+```bash
+npm run tauri dev
+```
+
+First run compiles the Rust crate and can take several minutes (DuckDB is bundled).
+
+### 5. Checks you should run before a PR
+
+```bash
+npx tsc --noEmit
+python3 scripts/check-architecture.py    # or: npm run test:arch
+npm run test:smoke
+cd src-tauri && cargo test --lib --features cli && cd ..
+```
+
+### 6. Production desktop build
+
+```bash
 npm run build
 npm run tauri build
 ```
 
-**Supported engines in the Rust backend:** PostgreSQL, MySQL, MariaDB, SQLite, plus Postgres wire-compat CockroachDB/Redshift. Other dialect names in the connection UI are rejected at connect time.
+Installers land under `src-tauri/target/release/bundle/`.
+
+### 7. CLI from this checkout
+
+```bash
+cargo install --path src-tauri --bin devdash --locked --no-default-features --features cli
+# or: ./scripts/install-cli.sh
+```
 
 ---
 
-## 📄 License
+## Repository map
 
-Distributed under the **Apache License 2.0**. See [`LICENSE`](LICENSE) for details.
+```
+DevDash/
+├── src/                      # React + TypeScript UI
+│   ├── App.tsx               # Workspace shell
+│   ├── components/           # Editor, grid, modals, welcome
+│   ├── services/tauriBridge.ts   # Only UI path to Rust IPC
+│   └── utils/                # Pure TS helpers (env tags, SQL split, QR)
+├── src-tauri/                # Rust crate (GUI binary + CLI binary)
+│   ├── src/commands.rs       # Tauri IPC handlers (thin)
+│   ├── src/db/               # Shared engine (pools, SQL, safety, snapshots…)
+│   ├── src/cli/              # clap front-end for `devdash`
+│   └── src/bin/devdash.rs    # CLI entrypoint
+├── docs/
+│   ├── ARCHITECTURE.md
+│   ├── CLI.md
+│   └── images/               # Screenshots and demo animations
+├── scripts/
+│   ├── check-architecture.py
+│   ├── smoke-frontend.mjs
+│   └── install-cli.sh
+├── package.json              # Frontend + `npm run tauri`
+└── CONTRIBUTING.md
+```
 
-<div align="center">
-  <sub>Built with ❤️ by the DevDash Engineering Team. Crafted with Rust, Tauri, and React.</sub>
-</div>
+Edit UI in `src/`. Edit query/safety/export behavior in `src-tauri/src/db/` so **Desktop and CLI stay in sync**. Do not copy business logic into the CLI or into React.
+
+---
+
+## How to contribute
+
+1. Open an issue or pick an existing one.
+2. Branch from `main`: `git checkout -b feat/short-name`.
+3. Keep PRs focused. Conventional commits (`feat:`, `fix:`, `docs:`) match the history.
+4. Run the [checks above](#5-checks-you-should-run-before-a-pr).
+5. Open a PR against `main`. Describe what you changed and how you verified it.
+
+More detail: [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+Good first areas: docs, CLI help text, tests around `safe_mode` / `staged_edits`, and honest matrix updates when you add a real engine path.
+
+---
+
+## Further reading
+
+| Doc | Topic |
+|-----|--------|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Engine truth, IPC rules, what is *not* implemented |
+| [`docs/CLI.md`](docs/CLI.md) | CLI install, flags, exit codes, scripting |
+| [`SECURITY.md`](SECURITY.md) | Keyring, Safe Mode, how to report vulnerabilities |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | PR process |
+| [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) | Native build dependencies |
+
+---
+
+## License
+
+Apache License 2.0. See [`LICENSE`](LICENSE).
+
+Built by the DevDash contributors with Rust, Tauri, and React.
