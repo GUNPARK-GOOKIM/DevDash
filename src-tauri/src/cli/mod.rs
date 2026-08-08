@@ -224,6 +224,9 @@ pub enum Commands {
         /// bash | zsh | fish | powershell | elvish
         shell: String,
     },
+    /// Optional E2E-encrypted device sync (Desktop ↔ CLI ↔ Mobile)
+    #[command(subcommand, after_help = helptext::AFTER_SYNC)]
+    Sync(ops::SyncCmd),
 }
 
 #[derive(Subcommand, Debug)]
@@ -436,6 +439,7 @@ async fn dispatch(cli: Cli) -> Result<(), String> {
             password,
         } => ops::cmd_redis_keys(connection, Some(pattern), password).await,
         Commands::Completions { shell } => ops::cmd_completions(&shell),
+        Commands::Sync(cmd) => ops::cmd_sync(cmd).await,
     }
 }
 
@@ -466,6 +470,9 @@ async fn cmd_doctor() -> Result<(), String> {
         }
     );
     println!("  engines     postgres mysql mariadb sqlite duckdb mssql redis mongo cassandra clickhouse (+ cockroach/redshift wire)");
+    if let Ok(dev) = crate::db::device_sync::ensure_device_identity("cli") {
+        println!("  device      {} ({})", dev.name, &dev.id[..8.min(dev.id.len())]);
+    }
     println!("ok");
     Ok(())
 }
@@ -512,6 +519,8 @@ async fn cmd_connect(cmd: ConnectCmd) -> Result<(), String> {
                         environment: environment.clone(),
                         is_read_only: read_only,
                         allow_writes_on_prod,
+                        updated_at: chrono::Utc::now().to_rfc3339(),
+                        origin_device_id: String::new(),
                     },
                     None,
                 )

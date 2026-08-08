@@ -204,6 +204,32 @@ pub enum VaultCmd {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum SyncCmd {
+    /// Show this device id + catalog/sync stats
+    Status,
+    /// Write an E2E-encrypted sync bundle (catalog + queries + history)
+    Export {
+        #[arg(short = 'o', long = "out", help = H_OUT)]
+        out: Option<PathBuf>,
+        #[arg(long, help = "Passphrase (--passphrase > DEVDASH_SYNC_PASS > DEVDASH_VAULT_PASS)")]
+        passphrase: Option<String>,
+        /// Include keyring passwords inside the encrypted payload
+        #[arg(long)]
+        include_secrets: bool,
+    },
+    /// Merge an encrypted bundle into the local catalog (never deletes local rows)
+    Import {
+        #[arg(short = 'f', long = "file", help = "Encrypted .ddsync file")]
+        file: PathBuf,
+        #[arg(long, help = "Passphrase (--passphrase > DEVDASH_SYNC_PASS > DEVDASH_VAULT_PASS)")]
+        passphrase: Option<String>,
+        /// Skip importing passwords even if the bundle contains them
+        #[arg(long)]
+        skip_secrets: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum StructureCmd {
     /// ADD COLUMN
     AddColumn {
@@ -723,6 +749,71 @@ pub async fn cmd_vault(cmd: VaultCmd) -> Result<(), String> {
                 payload.connections.len(),
                 payload.saved_queries.len()
             );
+            Ok(())
+        }
+    }
+}
+
+fn sync_passphrase(explicit: Option<String>) -> Result<String, String> {
+    explicit
+        .or_else(|| std::env::var("DEVDASH_SYNC_PASS").ok())
+        .or_else(|| std::env::var("DEVDASH_VAULT_PASS").ok())
+        .ok_or_else(|| "Pass --passphrase or DEVDASH_SYNC_PASS".into())
+}
+
+pub async fn cmd_sync(cmd: SyncCmd) -> Result<(), String> {
+    let engine = CliEngine::new().await?;
+    match cmd {
+        SyncCmd::Status => {
+            let st = crate::db::device_sync::status(&engine.storage, "cli").await?;
+            print_json(&st)
+        }
+        SyncCmd::Export {
+            out,
+            passphrase,
+            include_secrets,
+        } => {
+            let pass = sync_passphrase(passphrase)?;
+            let path = match out {
+                Some(p) => p,
+                None => crate::db::device_sync::suggested_export_path()?,
+            };
+            let report = crate::db::device_sync::export_to_path(
+                &engine.storage,
+                &path,
+                &pass,
+                include_secrets,
+                "cli",
+            )
+            .await?;
+            eprintln!(
+                "wrote {} ({} connections, {} queries, {} history{})",
+                path.display(),
+                report.connection_count,
+                report.query_count,
+                report.history_count,
+                if include_secrets {
+                    ", secrets included"
+                } else {
+                    ""
+                }
+            );
+            Ok(())
+        }
+        SyncCmd::Import {
+            file,
+            passphrase,
+            skip_secrets,
+        } => {
+            let pass = sync_passphrase(passphrase)?;
+            let report = crate::db::device_sync::import_from_path(
+                &engine.storage,
+                &file,
+                &pass,
+                !skip_secrets,
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&report).unwrap());
             Ok(())
         }
     }

@@ -35,7 +35,14 @@ import { TransactionBar } from './components/TransactionBar';
 import { ConnectionDiagnosticsModal } from './components/ConnectionDiagnosticsModal';
 import { QueryProfilerModal } from './components/QueryProfilerModal';
 import { useIsMobile } from './hooks/useMediaQuery';
-import { MobileViewport } from './components/mobile/MobileViewport';
+import { MobileApp } from './mobile/MobileApp';
+import {
+  catalogToConfig,
+  configToCatalog,
+  listConnectionCatalog,
+  removeCatalogConnection,
+  upsertCatalogConnection,
+} from './services/tauriBridge';
 import { maskRowRecord } from './utils/piiMask';
 import { batchContainsWrite } from './utils/sqlSafety';
 import {
@@ -101,8 +108,15 @@ import {
 } from './services/tauriBridge';
 
 export const App: React.FC = () => {
-  const currentProjectPath = 'local';
   const isMobile = useIsMobile();
+  if (isMobile) {
+    return <MobileApp />;
+  }
+  return <DesktopApp />;
+};
+
+const DesktopApp: React.FC = () => {
+  const currentProjectPath = 'local';
 
   // === SETTINGS STATE ===
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -262,6 +276,35 @@ export const App: React.FC = () => {
     localStorage.setItem('devdash_connections', JSON.stringify(connections));
   }, [connections]);
 
+  // Pull shared catalog (CLI/Mobile) into Desktop on launch; push Desktop saves back.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const cat = await listConnectionCatalog();
+        if (cancelled || !cat.connections.length) return;
+        setConnections((prev) => {
+          const byId = new Map(prev.map((c) => [c.id, c]));
+          const names = new Set(prev.map((c) => c.name.toLowerCase()));
+          let changed = false;
+          for (const cc of cat.connections) {
+            if (byId.has(cc.id) || names.has(cc.name.toLowerCase())) continue;
+            const cfg = catalogToConfig(cc);
+            byId.set(cfg.id, cfg);
+            names.add(cfg.name.toLowerCase());
+            changed = true;
+          }
+          return changed ? Array.from(byId.values()) : prev;
+        });
+      } catch {
+        /* catalog optional in web preview */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     localStorage.setItem('devdash_recent_connections', JSON.stringify(recentConnectionIds));
   }, [recentConnectionIds]);
@@ -322,6 +365,9 @@ export const App: React.FC = () => {
           c.id === conn.id ? { ...c, ...secured, is_connected: true } : c
         )
       );
+      void upsertCatalogConnection(configToCatalog(secured), pwd, 'desktop').catch(() => {
+        /* catalog write is best-effort; Desktop still owns localStorage */
+      });
 
       const fetchedTables = (await getDatabaseTables(conn.id, conn.db_type)) || [];
       setTablesByConn((prev) => ({ ...prev, [conn.id]: fetchedTables }));
@@ -379,6 +425,9 @@ export const App: React.FC = () => {
       /* ignore */
     }
     setConnections((prev) => prev.filter((c) => c.id !== id));
+    void removeCatalogConnection(id).catch(() => {
+      /* ignore */
+    });
     setRecentConnectionIds((prev) => prev.filter((cid) => cid !== id));
     setTablesByConn((prev) => {
       const next = { ...prev };
@@ -1701,93 +1750,6 @@ export const App: React.FC = () => {
           onGeneralSettingsChange={handleGeneralSettingsChange}
         />
       </div>
-    );
-  }
-
-  if (isMobile) {
-    return (
-      <MobileViewport
-        connections={connections}
-        activeConnection={activeConnection}
-        tables={tables}
-        stagedCount={stagedChanges.length}
-        onSelectConnection={async (conn) => {
-          await handleWelcomeConnect(conn);
-        }}
-        onSelectTable={handleOpenTableTab}
-        onOpenNewConnectionModal={() => {
-          setSelectedDbKind(undefined);
-          setIsConnModalOpen(true);
-        }}
-        onShareConnection={(conn) => {
-          setShareTargetConnId(conn.id);
-          setIsSecureShareModalOpen(true);
-        }}
-        onOpenImportShared={() => setIsSecureImportModalOpen(true)}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-      >
-        {/* Essential Mobile Workspace View */}
-        <div className="flex flex-col h-full overflow-hidden p-2 space-y-2">
-          {/* Active Table Title / Quick Filter */}
-          <div className="flex items-center justify-between px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg shrink-0">
-            <span className="text-xs font-semibold text-slate-200 truncate">
-              {activeTab.tableName ? `Table: ${activeTab.tableName}` : activeTab.title}
-            </span>
-            <span className="text-[10px] text-indigo-400 font-mono px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/20">
-              {activeConnection?.db_type || 'sqlite'}
-            </span>
-          </div>
-
-          {/* Virtual Data Grid / Query View */}
-          <div className="flex-1 overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
-            {activeTab.type === 'browser' ? (
-              <TableGrid
-                tableName={activeTab.tableName || 'users'}
-                columns={columns}
-                rows={displayRows}
-                pkInfo={pkInfo}
-                stagedEdits={stagedEdits}
-                onStageEdit={handleStageEdit}
-                onApplyEdits={() => setActiveTabId('tab-staging')}
-                onResetEdits={handleResetAllStaged}
-                currentPage={currentPage}
-                onPageChange={handleBrowserPageChange}
-                isLoading={isBrowserLoading}
-                piiRules={piiRules}
-                totalRows={tableTotalRows ?? undefined}
-                pageSize={generalSettings.pageSize}
-              />
-            ) : (
-              <SqlEditor
-                key={activeTab.id}
-                initialSql={activeTab.sql || ''}
-                onRunQuery={handleRunQueryWithSafeMode}
-                onCancelQuery={handleCancelQuery}
-                queryResult={queryResult}
-                multiResults={multiResults}
-                isLoading={isQueryLoading}
-                schemaData={schemaData}
-                dialectHint={activeConnection?.db_type}
-                readOnlyConnection={
-                  !!activeConnection && resolveReadOnlyFlag(activeConnection)
-                }
-                onSaveQuery={(name, sql) => {
-                  setSavedQueries((prev) => [
-                    ...prev,
-                    {
-                      id: `sq-${Date.now()}`,
-                      name,
-                      sql_content: sql,
-                      project_path: currentProjectPath,
-                      created_at: new Date().toISOString(),
-                    },
-                  ]);
-                }}
-              />
-            )}
-          </div>
-        </div>
-      </MobileViewport>
     );
   }
 

@@ -13,13 +13,17 @@ import sys
 
 WORKSPACE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 COMPONENTS_DIR = os.path.join(WORKSPACE_ROOT, "src", "components")
+MOBILE_DIR = os.path.join(WORKSPACE_ROOT, "src", "mobile")
 TAURI_DIR = os.path.join(WORKSPACE_ROOT, "src-tauri")
 
 def check_raw_ipc_in_components():
     print("Checking UI layer isolation (React components -> tauriBridge.ts)...")
     violations = []
     
-    for root, _, files in os.walk(COMPONENTS_DIR):
+    for search_dir in (COMPONENTS_DIR, MOBILE_DIR):
+      if not os.path.isdir(search_dir):
+          continue
+      for root, _, files in os.walk(search_dir):
         for file in files:
             if file.endswith((".tsx", ".ts")):
                 path = os.path.join(root, file)
