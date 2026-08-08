@@ -6,9 +6,12 @@ use serde::{Deserialize, Serialize}; // Import Serde traits for payload serializ
 pub enum DestructiveType { // Destructive operation type enum
     DropTable, // DROP TABLE statement detected
     DropDatabase, // DROP DATABASE statement detected
+    DropObject, // DROP VIEW / INDEX / SCHEMA / other
     TruncateTable, // TRUNCATE TABLE statement detected
-    DeleteWithoutWhere, // DELETE statement with no WHERE clause
-    UpdateWithoutWhere, // UPDATE statement with no WHERE clause
+    AlterStatement, // ALTER TABLE / DATABASE / etc.
+    GrantOrRevoke, // Privilege changes
+    DeleteWithoutWhere, // DELETE with no/trivial WHERE
+    UpdateWithoutWhere, // UPDATE with no/trivial WHERE
 } // End DestructiveType enum
 
 // Analysis result struct for a SQL statement's safety classification
@@ -85,6 +88,52 @@ fn strip_sql_comments(sql: &str) -> String {
     out
 }
 
+fn destructive(
+    kind: DestructiveType,
+    message: impl Into<String>,
+) -> SafetyAnalysis {
+    SafetyAnalysis {
+        is_destructive: true,
+        destructive_type: Some(kind),
+        warning_message: Some(message.into()),
+        requires_confirmation: true,
+    }
+}
+
+/// True when WHERE is missing or only a tautology like `1=1` / `TRUE` (unbounded DML).
+fn where_is_missing_or_trivial(tokens: &[&str]) -> bool {
+    let where_pos = tokens.iter().position(|t| *t == "WHERE");
+    let Some(idx) = where_pos else {
+        return true;
+    };
+    if idx + 1 >= tokens.len() {
+        return true; // bare WHERE
+    }
+    // Join predicate tokens until end (ignore trailing empty)
+    let predicate: String = tokens[idx + 1..]
+        .iter()
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let compact: String = predicate
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_uppercase();
+    // Pure tautologies only — "1=1 AND id=2" is not treated as unbounded
+    matches!(
+        compact.as_str(),
+        "1=1"
+            | "TRUE"
+            | "1"
+            | "0=0"
+            | "'A'='A'"
+            | "\"A\"=\"A\""
+            | "1=1;"
+            | "TRUE;"
+    ) || compact == "1=1"
+}
+
 fn analyze_single_statement(sql: &str) -> SafetyAnalysis {
     let normalized = sql.trim().to_uppercase();
     let tokens: Vec<&str> = normalized.split_whitespace().collect();
@@ -98,60 +147,60 @@ fn analyze_single_statement(sql: &str) -> SafetyAnalysis {
         };
     }
 
-    if tokens.len() >= 2 && tokens[0] == "DROP" && tokens[1] == "TABLE" {
-        return SafetyAnalysis {
-            is_destructive: true,
-            destructive_type: Some(DestructiveType::DropTable),
-            warning_message: Some(
-                "DROP TABLE will permanently delete the table and all its data.".to_string(),
-            ),
-            requires_confirmation: true,
-        };
-    }
-
-    if tokens.len() >= 2 && tokens[0] == "DROP" && tokens[1] == "DATABASE" {
-        return SafetyAnalysis {
-            is_destructive: true,
-            destructive_type: Some(DestructiveType::DropDatabase),
-            warning_message: Some(
-                "DROP DATABASE will permanently delete the entire database.".to_string(),
-            ),
-            requires_confirmation: true,
-        };
+    // Any DROP …
+    if tokens[0] == "DROP" {
+        if tokens.len() >= 2 && tokens[1] == "TABLE" {
+            return destructive(
+                DestructiveType::DropTable,
+                "DROP TABLE will permanently delete the table and all its data.",
+            );
+        }
+        if tokens.len() >= 2 && tokens[1] == "DATABASE" {
+            return destructive(
+                DestructiveType::DropDatabase,
+                "DROP DATABASE will permanently delete the entire database.",
+            );
+        }
+        let obj = tokens.get(1).unwrap_or(&"OBJECT");
+        return destructive(
+            DestructiveType::DropObject,
+            format!("DROP {} is a destructive schema change and requires confirmation.", obj),
+        );
     }
 
     if tokens[0] == "TRUNCATE" {
-        return SafetyAnalysis {
-            is_destructive: true,
-            destructive_type: Some(DestructiveType::TruncateTable),
-            warning_message: Some("TRUNCATE will remove all rows from the table.".to_string()),
-            requires_confirmation: true,
-        };
+        return destructive(
+            DestructiveType::TruncateTable,
+            "TRUNCATE will remove all rows from the table.",
+        );
     }
 
-    // WHERE detection: word-boundary style (avoid matching column values)
-    let has_where = normalized.split_whitespace().any(|t| t == "WHERE" || t.starts_with("WHERE"));
-
-    if tokens[0] == "DELETE" && !has_where {
-        return SafetyAnalysis {
-            is_destructive: true,
-            destructive_type: Some(DestructiveType::DeleteWithoutWhere),
-            warning_message: Some(
-                "DELETE without WHERE clause will remove ALL rows from the table.".to_string(),
-            ),
-            requires_confirmation: true,
-        };
+    if tokens[0] == "ALTER" {
+        return destructive(
+            DestructiveType::AlterStatement,
+            "ALTER statements can change schema or data and require confirmation.",
+        );
     }
 
-    if tokens[0] == "UPDATE" && !has_where {
-        return SafetyAnalysis {
-            is_destructive: true,
-            destructive_type: Some(DestructiveType::UpdateWithoutWhere),
-            warning_message: Some(
-                "UPDATE without WHERE clause will modify ALL rows in the table.".to_string(),
-            ),
-            requires_confirmation: true,
-        };
+    if tokens[0] == "GRANT" || tokens[0] == "REVOKE" {
+        return destructive(
+            DestructiveType::GrantOrRevoke,
+            "GRANT/REVOKE changes privileges and requires confirmation.",
+        );
+    }
+
+    if tokens[0] == "DELETE" && where_is_missing_or_trivial(&tokens) {
+        return destructive(
+            DestructiveType::DeleteWithoutWhere,
+            "DELETE without a meaningful WHERE clause will remove ALL rows from the table.",
+        );
+    }
+
+    if tokens[0] == "UPDATE" && where_is_missing_or_trivial(&tokens) {
+        return destructive(
+            DestructiveType::UpdateWithoutWhere,
+            "UPDATE without a meaningful WHERE clause will modify ALL rows in the table.",
+        );
     }
 
     SafetyAnalysis {
@@ -160,6 +209,67 @@ fn analyze_single_statement(sql: &str) -> SafetyAnalysis {
         warning_message: None,
         requires_confirmation: false,
     }
+}
+
+/// Keywords that mutate data or schema (blocked on read-only connections).
+fn is_write_keyword(token: &str) -> bool {
+    matches!(
+        token,
+        "INSERT"
+            | "UPDATE"
+            | "DELETE"
+            | "DROP"
+            | "ALTER"
+            | "TRUNCATE"
+            | "CREATE"
+            | "GRANT"
+            | "REVOKE"
+            | "REPLACE"
+            | "CALL"
+            | "MERGE"
+            | "COPY"
+            | "LOAD"
+            | "RENAME"
+            | "COMMENT"
+            | "VACUUM"
+            | "REINDEX"
+            | "ATTACH"
+            | "DETACH"
+            | "PRAGMA" // SQLite PRAGMA can mutate; treat as write for read-only safety
+    )
+}
+
+/// True if any statement in the batch begins with a write/DDL keyword.
+/// Used to enforce connection-level read-only mode server-side.
+pub fn sql_contains_write(sql: &str) -> bool {
+    let cleaned = strip_sql_comments(sql);
+    let statements: Vec<&str> = cleaned
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if statements.is_empty() {
+        return false;
+    }
+    for stmt in statements {
+        let normalized = stmt.trim().to_uppercase();
+        let mut tokens = normalized.split_whitespace();
+        if let Some(first) = tokens.next() {
+            if is_write_keyword(first) {
+                return true;
+            }
+            // WITH ... INSERT/UPDATE/DELETE is a write CTE
+            if first == "WITH" {
+                let rest = normalized.as_str();
+                if rest.split_whitespace().any(|t| {
+                    matches!(t, "INSERT" | "UPDATE" | "DELETE" | "MERGE")
+                }) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Analyze SQL (including multi-statement batches) for destructive operations.
@@ -267,5 +377,40 @@ mod tests { // Unit test module
             result.destructive_type,
             Some(DestructiveType::DeleteWithoutWhere)
         );
+    }
+
+    #[test]
+    fn test_sql_contains_write_multi_statement() {
+        assert!(!sql_contains_write("SELECT 1"));
+        assert!(sql_contains_write("SELECT 1; DROP TABLE users;"));
+        assert!(sql_contains_write("INSERT INTO t VALUES (1)"));
+        assert!(sql_contains_write("WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x"));
+        assert!(!sql_contains_write("WITH x AS (SELECT 1) SELECT * FROM x"));
+        assert!(!sql_contains_write("EXPLAIN SELECT 1"));
+    }
+
+    #[test]
+    fn test_drop_view_and_alter_flagged() {
+        let v = analyze_sql_safety("DROP VIEW public.v;");
+        assert!(v.requires_confirmation);
+        assert_eq!(v.destructive_type, Some(DestructiveType::DropObject));
+
+        let a = analyze_sql_safety("ALTER TABLE users ADD COLUMN x INT;");
+        assert!(a.requires_confirmation);
+        assert_eq!(a.destructive_type, Some(DestructiveType::AlterStatement));
+    }
+
+    #[test]
+    fn test_delete_where_1_eq_1_flagged() {
+        let r = analyze_sql_safety("DELETE FROM users WHERE 1 = 1;");
+        assert!(r.is_destructive);
+        assert_eq!(r.destructive_type, Some(DestructiveType::DeleteWithoutWhere));
+    }
+
+    #[test]
+    fn test_delete_where_real_predicate_ok() {
+        let r = analyze_sql_safety("DELETE FROM users WHERE 1 = 1 AND id = 5;");
+        // Predicate is not a pure tautology (has AND id = 5)
+        assert!(!r.is_destructive);
     }
 }

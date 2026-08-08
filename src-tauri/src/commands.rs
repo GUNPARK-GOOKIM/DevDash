@@ -1,11 +1,11 @@
 // Tauri IPC Command Handler Module for DevDash Frontend API Interface
 use crate::db::app_storage::{AppStorage, ConnectionGroup, QueryHistoryItem, SavedQueryItem}; // Import AppStorage, ConnectionGroup, QueryHistoryItem, and SavedQueryItem structs
 use crate::db::credentials; // Import credentials module for keyring secrets management
-use crate::db::executor::QueryResultPayload; // Import QueryResultPayload struct
+use crate::db::executor::{cancel_backend_process, QueryResultPayload};
 use crate::db::export; // Import export module for CSV, JSON, SQL dump operations
 use crate::db::introspection::{fetch_tables_managed, fetch_columns_managed, analyze_primary_keys, TableInfo, ColumnInfo, PkAnalysis}; // Import introspection functions and structs
 use crate::db::pool::{ConnectionManager, ConnectionDetails, TestConnectionResult}; // Import ConnectionManager, ConnectionDetails, and TestConnectionResult
-use crate::db::safe_mode::{analyze_sql_safety, SafetyAnalysis}; // Import safe mode analysis function
+use crate::db::safe_mode::{analyze_sql_safety, sql_contains_write, SafetyAnalysis}; // Import safe mode analysis function
 use crate::db::staged_edits::{
     apply_staged_deletes, apply_staged_edits, apply_staged_inserts, StagedDeleteRow,
     StagedInsertRow, StagedRowEdit,
@@ -42,20 +42,66 @@ use crate::db::diagnostics::{run_connection_diagnostics, ConnectionDiagnostics};
 use crate::db::profiler::{profile_query, QueryProfile};
 use crate::db::migrations_log::{self, MigrationRun};
 use crate::db::redis::{self, RedisKeyInfo};
+use crate::db::duckdb_engine::DuckDbManager;
+use crate::db::result_snapshots::{
+    self, SnapshotDiffResult, SnapshotMeta,
+};
 use std::sync::Arc; // Import Arc for atomic reference sharing
 use tauri::State; // Import State extractor type from tauri crate
 
 use std::collections::HashMap; // Import HashMap for tracking active query handles
 use tokio::sync::Mutex; // Import Mutex for thread-safe query cancellation access
 
+/// Tracked in-flight query: local abort handle + optional server backend pid for real cancel.
+pub struct ActiveQuery {
+    pub abort: tokio::task::AbortHandle,
+    pub backend_pid: Option<u32>,
+    pub db_kind: String,
+    pub connection_id: String,
+}
+
 // Managed state container holding global application handles
 pub struct AppState { // Struct definition for managed state
     pub connection_manager: ConnectionManager, // Multi-pool connection manager instance
     pub storage: Arc<AppStorage>, // Embedded SQLite app storage instance
-    pub active_queries: Mutex<HashMap<String, tokio::task::AbortHandle>>, // Map of active query cancellation handles
+    pub active_queries: Mutex<HashMap<String, ActiveQuery>>, // Map of active query cancellation handles
     pub ssh_tunnel_manager: SshTunnelManager, // Native SSH tunnel manager handle
     pub tx_manager: TransactionManager, // Explicit GUI transaction sessions
+    pub duckdb: DuckDbManager, // DuckDB file/memory connections (not sqlx)
 } // End of AppState struct definition
+
+/// Block write/DDL SQL when the connection was opened as read-only.
+fn enforce_sql_read_only_policy(
+    connection_manager: &ConnectionManager,
+    duckdb: &crate::db::duckdb_engine::DuckDbManager,
+    connection_id: &str,
+    sql: &str,
+) -> Result<(), String> {
+    let ro = connection_manager.is_read_only(connection_id) || duckdb.is_read_only(connection_id);
+    if ro && sql_contains_write(sql) {
+        return Err(
+            "Connection is read-only. Write/DDL statements are blocked by the server.".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Block destructive SQL unless the client explicitly confirmed (or disabled Safe Mode).
+fn enforce_safe_mode_policy(sql: &str, allow_destructive: bool) -> Result<(), String> {
+    if allow_destructive {
+        return Ok(());
+    }
+    let analysis = analyze_sql_safety(sql);
+    if analysis.requires_confirmation || analysis.is_destructive {
+        return Err(format!(
+            "Safe Mode blocked destructive SQL. Confirm in the UI or pass allow_destructive. {}",
+            analysis
+                .warning_message
+                .unwrap_or_else(|| "Destructive operation detected.".to_string())
+        ));
+    }
+    Ok(())
+}
 
 // IPC Command: Save database password securely in OS Keychain
 #[tauri::command] // Tauri command macro annotation
@@ -112,7 +158,7 @@ pub fn generate_migration_sql(
     snapshot: TableSnapshot,
     current: TableSnapshot,
     engine: EngineDialect,
-) -> MigrationDiffResult {
+) -> Result<MigrationDiffResult, String> {
     generate_schema_migration(&snapshot, &current, engine)
 }
 
@@ -124,6 +170,7 @@ pub async fn structure_add_column(
     engine: EngineDialect,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    state.connection_manager.ensure_writes_allowed(&connection_id)?;
     let pool = state.connection_manager.get_pool(&connection_id)?;
     let sql = build_add_column_sql(&payload, engine)?;
     execute_structure_sql(&pool, &sql).await
@@ -137,6 +184,7 @@ pub async fn structure_drop_column(
     engine: EngineDialect,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    state.connection_manager.ensure_writes_allowed(&connection_id)?;
     let pool = state.connection_manager.get_pool(&connection_id)?;
     let sql = build_drop_column_sql(&payload, engine)?;
     execute_structure_sql(&pool, &sql).await
@@ -150,8 +198,9 @@ pub async fn structure_rename_column(
     engine: EngineDialect,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    state.connection_manager.ensure_writes_allowed(&connection_id)?;
     let pool = state.connection_manager.get_pool(&connection_id)?;
-    let sql = build_rename_column_sql(&payload, engine);
+    let sql = build_rename_column_sql(&payload, engine)?;
     execute_structure_sql(&pool, &sql).await
 }
 
@@ -163,8 +212,9 @@ pub async fn structure_change_type(
     engine: EngineDialect,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    state.connection_manager.ensure_writes_allowed(&connection_id)?;
     let pool = state.connection_manager.get_pool(&connection_id)?;
-    let sql = build_change_type_sql(&payload, engine);
+    let sql = build_change_type_sql(&payload, engine)?;
     execute_structure_sql(&pool, &sql).await
 }
 
@@ -176,8 +226,9 @@ pub async fn structure_set_nullable(
     engine: EngineDialect,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    state.connection_manager.ensure_writes_allowed(&connection_id)?;
     let pool = state.connection_manager.get_pool(&connection_id)?;
-    let sql = build_set_nullable_sql(&payload, engine);
+    let sql = build_set_nullable_sql(&payload, engine)?;
     execute_structure_sql(&pool, &sql).await
 }
 
@@ -189,8 +240,9 @@ pub async fn structure_add_index(
     engine: EngineDialect,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    state.connection_manager.ensure_writes_allowed(&connection_id)?;
     let pool = state.connection_manager.get_pool(&connection_id)?;
-    let sql = build_add_index_sql(&payload, engine);
+    let sql = build_add_index_sql(&payload, engine)?;
     execute_structure_sql(&pool, &sql).await
 }
 
@@ -202,8 +254,9 @@ pub async fn structure_drop_index(
     engine: EngineDialect,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    state.connection_manager.ensure_writes_allowed(&connection_id)?;
     let pool = state.connection_manager.get_pool(&connection_id)?;
-    let sql = build_drop_index_sql(&payload, engine);
+    let sql = build_drop_index_sql(&payload, engine)?;
     execute_structure_sql(&pool, &sql).await
 }
 
@@ -288,6 +341,38 @@ pub async fn get_all_connection_groups(
 // IPC Command: Test reachability and credentials for target database
 #[tauri::command]
 pub async fn test_db_connection(details: ConnectionDetails) -> TestConnectionResult {
+    if details.db_type.to_lowercase() == "duckdb" {
+        let start = std::time::Instant::now();
+        let path = details.database.trim();
+        let res = if path.is_empty() || path == ":memory:" {
+            duckdb::Connection::open_in_memory()
+        } else {
+            duckdb::Connection::open(path)
+        };
+        return match res {
+            Ok(conn) => {
+                let ping = conn.execute_batch("SELECT 1;");
+                let ms = start.elapsed().as_millis() as u64;
+                match ping {
+                    Ok(_) => TestConnectionResult {
+                        success: true,
+                        latency_ms: ms,
+                        message: format!("DuckDB opened successfully ({}ms)", ms),
+                    },
+                    Err(e) => TestConnectionResult {
+                        success: false,
+                        latency_ms: ms,
+                        message: format!("DuckDB open ok but ping failed: {}", e),
+                    },
+                }
+            }
+            Err(e) => TestConnectionResult {
+                success: false,
+                latency_ms: start.elapsed().as_millis() as u64,
+                message: format!("DuckDB connection failed: {}", e),
+            },
+        };
+    }
     ConnectionManager::test_connection(&details).await
 }
 
@@ -298,7 +383,18 @@ pub async fn connect_database_config(
     details: ConnectionDetails,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state.connection_manager.connect_with_details(&connection_id, &details).await
+    if details.db_type.to_lowercase() == "duckdb" {
+        // DuckDB: `database` field is the file path or :memory:
+        return state.duckdb.connect(
+            &connection_id,
+            &details.database,
+            details.is_read_only,
+        );
+    }
+    state
+        .connection_manager
+        .connect_with_details(&connection_id, &details)
+        .await
 }
 
 // IPC Command: Establish connection pool to target database
@@ -329,6 +425,7 @@ pub async fn disconnect_database( // Async command handler function
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<(), String> { // Command return signature
     state.tx_manager.force_drop(&connection_id).await;
+    state.duckdb.disconnect(&connection_id);
     state.connection_manager.disconnect(&connection_id).await // Call connection manager disconnect method
 } // End of disconnect_database command
 
@@ -336,9 +433,12 @@ pub async fn disconnect_database( // Async command handler function
 #[tauri::command] // Tauri command macro annotation
 pub async fn get_database_tables( // Async command handler function
     connection_id: String, // Connection ID identifier
-    _db_kind: String, // Database engine kind identifier string
+    db_kind: String, // Database engine kind identifier string
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<Vec<TableInfo>, String> { // Command return signature
+    if state.duckdb.is_connected(&connection_id) || db_kind.to_lowercase() == "duckdb" {
+        return state.duckdb.fetch_tables(&connection_id);
+    }
     let conn = state.connection_manager.get_managed_connection(&connection_id)?; // Lookup cached managed connection
     fetch_tables_managed(&conn).await // Call fetch_tables_managed introspection function asynchronously
 } // End of get_database_tables command
@@ -347,10 +447,13 @@ pub async fn get_database_tables( // Async command handler function
 #[tauri::command] // Tauri command macro annotation
 pub async fn get_table_columns( // Async command handler function
     connection_id: String, // Connection ID identifier
-    _db_kind: String, // Database engine kind string
+    db_kind: String, // Database engine kind string
     table_name: String, // Target table name string
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<Vec<ColumnInfo>, String> { // Command return signature
+    if state.duckdb.is_connected(&connection_id) || db_kind.to_lowercase() == "duckdb" {
+        return state.duckdb.fetch_columns(&connection_id, &table_name);
+    }
     let conn = state.connection_manager.get_managed_connection(&connection_id)?; // Lookup cached managed connection
     fetch_columns_managed(&conn, &table_name).await // Call fetch_columns_managed introspection function
 } // End of get_table_columns command
@@ -363,6 +466,10 @@ pub async fn get_pk_analysis( // Async command handler function
     table_name: String, // Target table name string
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<PkAnalysis, String> { // Command return signature
+    if state.duckdb.is_connected(&connection_id) {
+        let columns = state.duckdb.fetch_columns(&connection_id, &table_name)?;
+        return Ok(analyze_primary_keys(&columns));
+    }
     let conn = state.connection_manager.get_managed_connection(&connection_id)?; // Lookup cached managed connection
     let columns = fetch_columns_managed(&conn, &table_name).await?; // Fetch column metadata
     Ok(analyze_primary_keys(&columns)) // Analyze and return PK status
@@ -374,8 +481,55 @@ pub async fn run_sql_query( // Async command handler function
     connection_id: String, // Connection ID identifier
     query_id: String, // Unique identifier for the query execution
     sql: String, // Raw SQL string to execute
+    // When true: user confirmed Safe Mode modal, or Safe Mode is disabled in UI.
+    allow_destructive: Option<bool>,
+    // Optional query timeout in seconds (0 / None = no limit).
+    query_timeout_sec: Option<u64>,
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<QueryResultPayload, String> { // Command return signature
+    // Server-side read-only gate (covers multi-statement batches, not just UI checks)
+    enforce_sql_read_only_policy(
+        &state.connection_manager,
+        &state.duckdb,
+        &connection_id,
+        &sql,
+    )?;
+    // Server-side Safe Mode gate — UI confirmation cannot be skipped via raw IPC
+    enforce_safe_mode_policy(&sql, allow_destructive.unwrap_or(false))?;
+
+    // DuckDB path (dedicated engine, not sqlx pool)
+    if state.duckdb.is_connected(&connection_id) {
+        let result = state.duckdb.run_sql(&connection_id, &sql);
+        match &result {
+            Ok(payload) => {
+                let _ = state
+                    .storage
+                    .log_query_history(
+                        &sql,
+                        &connection_id,
+                        payload.execution_time_ms as f64,
+                        payload.rows.len() as i64,
+                        None,
+                    )
+                    .await;
+                let _ = audit::log_action(
+                    &connection_id,
+                    "QUERY_DUCKDB",
+                    &sql,
+                    payload.affected_rows,
+                    "SUCCESS",
+                );
+            }
+            Err(err_msg) => {
+                let _ = state
+                    .storage
+                    .log_query_history(&sql, &connection_id, 0.0, 0, Some(err_msg))
+                    .await;
+            }
+        }
+        return result;
+    }
+
     // Prefer open transaction session when present.
     // On TX SQL failure, surface the error — do NOT fall through to the pool
     // (which would re-run the statement outside the held connection / auto-commit).
@@ -415,30 +569,74 @@ pub async fn run_sql_query( // Async command handler function
     }
 
     let managed_conn = state.connection_manager.get_managed_connection(&connection_id)?; // Lookup cached connection pool instance
-    
+    let db_kind = managed_conn.db_type.clone();
+    let backend_pid: Option<u32> = None;
+
     // Clone connection pool and SQL statement for task execution
     let conn_clone = managed_conn.clone();
     let sql_clone = sql.clone();
-    
-    // Spawn task to run query asynchronously on thread pool
+
+    // Spawn task to run query on the held connection
     let handle = tokio::spawn(async move {
         crate::db::executor::execute_query_for_managed(&conn_clone, &sql_clone).await
     });
 
-    // Register active query handle
+    // Register active query handle + optional server pid
     {
         let mut active = state.active_queries.lock().await;
-        active.insert(query_id.clone(), handle.abort_handle());
+        active.insert(
+            query_id.clone(),
+            ActiveQuery {
+                abort: handle.abort_handle(),
+                backend_pid,
+                db_kind: db_kind.clone(),
+                connection_id: connection_id.clone(),
+            },
+        );
     }
 
-    // Await completion or handle cancellation
-    let result = match handle.await {
-        Ok(res) => res,
-        Err(e) => {
-            if e.is_cancelled() {
-                Err("Query cancelled by user".to_string())
-            } else {
-                Err(format!("Query execution panicked: {}", e))
+    // Await completion, optional timeout, or cancellation
+    let timeout_secs = query_timeout_sec.unwrap_or(0);
+    let result = if timeout_secs > 0 {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            handle,
+        )
+        .await
+        {
+            Ok(Ok(res)) => res,
+            Ok(Err(e)) => {
+                if e.is_cancelled() {
+                    Err("Query cancelled by user".to_string())
+                } else {
+                    Err(format!("Query execution panicked: {}", e))
+                }
+            }
+            Err(_elapsed) => {
+                // Timeout: abort local task and try backend cancel
+                if let Some(entry) = state.active_queries.lock().await.remove(&query_id) {
+                    entry.abort.abort();
+                    if let Some(pid) = entry.backend_pid {
+                        if let Ok(pool) = state.connection_manager.get_pool(&entry.connection_id) {
+                            let _ = cancel_backend_process(&pool, pid, &entry.db_kind).await;
+                        }
+                    }
+                }
+                Err(format!(
+                    "Query timed out after {} seconds",
+                    timeout_secs
+                ))
+            }
+        }
+    } else {
+        match handle.await {
+            Ok(res) => res,
+            Err(e) => {
+                if e.is_cancelled() {
+                    Err("Query cancelled by user".to_string())
+                } else {
+                    Err(format!("Query execution panicked: {}", e))
+                }
             }
         }
     };
@@ -484,7 +682,9 @@ pub async fn run_sql_query( // Async command handler function
 // ─── Multi-connection workspace ──────────────────────────────────────
 #[tauri::command]
 pub fn list_connected_ids(state: State<'_, AppState>) -> Vec<String> {
-    state.connection_manager.list_connected_ids()
+    let mut ids = state.connection_manager.list_connected_ids();
+    ids.extend(state.duckdb.list_connected_ids());
+    ids
 }
 
 // ─── Transaction manager ─────────────────────────────────────────────
@@ -493,6 +693,7 @@ pub async fn begin_transaction(
     connection_id: String,
     state: State<'_, AppState>,
 ) -> Result<TxStatus, String> {
+    state.connection_manager.ensure_writes_allowed(&connection_id)?;
     let managed_conn = state.connection_manager.get_managed_connection(&connection_id)?;
     state.tx_manager.begin_managed(&managed_conn, &connection_id).await
 }
@@ -571,6 +772,9 @@ pub async fn apply_migration_sql(
     state: State<'_, AppState>,
 ) -> Result<ApplyMigrationResult, String> {
     use std::time::Instant;
+    if !dry_run {
+        state.connection_manager.ensure_writes_allowed(&connection_id)?;
+    }
     let start = Instant::now();
     let pool = state.connection_manager.get_pool(&connection_id)?;
     let run_id = migrations_log::new_run_id();
@@ -685,30 +889,83 @@ pub async fn list_migration_runs(
     migrations_log::list_migration_runs(state.storage.pool(), limit.unwrap_or(50)).await
 }
 
+/// Split SQL on `;` outside quotes, skipping line/block comments (aligned with frontend splitter).
 fn split_sql_simple(sql: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut in_single = false;
     let mut in_double = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
     let chars: Vec<char> = sql.chars().collect();
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
+        let next = chars.get(i + 1).copied();
+
+        if in_line_comment {
+            cur.push(c);
+            if c == '\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_block_comment {
+            cur.push(c);
+            if c == '*' && next == Some('/') {
+                cur.push('/');
+                i += 2;
+                in_block_comment = false;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if !in_single && !in_double {
+            if c == '-' && next == Some('-') {
+                cur.push(c);
+                in_line_comment = true;
+                i += 1;
+                continue;
+            }
+            if c == '/' && next == Some('*') {
+                cur.push(c);
+                in_block_comment = true;
+                i += 1;
+                continue;
+            }
+        }
+
         if c == '\'' && !in_double {
+            if in_single && next == Some('\'') {
+                cur.push('\'');
+                cur.push('\'');
+                i += 2;
+                continue;
+            }
             in_single = !in_single;
             cur.push(c);
-        } else if c == '"' && !in_single {
+            i += 1;
+            continue;
+        }
+        if c == '"' && !in_single {
             in_double = !in_double;
             cur.push(c);
-        } else if c == ';' && !in_single && !in_double {
+            i += 1;
+            continue;
+        }
+        if c == ';' && !in_single && !in_double {
             let t = cur.trim().to_string();
-            if !t.is_empty() && !t.starts_with("--") {
+            if !t.is_empty() {
                 out.push(t);
             }
             cur.clear();
-        } else {
-            cur.push(c);
+            i += 1;
+            continue;
         }
+        cur.push(c);
         i += 1;
     }
     let t = cur.trim().to_string();
@@ -725,9 +982,47 @@ pub async fn stream_sql_query(
     query_id: String,
     sql: String,
     chunk_size: Option<usize>,
+    allow_destructive: Option<bool>,
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<QueryResultPayload, String> {
+    enforce_sql_read_only_policy(
+        &state.connection_manager,
+        &state.duckdb,
+        &connection_id,
+        &sql,
+    )?;
+    enforce_safe_mode_policy(&sql, allow_destructive.unwrap_or(false))?;
+    if state.duckdb.is_connected(&connection_id) {
+        // DuckDB: no chunked stream path yet — run fully and emit as one chunk
+        let payload = state.duckdb.run_sql(&connection_id, &sql)?;
+        use tauri::Emitter;
+        let _ = app_handle.emit(&format!("query_columns_{}", query_id), &payload.columns);
+        if !payload.rows.is_empty() {
+            let _ = app_handle.emit(
+                &format!("query_chunk_{}", query_id),
+                &crate::db::executor::StreamChunkPayload {
+                    query_id: query_id.clone(),
+                    chunk_index: 0,
+                    rows: payload.rows.clone(),
+                },
+            );
+        }
+        let _ = app_handle.emit(
+            &format!("query_done_{}", query_id),
+            &crate::db::executor::StreamDonePayload {
+                query_id: query_id.clone(),
+                execution_time_ms: payload.execution_time_ms,
+                total_rows: payload.affected_rows,
+            },
+        );
+        return Ok(QueryResultPayload {
+            columns: payload.columns,
+            rows: Vec::new(),
+            execution_time_ms: payload.execution_time_ms,
+            affected_rows: payload.affected_rows,
+        });
+    }
     let managed_conn = state.connection_manager.get_managed_connection(&connection_id)?;
     let size = chunk_size.unwrap_or(500);
     crate::db::executor::stream_query_for_managed(&app_handle, &managed_conn, &query_id, &sql, size).await
@@ -821,6 +1116,7 @@ pub async fn import_csv_data(
     file_path: String,
     state: State<'_, AppState>,
 ) -> Result<ImportExecutionResult, String> {
+    state.connection_manager.ensure_writes_allowed(&connection_id)?;
     let pool = state.connection_manager.get_pool(&connection_id)?;
     let db_type = state
         .connection_manager
@@ -844,6 +1140,7 @@ pub async fn import_csv_content(
     csv_content: String,
     state: State<'_, AppState>,
 ) -> Result<ImportExecutionResult, String> {
+    state.connection_manager.ensure_writes_allowed(&connection_id)?;
     let pool = state.connection_manager.get_pool(&connection_id)?;
     let db_type = state
         .connection_manager
@@ -925,9 +1222,19 @@ pub async fn cancel_query(
     query_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let mut active = state.active_queries.lock().await;
-    if let Some(handle) = active.remove(&query_id) {
-        handle.abort(); // Cancel query execution future
+    let entry = {
+        let mut active = state.active_queries.lock().await;
+        active.remove(&query_id)
+    };
+    if let Some(entry) = entry {
+        // 1) Abort the local Tokio task
+        entry.abort.abort();
+        // 2) Best-effort protocol cancel on the server (PG / MySQL)
+        if let Some(pid) = entry.backend_pid {
+            if let Ok(pool) = state.connection_manager.get_pool(&entry.connection_id) {
+                let _ = cancel_backend_process(&pool, pid, &entry.db_kind).await;
+            }
+        }
         Ok(())
     } else {
         Err("No active query found with that ID".to_string())
@@ -949,6 +1256,7 @@ pub async fn commit_staged_row_edits( // Async command handler function
     edits: Vec<StagedRowEdit>, // Vector of staged row edits to commit
     state: State<'_, AppState>, // Extracted global AppState handle
 ) -> Result<u64, String> { // Command return signature
+    state.connection_manager.ensure_writes_allowed(&connection_id)?;
     let pool = state.connection_manager.get_pool(&connection_id)?;
     let db_type = state
         .connection_manager
@@ -987,6 +1295,7 @@ pub async fn commit_staged_inserts(
     rows: Vec<StagedInsertRow>,
     state: State<'_, AppState>,
 ) -> Result<u64, String> {
+    state.connection_manager.ensure_writes_allowed(&connection_id)?;
     let pool = state.connection_manager.get_pool(&connection_id)?;
     let db_type = state
         .connection_manager
@@ -1015,6 +1324,7 @@ pub async fn commit_staged_deletes(
     rows: Vec<StagedDeleteRow>,
     state: State<'_, AppState>,
 ) -> Result<u64, String> {
+    state.connection_manager.ensure_writes_allowed(&connection_id)?;
     let pool = state.connection_manager.get_pool(&connection_id)?;
     let db_type = state
         .connection_manager
@@ -1032,6 +1342,63 @@ pub async fn commit_staged_deletes(
         );
     }
     result
+}
+
+// ─── Result snapshots (local capture + paged diff) ───────────────────
+#[tauri::command]
+pub async fn save_result_snapshot(
+    name: String,
+    connection_id: String,
+    connection_name: String,
+    sql_text: String,
+    columns: Vec<String>,
+    rows: Vec<Vec<serde_json::Value>>,
+    state: State<'_, AppState>,
+) -> Result<SnapshotMeta, String> {
+    result_snapshots::save_result_snapshot(
+        state.storage.pool(),
+        &name,
+        &connection_id,
+        &connection_name,
+        &sql_text,
+        &columns,
+        &rows,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn list_result_snapshots(
+    limit: Option<i64>,
+    state: State<'_, AppState>,
+) -> Result<Vec<SnapshotMeta>, String> {
+    result_snapshots::list_result_snapshots(state.storage.pool(), limit.unwrap_or(100)).await
+}
+
+#[tauri::command]
+pub async fn delete_result_snapshot(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    result_snapshots::delete_result_snapshot(state.storage.pool(), &id).await
+}
+
+#[tauri::command]
+pub async fn diff_result_snapshots(
+    left_id: String,
+    right_id: String,
+    offset: Option<i64>,
+    limit: Option<i64>,
+    state: State<'_, AppState>,
+) -> Result<SnapshotDiffResult, String> {
+    result_snapshots::diff_result_snapshots(
+        state.storage.pool(),
+        &left_id,
+        &right_id,
+        offset.unwrap_or(0),
+        limit.unwrap_or(100),
+    )
+    .await
 }
 
 // IPC Command: Generate CREATE TABLE DDL + indexes for a live table
@@ -1088,8 +1455,31 @@ pub async fn export_table_data(
         "sql" | "sqldump" => {
             export::export_sql_dump_filtered(&managed_conn, &table_name, mysql_style, where_ref).await
         }
+        "parquet" => {
+            let bytes = export::export_parquet_filtered(
+                &managed_conn,
+                &table_name,
+                mysql_style,
+                where_ref,
+            )
+            .await?;
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            // Binary IPC: base64 so the webview can decode to a Blob
+            Ok(STANDARD.encode(bytes))
+        }
         _ => Err(format!("Unsupported export format: {}", format)),
     }
+}
+
+/// Export in-memory grid rows as Parquet (base64). Used for current-page export.
+#[tauri::command]
+pub fn export_rows_parquet(
+    columns: Vec<String>,
+    rows: Vec<Vec<serde_json::Value>>,
+) -> Result<String, String> {
+    let bytes = export::export_parquet_from_json_rows(&columns, &rows)?;
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    Ok(STANDARD.encode(bytes))
 }
 
 // IPC Command: Save query bound to active workspace project path

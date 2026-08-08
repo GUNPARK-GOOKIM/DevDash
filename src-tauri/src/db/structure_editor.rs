@@ -99,95 +99,136 @@ pub fn build_drop_column_sql(payload: &DropColumnPayload, engine: EngineDialect)
     ))
 }
 
-pub fn build_rename_column_sql(payload: &RenameColumnPayload, engine: EngineDialect) -> String {
+pub fn build_rename_column_sql(
+    payload: &RenameColumnPayload,
+    engine: EngineDialect,
+) -> Result<String, String> {
+    validate_structure_idents(
+        &payload.table_name,
+        &[&payload.old_name, &payload.new_name],
+    )?;
+    let mysql = matches!(engine, EngineDialect::Mysql);
+    Ok(format!(
+        "ALTER TABLE {} RENAME COLUMN {} TO {};",
+        crate::db::identifiers::quote_table(&payload.table_name, mysql)?,
+        crate::db::identifiers::quote_ident(&payload.old_name, mysql),
+        crate::db::identifiers::quote_ident(&payload.new_name, mysql)
+    ))
+}
+
+pub fn build_change_type_sql(
+    payload: &ChangeTypePayload,
+    engine: EngineDialect,
+) -> Result<String, String> {
+    validate_structure_idents(&payload.table_name, &[&payload.column_name])?;
+    validate_data_type(&payload.new_type)?;
+    let mysql = matches!(engine, EngineDialect::Mysql);
+    let table = crate::db::identifiers::quote_table(&payload.table_name, mysql)?;
+    let col = crate::db::identifiers::quote_ident(&payload.column_name, mysql);
     match engine {
-        EngineDialect::Mysql => format!(
-            "ALTER TABLE `{}` RENAME COLUMN `{}` TO `{}`;",
-            payload.table_name, payload.old_name, payload.new_name
-        ),
-        _ => format!(
-            "ALTER TABLE \"{}\" RENAME COLUMN \"{}\" TO \"{}\";",
-            payload.table_name, payload.old_name, payload.new_name
+        EngineDialect::Postgres => Ok(format!(
+            "ALTER TABLE {} ALTER COLUMN {} TYPE {};",
+            table, col, payload.new_type
+        )),
+        EngineDialect::Mysql => Ok(format!(
+            "ALTER TABLE {} MODIFY COLUMN {} {};",
+            table, col, payload.new_type
+        )),
+        // SQLite cannot ALTER COLUMN TYPE; surface a clear error instead of a no-op rename.
+        EngineDialect::Sqlite => Err(
+            "SQLite does not support ALTER COLUMN TYPE. Rebuild the table to change types."
+                .to_string(),
         ),
     }
 }
 
-pub fn build_change_type_sql(payload: &ChangeTypePayload, engine: EngineDialect) -> String {
-    match engine {
-        EngineDialect::Postgres => format!(
-            "ALTER TABLE \"{}\" ALTER COLUMN \"{}\" TYPE {};",
-            payload.table_name, payload.column_name, payload.new_type
-        ),
-        EngineDialect::Mysql => format!(
-            "ALTER TABLE `{}` MODIFY COLUMN `{}` {};",
-            payload.table_name, payload.column_name, payload.new_type
-        ),
-        EngineDialect::Sqlite => format!(
-            "ALTER TABLE \"{}\" RENAME COLUMN \"{}\" TO \"{}\";",
-            payload.table_name, payload.column_name, payload.column_name
-        ),
-    }
-}
-
-pub fn build_set_nullable_sql(payload: &SetNullablePayload, engine: EngineDialect) -> String {
+pub fn build_set_nullable_sql(
+    payload: &SetNullablePayload,
+    engine: EngineDialect,
+) -> Result<String, String> {
+    validate_structure_idents(&payload.table_name, &[&payload.column_name])?;
+    let mysql = matches!(engine, EngineDialect::Mysql);
+    let table = crate::db::identifiers::quote_table(&payload.table_name, mysql)?;
+    let col = crate::db::identifiers::quote_ident(&payload.column_name, mysql);
     match engine {
         EngineDialect::Postgres => {
             if payload.is_nullable {
-                format!(
-                    "ALTER TABLE \"{}\" ALTER COLUMN \"{}\" DROP NOT NULL;",
-                    payload.table_name, payload.column_name
-                )
+                Ok(format!(
+                    "ALTER TABLE {} ALTER COLUMN {} DROP NOT NULL;",
+                    table, col
+                ))
             } else {
-                format!(
-                    "ALTER TABLE \"{}\" ALTER COLUMN \"{}\" SET NOT NULL;",
-                    payload.table_name, payload.column_name
-                )
+                Ok(format!(
+                    "ALTER TABLE {} ALTER COLUMN {} SET NOT NULL;",
+                    table, col
+                ))
             }
         }
         EngineDialect::Mysql => {
+            validate_data_type(&payload.data_type)?;
             let null_clause = if payload.is_nullable { "NULL" } else { "NOT NULL" };
-            format!(
-                "ALTER TABLE `{}` MODIFY COLUMN `{}` {} {};",
-                payload.table_name, payload.column_name, payload.data_type, null_clause
-            )
+            Ok(format!(
+                "ALTER TABLE {} MODIFY COLUMN {} {} {};",
+                table, col, payload.data_type, null_clause
+            ))
         }
         EngineDialect::Sqlite => {
-            let null_clause = if payload.is_nullable { "NULL" } else { "NOT NULL" };
-            format!(
-                "ALTER TABLE \"{}\" ADD COLUMN \"{}_new\" {} {};",
-                payload.table_name, payload.column_name, payload.data_type, null_clause
+            // SQLite cannot ALTER nullability in place; refuse instead of adding a orphan `_new` column.
+            let _ = (table, col, payload.data_type.as_str());
+            Err(
+                "SQLite does not support ALTER COLUMN nullability. Rebuild the table to change NOT NULL."
+                    .to_string(),
             )
         }
     }
 }
 
-pub fn build_add_index_sql(payload: &AddIndexPayload, engine: EngineDialect) -> String {
+pub fn build_add_index_sql(
+    payload: &AddIndexPayload,
+    engine: EngineDialect,
+) -> Result<String, String> {
+    if payload.columns.is_empty() {
+        return Err("Index must include at least one column".to_string());
+    }
+    let col_refs: Vec<&str> = payload.columns.iter().map(|s| s.as_str()).collect();
+    validate_structure_idents(&payload.table_name, &col_refs)?;
+    crate::db::identifiers::validate_simple_identifier(&payload.index_name)?;
+    let mysql = matches!(engine, EngineDialect::Mysql);
     let unique = if payload.is_unique { "UNIQUE " } else { "" };
+    let cols = payload
+        .columns
+        .iter()
+        .map(|c| crate::db::identifiers::quote_ident(c, mysql))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok(format!(
+        "CREATE {}INDEX {} ON {} ({});",
+        unique,
+        crate::db::identifiers::quote_ident(&payload.index_name, mysql),
+        crate::db::identifiers::quote_table(&payload.table_name, mysql)?,
+        cols
+    ))
+}
+
+pub fn build_drop_index_sql(
+    payload: &DropIndexPayload,
+    engine: EngineDialect,
+) -> Result<String, String> {
+    crate::db::identifiers::validate_simple_identifier(&payload.index_name)?;
+    let mysql = matches!(engine, EngineDialect::Mysql);
     match engine {
         EngineDialect::Mysql => {
-            let cols = payload.columns.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(", ");
-            format!(
-                "CREATE {}INDEX `{}` ON `{}` ({});",
-                unique, payload.index_name, payload.table_name, cols
-            )
+            crate::db::identifiers::validate_table_identifier(&payload.table_name)?;
+            Ok(format!(
+                "DROP INDEX {} ON {};",
+                crate::db::identifiers::quote_ident(&payload.index_name, true),
+                crate::db::identifiers::quote_table(&payload.table_name, true)?
+            ))
         }
-        _ => {
-            let cols = payload.columns.iter().map(|c| format!("\"{}\"", c)).collect::<Vec<_>>().join(", ");
-            format!(
-                "CREATE {}INDEX \"{}\" ON \"{}\" ({});",
-                unique, payload.index_name, payload.table_name, cols
-            )
-        }
-    }
-}
-
-pub fn build_drop_index_sql(payload: &DropIndexPayload, engine: EngineDialect) -> String {
-    match engine {
-        EngineDialect::Mysql => format!(
-            "DROP INDEX `{}` ON `{}`;",
-            payload.index_name, payload.table_name
-        ),
-        _ => format!("DROP INDEX \"{}\";", payload.index_name),
+        _ => Ok(format!(
+            "DROP INDEX {};",
+            crate::db::identifiers::quote_ident(&payload.index_name, mysql)
+        )),
     }
 }
 
@@ -233,8 +274,11 @@ mod tests {
             old_name: "name".to_string(),
             new_name: "full_name".to_string(),
         };
-        let rename_sql = build_rename_column_sql(&rename_payload, EngineDialect::Sqlite);
-        assert_eq!(rename_sql, "ALTER TABLE \"users\" RENAME COLUMN \"name\" TO \"full_name\";");
+        let rename_sql = build_rename_column_sql(&rename_payload, EngineDialect::Sqlite).unwrap();
+        assert_eq!(
+            rename_sql,
+            "ALTER TABLE \"users\" RENAME COLUMN \"name\" TO \"full_name\";"
+        );
         execute_structure_sql(&pool, &rename_sql).await.unwrap();
 
         // 3. Add Index
@@ -244,8 +288,11 @@ mod tests {
             columns: vec!["email".to_string()],
             is_unique: true,
         };
-        let idx_sql = build_add_index_sql(&idx_payload, EngineDialect::Sqlite);
-        assert_eq!(idx_sql, "CREATE UNIQUE INDEX \"idx_users_email\" ON \"users\" (\"email\");");
+        let idx_sql = build_add_index_sql(&idx_payload, EngineDialect::Sqlite).unwrap();
+        assert_eq!(
+            idx_sql,
+            "CREATE UNIQUE INDEX \"idx_users_email\" ON \"users\" (\"email\");"
+        );
         execute_structure_sql(&pool, &idx_sql).await.unwrap();
 
         // 4. Drop Index
@@ -253,7 +300,7 @@ mod tests {
             table_name: "users".to_string(),
             index_name: "idx_users_email".to_string(),
         };
-        let drop_idx_sql = build_drop_index_sql(&drop_idx_payload, EngineDialect::Sqlite);
+        let drop_idx_sql = build_drop_index_sql(&drop_idx_payload, EngineDialect::Sqlite).unwrap();
         assert_eq!(drop_idx_sql, "DROP INDEX \"idx_users_email\";");
         execute_structure_sql(&pool, &drop_idx_sql).await.unwrap();
 
@@ -264,5 +311,53 @@ mod tests {
         };
         let drop_col_sql = build_drop_column_sql(&drop_col_payload, EngineDialect::Sqlite).unwrap();
         execute_structure_sql(&pool, &drop_col_sql).await.unwrap();
+    }
+
+    #[test]
+    fn test_rejects_malicious_identifiers() {
+        let rename = RenameColumnPayload {
+            table_name: "users; DROP TABLE users;--".to_string(),
+            old_name: "name".to_string(),
+            new_name: "x".to_string(),
+        };
+        assert!(build_rename_column_sql(&rename, EngineDialect::Postgres).is_err());
+
+        let change = ChangeTypePayload {
+            table_name: "users".to_string(),
+            column_name: "id".to_string(),
+            new_type: "INT; DROP TABLE users;--".to_string(),
+        };
+        assert!(build_change_type_sql(&change, EngineDialect::Postgres).is_err());
+
+        let idx = AddIndexPayload {
+            table_name: "users".to_string(),
+            index_name: "idx'; DROP TABLE t;--".to_string(),
+            columns: vec!["id".to_string()],
+            is_unique: false,
+        };
+        assert!(build_add_index_sql(&idx, EngineDialect::Mysql).is_err());
+    }
+
+    #[test]
+    fn test_sqlite_change_type_errors() {
+        let change = ChangeTypePayload {
+            table_name: "users".to_string(),
+            column_name: "name".to_string(),
+            new_type: "TEXT".to_string(),
+        };
+        let err = build_change_type_sql(&change, EngineDialect::Sqlite).unwrap_err();
+        assert!(err.contains("SQLite does not support"));
+    }
+
+    #[test]
+    fn test_sqlite_set_nullable_errors() {
+        let payload = SetNullablePayload {
+            table_name: "users".to_string(),
+            column_name: "name".to_string(),
+            is_nullable: true,
+            data_type: "TEXT".to_string(),
+        };
+        let err = build_set_nullable_sql(&payload, EngineDialect::Sqlite).unwrap_err();
+        assert!(err.contains("nullability"));
     }
 }

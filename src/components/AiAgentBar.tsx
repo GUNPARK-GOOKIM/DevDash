@@ -70,11 +70,21 @@ export const AiAgentBar: React.FC<AiAgentBarProps> = ({
       return;
     }
 
+    // Cap schema context to reduce accidental PII / oversized prompts to cloud providers
     const schemaContext = schema.tables
-      .map(t => `Table: ${t.name} (${t.columns.join(', ')})`)
+      .slice(0, 40)
+      .map((t) => {
+        const cols = t.columns.slice(0, 30).join(', ');
+        const more = t.columns.length > 30 ? ', …' : '';
+        return `Table: ${t.name} (${cols}${more})`;
+      })
       .join('\n');
+    const schemaNote =
+      schema.tables.length > 40
+        ? `\n(…${schema.tables.length - 40} more tables omitted)`
+        : '';
 
-    const promptText = `You are a SQL assistant for a ${dbType} database. Given this schema:\n${schemaContext}\n\nActive table: ${activeTable || 'none'}\nRecent queries: ${lastQueries.slice(0, 3).join('; ')}\n\nUser request: "${query}"\n\nGenerate ONLY valid SQL query. No markdown formatting, no explanations. If unsafe or unclear, respond with ERROR: reason.`;
+    const promptText = `You are a SQL assistant for a ${dbType} database. Given this schema:\n${schemaContext}${schemaNote}\n\nActive table: ${activeTable || 'none'}\nRecent queries: ${lastQueries.slice(0, 3).join('; ')}\n\nUser request: "${query}"\n\nGenerate ONLY valid SQL query. No markdown formatting, no explanations. If unsafe or unclear, respond with ERROR: reason. Do not invent tables/columns not listed.`;
 
     try {
       let content = '';

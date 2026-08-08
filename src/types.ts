@@ -16,6 +16,9 @@ export type DbKind =
   | 'bigquery'
   | 'turso';
 
+/** Deployment context for safety UX (see utils/connectionEnv.ts). */
+export type ConnectionEnvironment = 'dev' | 'staging' | 'prod' | 'other';
+
 export interface ConnectionConfig {
   id: string;
   name: string;
@@ -28,6 +31,13 @@ export interface ConnectionConfig {
   project_path?: string;
   is_connected?: boolean;
   is_read_only?: boolean;
+  /**
+   * Environment tag. Production forces read-only unless `allow_writes_on_prod`.
+   * Defaults to `dev` when missing (legacy connections).
+   */
+  environment?: ConnectionEnvironment;
+  /** Explicit opt-in to allow writes when environment is `prod`. Dangerous. */
+  allow_writes_on_prod?: boolean;
   group_id?: string;
   ssh_config?: {
     enabled: boolean;

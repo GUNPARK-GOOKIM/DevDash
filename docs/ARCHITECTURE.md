@@ -1,96 +1,91 @@
-# DevDash — Systems Architecture & Design Specification
+# DevDash — Architecture (Honest)
 
-> **Version:** 1.0.0 (Authoritative)  
-> **Status:** Canonical Platform Architecture & Layering Rules  
-> **License:** MIT  
+> **Status:** Describes what the code does today  
+> **License:** Apache License 2.0 (see root `LICENSE`) — not MIT  
 
 ---
 
-## 1. System Architecture Overview
+## 1. System Overview
 
-DevDash is an ultra-fast, local-first native desktop database engineering workspace built on a decoupled **Tauri v2 + Rust Engine** core and a high-performance **React 18 + TypeScript** frontend.
+DevDash is a **local-first desktop** database GUI built with:
+
+| Layer | Stack |
+| ----- | ----- |
+| UI | React 18 + TypeScript + Tailwind + CodeMirror 6 + `@tanstack/react-virtual` + Recharts + React Flow |
+| IPC | Typed helpers in `src/services/tauriBridge.ts` → Tauri 2 `invoke` |
+| Engine | Rust (`src-tauri/`) + `sqlx::AnyPool` (Postgres, MySQL/MariaDB, SQLite drivers) |
+| Secrets | OS keyring (`keyring` crate) + optional AES-GCM encrypted export |
+| Local app DB | SQLite under user config dir (`app_storage.rs`) |
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                   DevDash Desktop Application                          │
-├────────────────────────────────────────────────────────────────────────┤
-│  Frontend View Layer (React 18 + Tailwind CSS + Framer Motion)         │
-│  - Virtualized Data Grid (@tanstack/react-virtual)                     │
-│  - Monaco / CodeMirror 6 SQL Editor & Auto-complete                    │
-│  - Recharts Bento Health Telemetry & React Flow ERD Diagram            │
-│  - Local AI Bar (Ollama / Qwen2.5-Coder / Claude / OpenAI Bridge)       │
-├────────────────────────────────────────────────────────────────────────┤
-│                 Typed Asynchronous Tauri IPC Bridge                    │
-│                 (src/services/tauriBridge.ts)                          │
-├────────────────────────────────────────────────────────────────────────┤
-│  Backend Core Engine (Rust Native Workspace)                           │
-│  - pool.rs           : sqlx::AnyPool Multi-Driver Connection Manager   │
-│  - executor.rs       : Chunked 500-Row Streamer & Query Canceller      │
-│  - staged_edits.rs   : Atomic Batch Edit Compiler & Transaction Rollback│
-│  - introspection.rs  : Schema Constraints, PK/FK & Routine Parser     │
-│  - ssh_tunnel.rs     : Thread-Safe Native ssh2 Port Forwarding Daemon  │
-│  - audit.rs          : Append-Only SOC2/HIPAA JSONL Audit Engine       │
-│  - app_storage.rs    : OS Keyring Isolation & Local SQLite Preferences │
-└────────────────────────────────────────────────────────────────────────┘
+React UI  →  tauriBridge.ts  →  Tauri IPC  →  Rust commands.rs
+                                              ├─ pool.rs (multi-pool)
+                                              ├─ executor.rs (query + stream)
+                                              ├─ staged_edits.rs (grid commits)
+                                              ├─ safe_mode.rs (destructive analysis)
+                                              ├─ result_snapshots.rs (local result capture + paged diff)
+                                              ├─ credentials.rs / encrypted_export.rs
+                                              └─ audit.rs (local JSONL only)
 ```
 
----
-
-## 2. Hard Architecture & Layering Rules
-
-1. **Strict UI/Engine Decoupling**: React view components in `src/components/` MUST NOT invoke direct window bindings or raw IPC strings. All backend communication MUST route through typed helper functions in `src/services/tauriBridge.ts`.
-2. **Memory Safety & Streaming Guarantee**: Datasets containing >500 rows MUST be streamed over IPC in 500-row chunk events (`query_chunk_{id}`) via `executor.rs` to maintain a memory footprint of **<25MB RAM** and 60fps UI virtualized rendering.
-3. **Atomic Transactional Staging**: No data mutation (`UPDATE`, `DELETE`, `INSERT`) touches production databases directly from grid clicks. Edits are staged as color-coded cell diffs (`old_value → new_value`) and compiled into parameterized SQL batch transactions (`BEGIN ... COMMIT / ROLLBACK`) inside `staged_edits.rs`.
-4. **Destructive Query Shield (Safe Mode)**: Destructive SQL operations (`DROP`, `TRUNCATE`, or un-bounded `UPDATE`/`DELETE` without `WHERE`) MUST be intercepted by `executor.rs` safe-mode analyzer before reaching database pools.
-5. **Credentials Isolation**: Connection passwords and secret keys MUST NEVER be stored in plain text on disk. They MUST be stored in native OS Keyrings via the `keyring` crate or encrypted using AES-256-GCM (`encrypted_export.rs`).
+There is **no** Monaco editor, **no** embedded offline AI model, and **no** production-verified MSSQL / Redis / Mongo drivers.
 
 ---
 
-## 3. Database Driver Support Matrix & Scope Definitions
+## 2. Architecture Rules (Enforced Where Practical)
 
-To maintain **100% Scope Honesty & Documentation Accuracy**, DevDash strictly classifies database engine support into two categories:
-
-### A. Production-Verified Native Drivers (`sqlx::AnyPool`)
-- **PostgreSQL** (v9.6+) & **CockroachDB** & **Amazon Redshift**
-- **MySQL** (v5.7, v8.0+) & **MariaDB** (v10.3+)
-- **SQLite 3** (v3.25+)
-- **YugabyteDB**
-
-### B. Specialized & Protocol Adapters
-- **Microsoft SQL Server (T-SQL)** (TDS TCP Driver)
-- **Redis / KeyDB / Dragonfly** (Redis RESP Protocol Viewport)
-- **MongoDB / DocumentDB** (BSON Document Collection Viewport)
-- **Cloud IAM Engines** (AWS STS, GCP Service Account, Azure AD OAuth2)
+1. **UI must not call raw IPC strings** from components — route through `tauriBridge.ts` (checked by `scripts/check-architecture.py`).
+2. **Large result streaming**: `stream_dynamic_query` emits ~500-row chunks over Tauri events. This reduces intermediate row buffers; **RAM is not guaranteed &lt;25MB** (unmeasured).
+3. **Grid mutations** stage in the UI, then commit via `staged_edits.rs` in a transaction. Values are **escaped SQL literals**, not bind parameters.
+4. **Safe Mode**: `analyze_sql_safety` + server gate on `run_sql_query` unless `allow_destructive` is true.
+5. **Passwords**: keyring or encrypted export — not plain-text password fields in saved connection files (connection metadata may still live in `localStorage`).
 
 ---
 
-## 4. Compliance & Audit Logging Engine (`audit.rs`)
+## 3. Engine Support (Code Truth)
 
-DevDash includes a native Rust append-only audit trail logger satisfying **SOC2 Type II** and **HIPAA** compliance criteria:
+### A. Backend can open (`pool.rs` / `Cargo.toml` sqlx features)
 
-- **Log File Location**: `%APPDATA%/devdash/audit_log.jsonl`
-- **Recorded Fields**:
-  - `timestamp`: ISO-8601 UTC string
-  - `connection_id` & `connection_name`
-  - `user_identity` & `client_ip`
-  - `operation_type`: `QUERY`, `EXECUTE`, `STAGE_COMMIT`, `EXPORT`, `SCHEMA_ALTER`
-  - `executed_sql`: Sanitized query string
-  - `affected_rows` & `execution_duration_ms`
+- PostgreSQL (and wire-compat use: CockroachDB, Redshift — **not separately tested**)
+- MySQL / MariaDB  
+- SQLite  
+- **DuckDB** via dedicated `duckdb_engine.rs` (file path or `:memory:`, not sqlx)
+
+### B. UI lists but backend **rejects**
+
+MSSQL, Oracle, Snowflake, BigQuery, Turso, Redis, MongoDB, Cassandra, ClickHouse — connect is refused with an error.
+
+### C. Stubs only
+
+- `CloudIamConfig` exists; `build_connection_url` returns an error if set.
 
 ---
 
-## 5. Automated Verification & Testing Strategy
+## 4. Audit Logging (`audit.rs`)
+
+- Append-only JSONL under the user config directory (`…/devdash/audit/audit_log.jsonl`).
+- Fields include timestamp, connection name, action type, SQL text, affected rows, status, `client_ip: "local"`.
+- **Not** SOC 2 / HIPAA certified. No hash chain, no remote SIEM.
+
+---
+
+## 4b. Query Result Snapshots (`result_snapshots.rs`)
+
+- Stored in the **same AppStorage SQLite** pool as query history / saved queries (`result_snapshots` meta + `result_snapshot_rows`).
+- IPC: `save_result_snapshot`, `list_result_snapshots`, `delete_result_snapshot`, `diff_result_snapshots` (via `tauriBridge.ts`).
+- **List** returns metadata only (no row payloads).
+- **Diff** loads both snapshots in Rust, keys rows by first column (duplicates disambiguated with `#n`), returns counts for added/removed/changed/unchanged plus a **paged** subset of non-unchanged rows (default page size from UI, limit clamped ≤500).
+- Soft cap: **100,000 rows** per snapshot. Not a full time-travel DB; no network sync.
+
+---
+
+## 5. Verification Commands
 
 ```bash
-# 1. Frontend Type Safety Verification
 npx tsc --noEmit
-
-# 2. Rust Backend Unit & Integration Test Suite
-cd src-tauri && cargo test
-
-# 3. Layer Dependency & Architecture Audit
-python scripts/check-architecture.py
-
-# 4. Production Release Build Verification
-npm run build && npm run tauri build
+cd src-tauri && cargo test --lib
+python3 scripts/check-architecture.py   # or: npm run test:arch
+npm run test:smoke
 ```
+
+Release CI (`.github/workflows/release.yml`) builds **desktop** installers for Windows, macOS, and Linux only — **not Android**.

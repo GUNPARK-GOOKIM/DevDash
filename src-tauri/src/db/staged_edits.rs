@@ -16,7 +16,8 @@ pub struct StagedRowEdit {
     pub changes: Vec<StagedCellChange>,
 }
 
-/// Build a single-row UPDATE. Identifiers are validated; values are escaped as SQL literals.
+/// Build a single-row UPDATE. Identifiers are validated; values are escaped as SQL literals
+/// (not bind parameters — sqlx `Any` dynamic binding is limited for multi-column batches).
 /// `mysql_style` selects backtick vs double-quote identifiers (MySQL needs backticks by default).
 pub fn build_update_statement(
     table: &str,

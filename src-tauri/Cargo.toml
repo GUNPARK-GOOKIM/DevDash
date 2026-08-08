@@ -39,6 +39,10 @@ mongodb = "3.1"
 redis = { version = "0.27", features = ["tokio-comp"] }
 scylla = "0.14"
 clickhouse = "0.12"
+parquet = { version = "59.2.0", default-features = false, features = ["arrow", "snap"] }
+arrow-array = "59.2.0"
+arrow-schema = "59.2.0"
+duckdb = { version = "1.10505.0", features = ["bundled"] }
 
 # Build configuration dependencies
 [build-dependencies] # Build dependencies section

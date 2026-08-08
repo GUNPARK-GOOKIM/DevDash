@@ -27,6 +27,9 @@ pub struct ConnectionDetails {
     pub database: String, // Database or schema name / file path
     pub ssl_mode: Option<String>, // SSL / TLS mode (disable, require, verify-full)
     pub cloud_iam: Option<CloudIamConfig>, // Cloud IAM credentials (GAP 14)
+    /// When true, the backend rejects write/DDL SQL and mutation IPC for this pool.
+    #[serde(default)]
+    pub is_read_only: bool,
 }
 
 // Result payload for connection testing diagnostics
@@ -81,6 +84,14 @@ pub fn build_connection_url(details: &ConnectionDetails) -> Result<String, Strin
             "Database engine '{}' is not supported directly by the current driver matrix.",
             details.db_type
         ));
+    }
+
+    // DuckDB is handled by DuckDbManager (not sqlx AnyPool URL).
+    if db_kind == "duckdb" {
+        return Err(
+            "DuckDB uses a dedicated connection path (file or :memory:), not a sqlx URL."
+                .to_string(),
+        );
     }
 
     if details.cloud_iam.is_some() {
@@ -164,6 +175,7 @@ pub struct ManagedConnection {
     pub clickhouse_client: Option<clickhouse::Client>,
     pub db_type: String,
     pub connection_url: String,
+    pub is_read_only: bool,
 }
 
 // Central connection manager struct holding active database pools
@@ -249,6 +261,16 @@ impl ConnectionManager {
 
     // Establish a connection pool for a connection string and store it
     pub async fn connect(&self, id: &str, url: &str, db_type: &str) -> Result<(), String> {
+        self.connect_with_flags(id, url, db_type, false).await
+    }
+
+    pub async fn connect_with_flags(
+        &self,
+        id: &str,
+        url: &str,
+        db_type: &str,
+        is_read_only: bool,
+    ) -> Result<(), String> {
         // Pure in-memory SQLite URLs allocate a separate empty DB per connection.
         // Cap the pool at 1 (or use shared-cache URLs) so schema/data remain visible.
         let is_ephemeral_sqlite = {
@@ -363,6 +385,7 @@ impl ConnectionManager {
                 clickhouse_client,
                 db_type: db_type.to_string(),
                 connection_url: url.to_string(),
+                is_read_only,
             },
         );
         Ok(())
@@ -375,7 +398,27 @@ impl ConnectionManager {
         details: &ConnectionDetails,
     ) -> Result<(), String> {
         let url = build_connection_url(details)?;
-        self.connect(id, &url, &details.db_type).await
+        self.connect_with_flags(id, &url, &details.db_type, details.is_read_only)
+            .await
+    }
+
+    /// True when this connection was opened with the read-only flag.
+    pub fn is_read_only(&self, id: &str) -> bool {
+        self.pools
+            .get(id)
+            .map(|r| r.is_read_only)
+            .unwrap_or(false)
+    }
+
+    /// Reject mutations when the pool is read-only.
+    pub fn ensure_writes_allowed(&self, id: &str) -> Result<(), String> {
+        if self.is_read_only(id) {
+            return Err(
+                "Connection is read-only. Write/DDL operations are blocked by the server."
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 
     // Retrieve an active connection pool reference by connection ID
@@ -441,6 +484,7 @@ mod tests {
             database: "testdb".to_string(),
             ssl_mode: Some("disable".to_string()),
             cloud_iam: None,
+            is_read_only: false,
         };
         let url = build_connection_url(&details).unwrap();
         assert_eq!(
@@ -460,6 +504,7 @@ mod tests {
             database: "testdb".to_string(),
             ssl_mode: Some("disable".to_string()),
             cloud_iam: None,
+            is_read_only: false,
         };
         let url = build_connection_url(&details).unwrap();
         assert_eq!(
@@ -479,6 +524,7 @@ mod tests {
             database: "test".to_string(),
             ssl_mode: None,
             cloud_iam: None,
+            is_read_only: false,
         };
         let err = build_connection_url(&details).unwrap_err();
         assert!(err.contains("not supported"));
@@ -498,6 +544,7 @@ mod tests {
             database: "bank".to_string(),
             ssl_mode: Some("verify-full".to_string()),
             cloud_iam: None,
+            is_read_only: false,
         };
         let url = build_connection_url(&crdb_details).unwrap();
         assert_eq!(
@@ -514,6 +561,7 @@ mod tests {
             database: "analytics".to_string(),
             ssl_mode: Some("require".to_string()),
             cloud_iam: None,
+            is_read_only: false,
         };
         let rs_url = build_connection_url(&redshift_details).unwrap();
         assert_eq!(
@@ -537,9 +585,10 @@ mod tests {
             database: "analytics.duckdb".to_string(),
             ssl_mode: None,
             cloud_iam: None,
+            is_read_only: false,
         };
-        let duck_url = build_connection_url(&duck_details).unwrap();
-        assert_eq!(duck_url, "sqlite:analytics.duckdb?mode=rwc");
+        let duck_err = build_connection_url(&duck_details).unwrap_err();
+        assert!(duck_err.contains("dedicated connection path"));
 
         let turso_details = ConnectionDetails {
             db_type: "turso".to_string(),
@@ -550,6 +599,7 @@ mod tests {
             database: ":memory:".to_string(),
             ssl_mode: None,
             cloud_iam: None,
+            is_read_only: false,
         };
         let turso_url = build_connection_url(&turso_details).unwrap();
         assert_eq!(turso_url, "sqlite::memory:");

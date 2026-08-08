@@ -1,7 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { ConnectionConfig, DbKind } from '../types';
-import { X, Server, Shield, KeyRound, Network } from 'lucide-react';
+import { ConnectionConfig, ConnectionEnvironment, DbKind } from '../types';
+import { X, Server, Shield, KeyRound, Network, AlertTriangle } from 'lucide-react';
 import { testDbConnection, testSshTunnel, TestConnectionResultPayload } from '../services/tauriBridge';
+import {
+  CONNECTION_ENVIRONMENTS,
+  resolveReadOnlyFlag,
+} from '../utils/connectionEnv';
 
 interface ConnectionModalProps {
   isOpen: boolean;
@@ -24,8 +28,10 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
   const [user, setUser] = useState('postgres');
   const [password, setPassword] = useState('');
   const [database, setDatabase] = useState('postgres');
+  const [environment, setEnvironment] = useState<ConnectionEnvironment>('dev');
   const [isReadOnly, setIsReadOnly] = useState(false);
   const [rawUrl, setRawUrl] = useState('');
+  const [allowWritesOnProd, setAllowWritesOnProd] = useState(false);
 
   // SSH Tunnel State
   const [sshEnabled, setSshEnabled] = useState(false);
@@ -100,35 +106,49 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
     if (isOpen) {
       handleDriverChange(initialDbKind || 'postgres');
       setName('');
+      setEnvironment('dev');
+      setIsReadOnly(false);
+      setAllowWritesOnProd(false);
     }
   }, [isOpen, initialDbKind]);
+
+  // Production defaults to read-only; flipping env to prod turns RO on.
+  useEffect(() => {
+    if (environment === 'prod' && !allowWritesOnProd) {
+      setIsReadOnly(true);
+    }
+  }, [environment, allowWritesOnProd]);
 
   if (!isOpen) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSave(
-      {
-        name: name || `${dbType.toUpperCase()} Connection`,
-        db_type: dbType,
-        host,
-        port: Number(port),
-        user,
-        database,
-        ssl_mode: sslMode,
+    const draft: Omit<ConnectionConfig, 'id'> = {
+      name: name || `${dbType.toUpperCase()} Connection`,
+      db_type: dbType,
+      host,
+      port: Number(port),
+      user,
+      database,
+      ssl_mode: sslMode,
+      environment,
+      allow_writes_on_prod: environment === 'prod' ? allowWritesOnProd : false,
+      is_read_only: resolveReadOnlyFlag({
+        environment,
         is_read_only: isReadOnly,
-        ssh_config: sshEnabled
-          ? {
-              enabled: true,
-              host: sshHost,
-              port: Number(sshPort),
-              user: sshUser,
-              key_path: sshKeyPath,
-            }
-          : undefined,
-      },
-      password
-    );
+        allow_writes_on_prod: environment === 'prod' ? allowWritesOnProd : false,
+      }),
+      ssh_config: sshEnabled
+        ? {
+            enabled: true,
+            host: sshHost,
+            port: Number(sshPort),
+            user: sshUser,
+            key_path: sshKeyPath,
+          }
+        : undefined,
+    };
+    onSave(draft, password);
     onClose();
   };
 
@@ -257,15 +277,15 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
                     <option value="mysql">MySQL</option>
                     <option value="mariadb">MariaDB</option>
                     <option value="sqlite">SQLite</option>
+                    <option value="duckdb">DuckDB (file / :memory:)</option>
                     <option value="cockroachdb">CockroachDB (Postgres wire)</option>
                     <option value="redshift">Amazon Redshift (Postgres wire)</option>
-                    <option value="duckdb">DuckDB (Embedded)</option>
                     <option value="turso">Turso (SQLite engine)</option>
                     <option value="redis">Redis (RESP Protocol)</option>
                   </optgroup>
                 </select>
                 <p className="mt-1 text-[10px] text-textMuted">
-                  MSSQL, Oracle, Snowflake, MongoDB, Cassandra, and BigQuery feature UI stubs with driver guidance.
+                  For DuckDB, set Database to a .duckdb path or :memory:. Oracle, Snowflake, and BigQuery remain UI stubs.
                 </p>
               </div>
 
@@ -328,22 +348,86 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
                 />
               </div>
 
+              {/* Environment */}
+              <div>
+                <label className="block font-medium text-textMuted mb-1.5">Environment</label>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {CONNECTION_ENVIRONMENTS.map((env) => {
+                    const active = environment === env.id;
+                    return (
+                      <button
+                        key={env.id}
+                        type="button"
+                        onClick={() => setEnvironment(env.id)}
+                        className={`px-2 py-1.5 rounded-lg border text-[11px] font-semibold transition-colors ${
+                          active
+                            ? env.badgeClass + ' border'
+                            : 'border-white/10 text-textMuted hover:border-white/20 bg-base'
+                        }`}
+                        title={env.description}
+                      >
+                        {env.short}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="mt-1 text-[10px] text-textMuted">
+                  {CONNECTION_ENVIRONMENTS.find((e) => e.id === environment)?.description}
+                </p>
+              </div>
+
               {/* Read-Only Protection Toggle */}
               <div className="p-2.5 bg-base border border-white/10 rounded-lg flex items-center justify-between">
                 <div className="flex items-center space-x-2">
-                  <Shield className={`w-4 h-4 ${isReadOnly ? 'text-warning' : 'text-textMuted'}`} />
+                  <Shield
+                    className={`w-4 h-4 ${
+                      isReadOnly || (environment === 'prod' && !allowWritesOnProd)
+                        ? 'text-warning'
+                        : 'text-textMuted'
+                    }`}
+                  />
                   <div>
                     <div className="font-semibold text-text text-[12px]">Read-Only Mode</div>
-                    <div className="text-[10px] text-textMuted">Blocks all DDL, INSERT, UPDATE, and DELETE queries</div>
+                    <div className="text-[10px] text-textMuted">
+                      Blocks DDL, INSERT, UPDATE, DELETE (enforced in UI + Rust backend)
+                    </div>
                   </div>
                 </div>
                 <input
                   type="checkbox"
-                  checked={isReadOnly}
+                  checked={
+                    environment === 'prod' && !allowWritesOnProd ? true : isReadOnly
+                  }
+                  disabled={environment === 'prod' && !allowWritesOnProd}
                   onChange={(e) => setIsReadOnly(e.target.checked)}
-                  className="w-4 h-4 accent-accent rounded cursor-pointer"
+                  className="w-4 h-4 accent-accent rounded cursor-pointer disabled:opacity-50"
                 />
               </div>
+
+              {environment === 'prod' && (
+                <div className="p-2.5 bg-rose-500/10 border border-rose-500/30 rounded-lg space-y-2">
+                  <div className="flex items-start gap-2 text-[11px] text-rose-300">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>
+                      Production connections are <strong>read-only by default</strong>. Only enable
+                      writes if you accept the risk of mutating live data.
+                    </span>
+                  </div>
+                  <label className="flex items-center gap-2 text-[11px] text-rose-200/90 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={allowWritesOnProd}
+                      onChange={(e) => {
+                        setAllowWritesOnProd(e.target.checked);
+                        if (e.target.checked) setIsReadOnly(false);
+                        else setIsReadOnly(true);
+                      }}
+                      className="w-3.5 h-3.5 accent-rose-500"
+                    />
+                    Allow writes on production (dangerous)
+                  </label>
+                </div>
+              )}
             </>
           ) : (
             /* SSH Tunneling Tab */

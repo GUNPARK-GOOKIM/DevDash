@@ -43,21 +43,45 @@ export const FilterBar: React.FC<FilterBarProps> = ({
     setConditions(conditions.filter((c) => c.id !== id));
   };
 
+  /** Quote a simple SQL identifier; reject anything that is not a safe name. */
+  const quoteIdent = (name: string): string | null => {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || name.length > 128) return null;
+    // Double-quote works for Postgres/SQLite; MySQL also accepts ANSI_QUOTES or we use backticks
+    // for common cases — use double quotes as the cross-dialect default used elsewhere.
+    return `"${name.replace(/"/g, '""')}"`;
+  };
+
   const handleApply = () => {
-    const whereParts = conditions
-      .filter((c) => c.operator === 'IS NULL' || c.operator === 'IS NOT NULL' || c.value.trim() !== '')
-      .map((c) => {
-        if (c.operator === 'IS NULL' || c.operator === 'IS NOT NULL') {
-          return `${c.column} ${c.operator}`;
-        }
-        if (c.operator === 'LIKE') {
-          return `${c.column} LIKE '%${c.value.replace(/'/g, "''")}%'`;
-        }
-        return `${c.column} ${c.operator} '${c.value.replace(/'/g, "''")}'`;
-      });
+    const whereParts: string[] = [];
+    for (const c of conditions) {
+      if (c.operator !== 'IS NULL' && c.operator !== 'IS NOT NULL' && c.value.trim() === '') {
+        continue;
+      }
+      const col = quoteIdent(c.column);
+      if (!col) {
+        alert(`Invalid column name for filter: ${c.column}`);
+        return;
+      }
+      if (c.operator === 'IS NULL' || c.operator === 'IS NOT NULL') {
+        whereParts.push(`${col} ${c.operator}`);
+      } else if (c.operator === 'LIKE') {
+        whereParts.push(`${col} LIKE '%${c.value.replace(/'/g, "''")}%'`);
+      } else {
+        whereParts.push(`${col} ${c.operator} '${c.value.replace(/'/g, "''")}'`);
+      }
+    }
 
     const whereClause = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : '';
-    const sortClause = sort ? `ORDER BY ${sort.column} ${sort.direction}` : '';
+    let sortClause = '';
+    if (sort) {
+      const sortCol = quoteIdent(sort.column);
+      if (!sortCol) {
+        alert(`Invalid column name for sort: ${sort.column}`);
+        return;
+      }
+      const dir = sort.direction === 'DESC' ? 'DESC' : 'ASC';
+      sortClause = `ORDER BY ${sortCol} ${dir}`;
+    }
 
     onApplyFilter(whereClause, sortClause);
   };

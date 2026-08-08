@@ -62,6 +62,8 @@ const NATIVE_DBS: DbKind[] = ['postgres', 'mysql', 'sqlite', 'mariadb', 'cockroa
 const RELATIONAL_DBS: DbKind[] = ['postgres', 'mysql', 'sqlite', 'mariadb', 'cockroachdb', 'redshift', 'mssql', 'oracle', 'snowflake', 'duckdb', 'bigquery', 'turso'];
 const NOSQL_CACHE_DBS: DbKind[] = ['redis', 'mongodb', 'cassandra', 'clickhouse'];
 
+const isNativeEngine = (kind: DbKind) => NATIVE_DBS.includes(kind);
+
 const CATEGORY_DBS: Record<string, DbKind[]> = {
   all: ALL_DBS,
   relational: RELATIONAL_DBS,
@@ -81,7 +83,8 @@ const SpotlightTiltCard: React.FC<{
   dbType: DbKind;
   meta: typeof DB_META[DbKind];
   onConnect: () => void;
-}> = ({ dbType, meta, onConnect }) => {
+  supported: boolean;
+}> = ({ dbType, meta, onConnect, supported }) => {
   const x = useMotionValue(0);
   const y = useMotionValue(0);
 
@@ -114,14 +117,20 @@ const SpotlightTiltCard: React.FC<{
         rotateX,
         rotateY,
         transformStyle: 'preserve-3d',
+        opacity: supported ? 1 : 0.72,
       }}
       onMouseMove={handleMouseMove}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={handleMouseLeave}
       onClick={onConnect}
-      whileHover={{ scale: 1.02 }}
+      whileHover={{ scale: supported ? 1.02 : 1.01 }}
       whileTap={{ scale: 0.98 }}
       className="relative group cursor-pointer rounded-2xl bg-surface2/40 border border-border/50 p-4 transition-colors duration-300 overflow-hidden shadow-lg"
+      title={
+        supported
+          ? `Connect with ${meta.label}`
+          : `${meta.label} is not implemented in the backend yet (UI only)`
+      }
     >
       {/* Soft brand border glow on hover */}
       <div
@@ -150,11 +159,22 @@ const SpotlightTiltCard: React.FC<{
           {meta.icon}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold text-text group-hover:text-white transition-colors truncate">
-            {meta.label}
+          <div className="flex items-center gap-1.5 min-w-0">
+            <div className="text-sm font-semibold text-text group-hover:text-white transition-colors truncate">
+              {meta.label}
+            </div>
+            {!supported && (
+              <span className="shrink-0 text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                Soon
+              </span>
+            )}
           </div>
           <div className="text-[11px] text-textMuted/80 font-mono mt-0.5">
-            {meta.port > 0 ? `Port ${meta.port}` : 'Local'}
+            {supported
+              ? meta.port > 0
+                ? `Port ${meta.port}`
+                : 'Local file / path'
+              : 'Not in backend yet'}
           </div>
         </div>
       </div>
@@ -178,7 +198,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
   const [search, setSearch] = useState('');
   const [querySearch, setQuerySearch] = useState('');
   const [isSearchFocused, setIsSearchFocused] = useState(false);
-  const [activeCategory, setActiveCategory] = useState('all');
+  const [activeCategory, setActiveCategory] = useState('supported');
   const [deleteConfirm, setDeleteConfirm] = useState<ConnectionConfig | null>(null);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
@@ -451,6 +471,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({
                       dbType={dbType}
                       meta={meta}
                       onConnect={() => onNewConnection(dbType)}
+                      supported={isNativeEngine(dbType)}
                     />
                   );
                 })}

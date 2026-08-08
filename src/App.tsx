@@ -10,6 +10,7 @@ import { StructureView } from './components/StructureView';
 import { ExportModal } from './components/ExportModal';
 import { ImportModal } from './components/ImportModal';
 import { StagingCommit } from './components/StagingCommit';
+import { ResultSnapshotsModal } from './components/ResultSnapshotsModal';
 import { HealthGrid } from './components/HealthGrid';
 import { SchemaVisualizer } from './components/SchemaVisualizer';
 import { AiAgentBar } from './components/AiAgentBar';
@@ -36,6 +37,18 @@ import { QueryProfilerModal } from './components/QueryProfilerModal';
 import { useIsMobile } from './hooks/useMediaQuery';
 import { MobileViewport } from './components/mobile/MobileViewport';
 import { maskRowRecord } from './utils/piiMask';
+import { batchContainsWrite } from './utils/sqlSafety';
+import {
+  getEnvironmentMeta,
+  normalizeEnvironment,
+  readOnlyReason,
+  resolveReadOnlyFlag,
+} from './utils/connectionEnv';
+import {
+  buildStagingSqlPatch,
+  downloadTextFile,
+  type PatchDialect,
+} from './utils/stagingSqlPatch';
 import { saveWorkspaceSession, loadWorkspaceSession } from './utils/workspaceSession';
 import {
   ConnectionConfig,
@@ -54,7 +67,7 @@ import {
 import {
   X, Plus, Terminal, Table as TableIcon, Layers, Download,
   GitBranch, Activity, Network, Shield, Wand2, Sparkles, Settings,
-  Database, Cpu, Share2, Command, Clock,
+  Database, Cpu, Share2, Command, Clock, Camera,
 } from 'lucide-react';
 import { Tooltip } from './components/Tooltip';
 import {
@@ -81,6 +94,8 @@ import {
   clearPersistedQueryHistory,
   splitSqlStatements,
   exportTableData,
+  exportRowsParquet,
+  downloadBase64Parquet,
   AutocompleteData,
   EngineDialect,
 } from './services/tauriBridge';
@@ -198,15 +213,37 @@ export const App: React.FC = () => {
       try {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          return parsed.filter((c: any) =>
-            c.id !== 'conn-1' && c.id !== 'conn-2' && c.id !== 'conn-3' &&
-            c.id !== 'conn-test-db' &&
-            c.name !== 'production_db_app_main' && c.name !== 'local_test_db' &&
-            c.name !== 'DevDash Test DB (SQLite)' &&
-            c.name !== 'staging_cache' && c.name !== 'POSTGRES Connection'
-          );
+          return parsed
+            .filter(
+              (c: any) =>
+                c.id !== 'conn-1' &&
+                c.id !== 'conn-2' &&
+                c.id !== 'conn-3' &&
+                c.id !== 'conn-test-db' &&
+                c.name !== 'production_db_app_main' &&
+                c.name !== 'local_test_db' &&
+                c.name !== 'DevDash Test DB (SQLite)' &&
+                c.name !== 'staging_cache' &&
+                c.name !== 'POSTGRES Connection'
+            )
+            .map((c: ConnectionConfig) => {
+              const environment = normalizeEnvironment(c.environment);
+              const allow_writes_on_prod = !!c.allow_writes_on_prod;
+              return {
+                ...c,
+                environment,
+                allow_writes_on_prod,
+                is_read_only: resolveReadOnlyFlag({
+                  environment,
+                  is_read_only: c.is_read_only,
+                  allow_writes_on_prod,
+                }),
+              };
+            });
         }
-      } catch { }
+      } catch {
+        /* ignore */
+      }
     }
     return [];
   });
@@ -245,12 +282,19 @@ export const App: React.FC = () => {
   const handleWelcomeConnect = useCallback(async (conn: ConnectionConfig, password?: string) => {
     if (!isEngineSupported(conn.db_type)) {
       alert(
-        `Engine "${conn.db_type}" is not supported by the backend yet.\n\nSupported: PostgreSQL, MySQL/MariaDB, SQLite, CockroachDB, Redshift.`
+        `Engine "${conn.db_type}" is not supported by the backend yet.\n\nSupported: PostgreSQL, MySQL/MariaDB, SQLite, DuckDB, CockroachDB, Redshift.`
       );
       return;
     }
 
-    setActiveConnection({ ...conn, is_connected: false });
+    // Re-resolve RO from environment (prod protection) before opening the pool
+    const secured: ConnectionConfig = {
+      ...conn,
+      environment: normalizeEnvironment(conn.environment),
+      is_read_only: resolveReadOnlyFlag(conn),
+    };
+
+    setActiveConnection({ ...secured, is_connected: false });
     setShowWelcome(false);
     // Track recent connections (most recent first, max 10)
     setRecentConnectionIds(prev => {
@@ -259,6 +303,8 @@ export const App: React.FC = () => {
     });
 
     try {
+      // Fast switch if pool already open
+      const already = connections.find((c) => c.id === conn.id)?.is_connected;
       let pwd = password;
       if (pwd === undefined || pwd === '') {
         pwd = (await getDbPassword(conn.id)) || undefined;
@@ -266,11 +312,15 @@ export const App: React.FC = () => {
       if (pwd) {
         await saveDbPassword(conn.id, pwd);
       }
-      await connectDatabase(conn, pwd);
+      if (!already) {
+        await connectDatabase(secured, pwd);
+      }
 
-      setActiveConnection({ ...conn, is_connected: true });
+      setActiveConnection({ ...secured, is_connected: true });
       setConnections((prev) =>
-        prev.map((c) => (c.id === conn.id ? { ...c, is_connected: true } : c))
+        prev.map((c) =>
+          c.id === conn.id ? { ...c, ...secured, is_connected: true } : c
+        )
       );
 
       const fetchedTables = (await getDatabaseTables(conn.id, conn.db_type)) || [];
@@ -410,7 +460,11 @@ export const App: React.FC = () => {
   // === ROWS (populated from query results) ===
   const [rows, setRows] = useState<any[]>([]);
 
-  const [pkInfo, setPkInfo] = useState<PkInfo>({ has_single_pk: true, pk_column_name: 'id', is_read_only: false });
+  const [pkInfo, setPkInfo] = useState<PkInfo>({
+    has_single_pk: false,
+    is_read_only: true,
+    read_only_reason: 'Primary key not analyzed yet.',
+  });
 
   // === WORKSPACE TABS (PERSISTED) ===
   const [tabs, setTabs] = useState<WorkspaceTab[]>(() => {
@@ -551,6 +605,7 @@ export const App: React.FC = () => {
   // === MODALS ===
   const [isConnModalOpen, setIsConnModalOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [isSnapshotsModalOpen, setIsSnapshotsModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isSecureShareModalOpen, setIsSecureShareModalOpen] = useState(false);
   const [isSecureImportModalOpen, setIsSecureImportModalOpen] = useState(false);
@@ -639,9 +694,21 @@ export const App: React.FC = () => {
   );
 
   /** Run SQL query with automatic pool reconnection if connection expired */
-  const safeRunSqlQuery = useCallback(async (connId: string, sql: string) => {
+  const safeRunSqlQuery = useCallback(async (
+    connId: string,
+    sql: string,
+    extras?: { queryId?: string; allowDestructive?: boolean; queryTimeoutSec?: number }
+  ) => {
+    const run = () =>
+      runSqlQuery(
+        connId,
+        sql,
+        extras?.queryId,
+        extras?.allowDestructive,
+        extras?.queryTimeoutSec
+      );
     try {
-      return await runSqlQuery(connId, sql);
+      return await run();
     } catch (err: any) {
       const msg = String(err?.message || err || '');
       if (msg.includes('is not connected') || msg.includes('pool expired')) {
@@ -649,7 +716,7 @@ export const App: React.FC = () => {
         if (target) {
           const pwd = (await getDbPassword(target.id)) || undefined;
           await connectDatabase(target, pwd);
-          return await runSqlQuery(connId, sql);
+          return await run();
         }
       }
       throw err;
@@ -727,19 +794,24 @@ export const App: React.FC = () => {
 
   // === HANDLERS ===
   const executeSqlQuery = useCallback(
-    async (sql: string, opts?: { updateGrid?: boolean; queryId?: string }) => {
+    async (
+      sql: string,
+      opts?: { updateGrid?: boolean; queryId?: string; allowDestructive?: boolean }
+    ) => {
       const connId = activeConnection?.id || 'default';
       const queryId = opts?.queryId || `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const allowDestructive = opts?.allowDestructive === true;
+      const queryTimeoutSec =
+        generalSettings.queryTimeoutSec > 0 ? generalSettings.queryTimeoutSec : undefined;
       setActiveQueryId(queryId);
       setIsQueryLoading(true);
       try {
-        if (activeConnection?.is_read_only) {
-          const upper = sql.trim().toUpperCase();
-          const write = /^(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|GRANT|REVOKE|REPLACE|CALL)\b/.test(
-            upper
-          );
-          if (write) {
-            throw new Error('Connection is read-only. Write/DDL statements are blocked.');
+        if (activeConnection && resolveReadOnlyFlag(activeConnection)) {
+          if (batchContainsWrite(splitSqlStatements(sql))) {
+            throw new Error(
+              readOnlyReason(activeConnection) ||
+                'Connection is read-only. Write/DDL statements are blocked.'
+            );
           }
         }
 
@@ -747,7 +819,11 @@ export const App: React.FC = () => {
         if (statements.length === 0) return;
 
         if (statements.length === 1) {
-          const payload = await safeRunSqlQuery(connId, statements[0]);
+          const payload = await safeRunSqlQuery(connId, statements[0], {
+            queryId,
+            allowDestructive,
+            queryTimeoutSec,
+          });
           setQueryResult(payload);
           setMultiResults([
             {
@@ -804,7 +880,11 @@ export const App: React.FC = () => {
               prev.map((r, idx) => (idx === i ? { ...r, status: 'running' } : r))
             );
             try {
-              const payload = await safeRunSqlQuery(connId, statements[i]);
+              const payload = await safeRunSqlQuery(connId, statements[i], {
+                queryId: stmtId,
+                allowDestructive,
+                queryTimeoutSec,
+              });
               lastPayload = payload;
               setMultiResults((prev) =>
                 prev.map((r, idx) =>
@@ -857,7 +937,7 @@ export const App: React.FC = () => {
         setActiveQueryId(null);
       }
     },
-    [activeConnection, pushHistory]
+    [activeConnection, pushHistory, generalSettings.queryTimeoutSec]
   );
 
   const handleCancelQuery = useCallback(async () => {
@@ -874,19 +954,25 @@ export const App: React.FC = () => {
 
   const handleRunQueryWithSafeMode = useCallback(
     async (sql: string) => {
-      // Read-only gate before safe mode
-      if (activeConnection?.is_read_only) {
-        const upper = sql.trim().toUpperCase();
-        if (/^(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|GRANT|REVOKE|REPLACE)\b/m.test(upper)) {
-          alert('This connection is marked read-only. Write/DDL statements are blocked.');
-          return;
-        }
+      // Read-only gate before safe mode (per-statement, multi-batch safe)
+      if (
+        activeConnection &&
+        resolveReadOnlyFlag(activeConnection) &&
+        batchContainsWrite(splitSqlStatements(sql))
+      ) {
+        alert(
+          readOnlyReason(activeConnection) ||
+            'This connection is marked read-only. Write/DDL statements are blocked.'
+        );
+        return;
       }
 
-      const run = () => executeSqlQuery(sql, { updateGrid: false });
+      // Safe Mode off → server allow_destructive=true; on → only after modal confirm
+      const run = (allowDestructive: boolean) =>
+        executeSqlQuery(sql, { updateGrid: false, allowDestructive });
 
       if (!safeModeEnabled) {
-        run();
+        run(true);
         return;
       }
       try {
@@ -904,7 +990,7 @@ export const App: React.FC = () => {
             return;
           }
         }
-        run();
+        run(false);
       } catch {
         const upper = sql.trim().toUpperCase();
         const isDestructive =
@@ -917,11 +1003,11 @@ export const App: React.FC = () => {
           setSafeModeWarning('Destructive operation detected. Confirm to continue.');
           setIsSafeModeModalOpen(true);
         } else {
-          run();
+          run(false);
         }
       }
     },
-    [safeModeEnabled, executeSqlQuery, activeConnection?.is_read_only]
+    [safeModeEnabled, executeSqlQuery, activeConnection]
   );
 
   const mapEngineDialect = useCallback((dbType?: string): EngineDialect => {
@@ -936,8 +1022,11 @@ export const App: React.FC = () => {
       alert('No active connection to commit against.');
       return;
     }
-    if (activeConnection.is_read_only) {
-      alert('Connection is read-only. Cannot commit staged changes.');
+    if (resolveReadOnlyFlag(activeConnection)) {
+      alert(
+        readOnlyReason(activeConnection) ||
+          'Connection is read-only. Cannot commit staged changes.'
+      );
       return;
     }
 
@@ -1025,6 +1114,45 @@ export const App: React.FC = () => {
       alert(`Failed to commit staged edits: ${String(err)}`);
     }
   }, [activeConnection, stagedChanges, stagedEdits, pkInfo, tabs, activeTabId, loadTablePage, currentPage]);
+
+  const stagingPatchDialect = useCallback((): PatchDialect => {
+    const t = (activeConnection?.db_type || 'postgres').toLowerCase();
+    if (t === 'mysql' || t === 'mariadb') return 'mysql';
+    if (t === 'sqlite' || t === 'duckdb') return 'sqlite';
+    return 'postgres';
+  }, [activeConnection?.db_type]);
+
+  const buildCurrentStagingPatch = useCallback(
+    (message: string) =>
+      buildStagingSqlPatch({
+        stagedChanges,
+        stagedEdits,
+        pkColumn: pkInfo.pk_column_name || 'id',
+        dialect: stagingPatchDialect(),
+        message,
+        connectionName: activeConnection?.name,
+      }),
+    [stagedChanges, stagedEdits, pkInfo.pk_column_name, stagingPatchDialect, activeConnection?.name]
+  );
+
+  const handleExportStagingPatch = useCallback(
+    (message: string) => {
+      const sql = buildCurrentStagingPatch(message);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      downloadTextFile(`devdash_staging_patch_${stamp}.sql`, sql);
+    },
+    [buildCurrentStagingPatch]
+  );
+
+  const handleCopyStagingPatch = useCallback(
+    (message: string) => {
+      const sql = buildCurrentStagingPatch(message);
+      navigator.clipboard.writeText(sql).catch(() => {
+        alert('Could not copy to clipboard');
+      });
+    },
+    [buildCurrentStagingPatch]
+  );
 
   const handleAddRow = useCallback(() => {
     const tab = tabs.find((t) => t.id === activeTabId);
@@ -1255,14 +1383,30 @@ export const App: React.FC = () => {
       format: 'csv' | 'json' | 'sql' | 'jsonl' | 'markdown' | 'parquet',
       scope: 'full' | 'page' = 'page'
     ) => {
-      if (format === 'parquet') {
-        throw new Error(
-          'Parquet binary export is not implemented. Use CSV, JSON, JSONL, Markdown, or SQL dump instead.'
-        );
-      }
-
       const activeTabForExport = tabs.find((t) => t.id === activeTabId);
       const tbl = activeTabForExport?.tableName || 'export';
+      const stamp = Date.now();
+
+      // ── Parquet (binary via base64 from Rust) ─────────────────────
+      if (format === 'parquet') {
+        let b64: string;
+        if (scope === 'full' && activeConnection) {
+          b64 = await exportTableData(
+            activeConnection.id,
+            tbl,
+            'parquet',
+            filterWhere || undefined
+          );
+        } else {
+          const colNames = columns.map((c) => c.name);
+          const exportRows = rows.map((r) => maskRowRecord(r, colNames, piiRules));
+          const matrix = exportRows.map((r) => colNames.map((c) => r[c] ?? null));
+          b64 = await exportRowsParquet(colNames, matrix);
+        }
+        downloadBase64Parquet(b64, `${tbl}_${scope}_${stamp}.parquet`);
+        return;
+      }
+
       let content = '';
       let extension = format === 'sql' ? 'sql' : format;
 
@@ -1331,7 +1475,7 @@ export const App: React.FC = () => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${tbl}_${scope}_${Date.now()}.${extension}`;
+      a.download = `${tbl}_${scope}_${stamp}.${extension}`;
       a.click();
       URL.revokeObjectURL(url);
     },
@@ -1624,7 +1768,9 @@ export const App: React.FC = () => {
                 isLoading={isQueryLoading}
                 schemaData={schemaData}
                 dialectHint={activeConnection?.db_type}
-                readOnlyConnection={!!activeConnection?.is_read_only}
+                readOnlyConnection={
+                  !!activeConnection && resolveReadOnlyFlag(activeConnection)
+                }
                 onSaveQuery={(name, sql) => {
                   setSavedQueries((prev) => [
                     ...prev,
@@ -1691,12 +1837,21 @@ export const App: React.FC = () => {
           {/* Right: Actions & Settings icons */}
           <div className="flex items-center space-x-1">
             <button
+              onClick={() => setIsSnapshotsModalOpen(true)}
+              className="text-textMuted hover:text-text transition-colors p-1.5 rounded-lg hover:bg-surface2 flex items-center space-x-1 text-xs"
+              title="Save / compare query result snapshots"
+            >
+              <Camera className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Snapshots</span>
+            </button>
+
+            <button
               onClick={() => {
                 setShareTargetConnId(undefined);
                 setIsSecureShareModalOpen(true);
               }}
               className="text-textMuted hover:text-text transition-colors p-1.5 rounded-lg hover:bg-surface2 flex items-center space-x-1 text-xs"
-              title="Share Connections via Encrypted Text / QR Code"
+              title="Share Connections via Encrypted Text"
             >
               <Share2 className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Share</span>
@@ -1788,6 +1943,14 @@ export const App: React.FC = () => {
                 Export
               </button>
               <button
+                onClick={() => setIsSnapshotsModalOpen(true)}
+                className="px-2 py-0.5 rounded text-textMuted text-[11px] hover:bg-surface2 flex items-center space-x-1"
+                title="Save / compare query result snapshots"
+              >
+                <Camera className="w-3 h-3" />
+                <span>Snapshots</span>
+              </button>
+              <button
                 onClick={() => setIsMockDataOpen(true)}
                 className="px-2 py-0.5 rounded text-textMuted text-[11px] hover:bg-surface2 flex items-center space-x-1"
                 title="Generate and INSERT synthetic rows"
@@ -1840,7 +2003,7 @@ export const App: React.FC = () => {
                   pageSize={generalSettings.pageSize}
                   onAddRow={handleAddRow}
                   onDeleteSelectedRow={handleDeleteSelectedRow}
-                  readOnly={!!activeConnection?.is_read_only}
+                  readOnly={!!activeConnection && resolveReadOnlyFlag(activeConnection)}
                   onJumpToRow={(tbl, filterCol, val) => {
                     const where = `WHERE ${filterCol} = '${String(val).replace(/'/g, "''")}'`;
                     handleOpenTableTab(tbl).then(() => {
@@ -1862,7 +2025,9 @@ export const App: React.FC = () => {
                 isLoading={isQueryLoading}
                 schemaData={schemaData}
                 dialectHint={activeConnection?.db_type}
-                readOnlyConnection={!!activeConnection?.is_read_only}
+                readOnlyConnection={
+                  !!activeConnection && resolveReadOnlyFlag(activeConnection)
+                }
                 onProfileQuery={(sql) => {
                   setProfilerSql(sql);
                   setIsProfilerOpen(true);
@@ -1877,6 +2042,8 @@ export const App: React.FC = () => {
                 onToggleChange={(id) => setStagedChanges(prev => prev.map(c => c.id === id ? { ...c, checked: !c.checked } : c))}
                 onToggleAll={(checked) => setStagedChanges(prev => prev.map(c => ({ ...c, checked })))}
                 onCommit={handleCommitStaged}
+                onExportSqlPatch={handleExportStagingPatch}
+                onCopySqlPatch={handleCopyStagingPatch}
                 onDiscard={(id) => {
                   setStagedChanges((prev) => {
                     const removed = prev.find((c) => c.id === id);
@@ -2016,6 +2183,25 @@ export const App: React.FC = () => {
         {/* FOOTER STATUS BAR */}
         <footer className="h-7 bg-[#0A0A0B] px-3 flex items-center justify-between text-[11px] text-textMuted select-none shrink-0 z-20 border-t border-border/30">
           <div className="flex items-center space-x-3">
+            {activeConnection && (
+              <span
+                className={`px-1.5 py-0.5 rounded border text-[9px] font-bold tracking-wide ${
+                  getEnvironmentMeta(activeConnection.environment).badgeClass
+                }`}
+                title={getEnvironmentMeta(activeConnection.environment).description}
+              >
+                {getEnvironmentMeta(activeConnection.environment).short}
+              </span>
+            )}
+            {activeConnection && resolveReadOnlyFlag(activeConnection) && (
+              <span
+                className="flex items-center space-x-1 text-amber-400"
+                title={readOnlyReason(activeConnection) || 'Read-only'}
+              >
+                <Shield className="w-3 h-3" />
+                <span className="text-[10px]">Read-only</span>
+              </span>
+            )}
             {safeModeEnabled && (
               <button
                 onClick={() => setSafeModeEnabled(false)}
@@ -2201,7 +2387,13 @@ export const App: React.FC = () => {
         onClose={() => setIsSafeModeModalOpen(false)}
         sql={pendingDestructiveSql}
         warningMessage={safeModeWarning}
-        onConfirmExecute={() => executeSqlQuery(pendingDestructiveSql, { updateGrid: false })}
+        onConfirmExecute={() => {
+          setIsSafeModeModalOpen(false);
+          executeSqlQuery(pendingDestructiveSql, {
+            updateGrid: false,
+            allowDestructive: true,
+          });
+        }}
       />
 
       <ExportModal
@@ -2211,6 +2403,32 @@ export const App: React.FC = () => {
         onExport={handleExportData}
         activeFilter={filterWhere}
         supportsFullExport={!!activeConnection}
+      />
+
+      <ResultSnapshotsModal
+        isOpen={isSnapshotsModalOpen}
+        onClose={() => setIsSnapshotsModalOpen(false)}
+        capture={
+          queryResult && queryResult.rows.length > 0
+            ? {
+                columns: queryResult.columns.map((c) => c.name),
+                rows: queryResult.rows,
+                sql: activeTab?.sql || '',
+                connectionId: activeConnection?.id || '',
+                connectionName: activeConnection?.name || '',
+              }
+            : displayRows.length > 0 && columns.length > 0
+              ? {
+                  columns: columns.map((c) => c.name),
+                  rows: displayRows,
+                  sql: activeTab?.tableName
+                    ? `-- browser page: ${activeTab.tableName}`
+                    : '',
+                  connectionId: activeConnection?.id || '',
+                  connectionName: activeConnection?.name || '',
+                }
+              : null
+        }
       />
 
       <ImportModal
