@@ -2,6 +2,7 @@
 //! Shares `~/.config/devdash/` + OS keyring + the same Rust query engine.
 pub mod catalog;
 pub mod format;
+pub mod helptext;
 pub mod ops;
 pub mod paths;
 pub mod runtime;
@@ -26,7 +27,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
     about = "DevDash CLI — terminal companion to DevDash Desktop",
     long_about = "Same Rust engine as DevDash Desktop. Query every supported engine from any terminal.\n\
 Connections: ~/.config/devdash/connections.json  ·  secrets: OS keyring service devdash_app.\n\
-See docs/CLI.md for install, commands, and completions."
+See docs/CLI.md for install, commands, and completions.",
+    after_help = helptext::AFTER_ROOT
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -43,109 +45,109 @@ pub enum Commands {
     #[command(subcommand)]
     Connect(ConnectCmd),
     /// Run SQL against a saved connection
+    #[command(after_help = helptext::AFTER_SQL)]
     Sql {
         /// SQL text (omit to read --file or stdin)
         sql: Option<String>,
-        /// Connection name or id (default: catalog default)
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = helptext::H_CONN)]
         connection: Option<String>,
         /// Read SQL from a file
         #[arg(short = 'f', long = "file")]
         file: Option<PathBuf>,
-        /// Output format
-        #[arg(short = 'F', long = "format", default_value = "table")]
+        #[arg(short = 'F', long = "format", default_value = "table", help = helptext::H_FMT_TABLE)]
         format: String,
-        /// Write output to a file instead of stdout
-        #[arg(short = 'o', long = "out")]
+        #[arg(short = 'o', long = "out", help = helptext::H_OUT)]
         out: Option<PathBuf>,
-        /// Max rows to display (does not change the query)
+        /// Max rows to print (does not change the SQL)
         #[arg(short = 'n', long = "limit")]
         limit: Option<usize>,
-        /// Confirm destructive SQL (DROP / unbounded DELETE / UPDATE)
-        #[arg(long = "yes")]
+        #[arg(long = "yes", help = helptext::H_YES)]
         yes: bool,
-        /// Force read-only for this run
-        #[arg(long = "read-only")]
+        #[arg(long = "read-only", help = helptext::H_RO)]
         read_only: bool,
-        /// Password (otherwise keyring / DEVDASH_PASSWORD / prompt)
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = helptext::H_PASS)]
         password: Option<String>,
     },
     /// List tables / views
     Tables {
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = helptext::H_CONN)]
         connection: Option<String>,
-        #[arg(short = 'F', long = "format", default_value = "table")]
+        #[arg(short = 'F', long = "format", default_value = "table", help = helptext::H_FMT_TABLE)]
         format: String,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = helptext::H_PASS)]
         password: Option<String>,
     },
     /// Describe a table (columns)
     #[command(visible_alias = "desc")]
     Describe {
+        /// Table name (schema.table ok)
         table: String,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = helptext::H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = helptext::H_PASS)]
         password: Option<String>,
     },
     /// Export a table (csv / json / sql / parquet)
     Export {
+        /// Table name (schema.table ok)
         table: String,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = helptext::H_CONN)]
         connection: Option<String>,
-        #[arg(short = 'F', long = "format", default_value = "csv")]
+        #[arg(short = 'F', long = "format", default_value = "csv", help = helptext::H_FMT_EXPORT)]
         format: String,
-        #[arg(short = 'o', long = "out")]
+        #[arg(short = 'o', long = "out", help = helptext::H_OUT)]
         out: Option<PathBuf>,
+        /// Optional WHERE clause (no semicolons)
         #[arg(long = "where", value_name = "CLAUSE")]
         where_clause: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = helptext::H_PASS)]
         password: Option<String>,
     },
-    /// Show recent query history (shared with the GUI AppStorage DB)
+    /// Show recent query history (shared with Desktop AppStorage)
     History {
-        #[arg(short = 'n', long = "limit", default_value_t = 20)]
+        #[arg(short = 'n', long = "limit", default_value_t = 20, help = "Max history rows")]
         limit: i64,
     },
     /// Interactive SQL prompt
+    #[command(after_help = helptext::AFTER_REPL)]
     Repl {
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = helptext::H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = helptext::H_PASS)]
         password: Option<String>,
-        #[arg(long = "yes")]
+        #[arg(long = "yes", help = helptext::H_YES)]
         yes: bool,
     },
     /// Schema DDL, diff, and migration apply
-    #[command(subcommand)]
+    #[command(subcommand, after_help = helptext::AFTER_SCHEMA)]
     Schema(ops::SchemaCmd),
-    /// Connection diagnostics
+    /// Connection diagnostics (JSON)
     Diagnose {
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = helptext::H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = helptext::H_PASS)]
         password: Option<String>,
     },
-    /// EXPLAIN / EXPLAIN ANALYZE profile
+    /// EXPLAIN / EXPLAIN ANALYZE profile (JSON)
     Profile {
+        /// SQL to profile (or use --file)
         sql: Option<String>,
-        #[arg(short = 'f', long = "file")]
+        #[arg(short = 'f', long = "file", help = "Read SQL from a file")]
         file: Option<PathBuf>,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = helptext::H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = helptext::H_PASS)]
         password: Option<String>,
     },
-    /// Live database metrics
+    /// Live database metrics (JSON)
     Metrics {
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = helptext::H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = helptext::H_PASS)]
         password: Option<String>,
     },
     /// Query result snapshots + diff
-    #[command(subcommand)]
+    #[command(subcommand, after_help = helptext::AFTER_SNAPSHOT)]
     Snapshot(ops::SnapshotCmd),
     /// Staged grid edits (JSON → transactional commit)
     #[command(subcommand)]
@@ -153,65 +155,71 @@ pub enum Commands {
     /// Server process list / kill
     #[command(subcommand)]
     Process(ops::ProcessCmd),
-    /// Roles / login roles
+    /// Roles / login roles (JSON)
     Roles {
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = helptext::H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = helptext::H_PASS)]
         password: Option<String>,
     },
-    /// Functions / procedures / routines
+    /// Functions / procedures / routines (JSON)
     Routines {
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = helptext::H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = helptext::H_PASS)]
         password: Option<String>,
     },
     /// Run a SQL file in a transaction
     #[command(subcommand)]
     Tx(ops::TxCmd),
     /// CSV / SQL dump import
-    #[command(subcommand)]
+    #[command(subcommand, after_help = helptext::AFTER_IMPORT)]
     Import(ops::ImportCmd),
     /// Encrypted connection vault (same AES-GCM payload as Desktop)
     #[command(subcommand)]
     Vault(ops::VaultCmd),
-    /// Local audit log
+    /// Local audit log (JSON)
     Audit {
-        #[arg(short = 'n', long = "limit", default_value_t = 50)]
+        #[arg(short = 'n', long = "limit", default_value_t = 50, help = "Max audit entries")]
         limit: usize,
     },
     /// Schema-aware text-to-SQL (Ollama / OpenAI / Claude / DeepSeek)
     Ai {
+        /// Natural-language request
         prompt: String,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = helptext::H_CONN)]
         connection: Option<String>,
+        /// Execute generated SQL after preview
         #[arg(long)]
         execute: bool,
-        #[arg(long = "yes")]
+        #[arg(long = "yes", help = helptext::H_YES)]
         yes: bool,
+        /// ollama | openai | claude | deepseek | custom (else DEVDASH_AI_PROVIDER)
         #[arg(long)]
         provider: Option<String>,
+        /// Model name (else DEVDASH_AI_MODEL)
         #[arg(long)]
         model: Option<String>,
+        /// API base URL (else DEVDASH_AI_BASE_URL)
         #[arg(long = "base-url")]
         base_url: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = helptext::H_PASS)]
         password: Option<String>,
     },
     /// Structure editor (ADD/DROP COLUMN, indexes, …)
-    #[command(subcommand)]
+    #[command(subcommand, after_help = helptext::AFTER_STRUCTURE)]
     Structure(ops::StructureCmd),
-    /// Redis KEYS/SCAN via native RESP client
+    /// Redis KEYS/SCAN via native RESP client (JSON)
     RedisKeys {
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = helptext::H_CONN)]
         connection: Option<String>,
+        /// KEYS/SCAN pattern
         #[arg(long, default_value = "*")]
         pattern: String,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = helptext::H_PASS)]
         password: Option<String>,
     },
-    /// Generate shell completions
+    /// Generate shell completions to stdout
     Completions {
         /// bash | zsh | fish | powershell | elvish
         shell: String,
@@ -219,12 +227,13 @@ pub enum Commands {
 }
 
 #[derive(Subcommand, Debug)]
+#[command(after_help = helptext::AFTER_CONNECT)]
 pub enum ConnectCmd {
     /// Add or update a connection
     Add {
-        #[arg(long)]
+        #[arg(long, help = "Display name (defaults to engine-host)")]
         name: Option<String>,
-        #[arg(long = "type", value_name = "ENGINE")]
+        #[arg(long = "type", value_name = "ENGINE", help = "postgres|mysql|sqlite|duckdb|mssql|redis|…")]
         db_type: Option<String>,
         #[arg(long)]
         host: Option<String>,
@@ -232,41 +241,49 @@ pub enum ConnectCmd {
         port: Option<u16>,
         #[arg(long)]
         user: Option<String>,
-        #[arg(long)]
+        #[arg(long, help = "Database name, or file path for sqlite/duckdb")]
         database: Option<String>,
-        #[arg(long = "ssl-mode")]
+        #[arg(long = "ssl-mode", help = "disable|prefer|require|verify-full")]
         ssl_mode: Option<String>,
-        #[arg(long = "env", default_value = "dev")]
+        #[arg(long = "env", default_value = "dev", help = "dev|staging|prod|other")]
         environment: String,
-        #[arg(long = "read-only")]
+        #[arg(long = "read-only", help = "Open pool as read-only")]
         read_only: bool,
-        #[arg(long = "allow-writes-on-prod")]
+        #[arg(long = "allow-writes-on-prod", help = "Opt in to writes when --env prod")]
         allow_writes_on_prod: bool,
-        /// postgres://user:pass@host:5432/db
-        #[arg(long = "url")]
+        #[arg(long = "url", help = "postgres://user:pass@host:5432/db (password stored in keyring)")]
         url: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = helptext::H_PASS)]
         password: Option<String>,
-        /// Set this connection as default
-        #[arg(long)]
+        #[arg(long, help = "Set this connection as catalog default")]
         default: bool,
     },
     /// List saved connections
     #[command(visible_alias = "ls")]
     List,
     /// Show one connection (no password)
-    Show { name: String },
+    Show {
+        /// Connection name or id
+        name: String,
+    },
     /// Set the default connection
-    Use { name: String },
+    Use {
+        /// Connection name or id
+        name: String,
+    },
     /// Test reachability
     Test {
+        /// Connection name (default: catalog default)
         name: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = helptext::H_PASS)]
         password: Option<String>,
     },
     /// Remove a connection (and its keyring secret)
     #[command(visible_alias = "rm")]
-    Remove { name: String },
+    Remove {
+        /// Connection name or id
+        name: String,
+    },
 }
 
 pub fn run() -> ExitCode {
@@ -282,16 +299,47 @@ pub fn run() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
-            ExitCode::from(1)
+            ExitCode::from(exit_code_for(&e))
         }
     }
+}
+
+/// Scripting exit codes (clap usage errors exit 2 before `run`).
+pub(crate) fn exit_code_for(err: &str) -> u8 {
+    let e = err.to_ascii_lowercase();
+    if e.contains("safe mode")
+        || e.contains("read-only")
+        || e.contains("writes blocked")
+        || e.contains("write/ddl")
+    {
+        return 4;
+    }
+    if e.contains("no connection named")
+        || e.contains("no saved connections")
+        || e.contains("no default connection")
+        || e.contains("snapshot not found")
+        || e.contains("ambiguous connection")
+    {
+        return 5;
+    }
+    if e.contains("failed to connect")
+        || e.contains("not connected")
+        || e.contains("connection timeout")
+        || e.contains("duckdb open failed")
+        || e.contains("duckdb connection failed")
+        || e.contains("is not supported")
+        || e.contains("pool expired")
+    {
+        return 3;
+    }
+    1
 }
 
 async fn dispatch(cli: Cli) -> Result<(), String> {
     match cli.command {
         Commands::Version => {
             println!("devdash {VERSION}");
-            println!("companion to DevDash GUI · local-first · same Rust engine");
+            println!("terminal companion to DevDash Desktop · local-first · same Rust engine");
             Ok(())
         }
         Commands::Doctor => cmd_doctor().await,
@@ -1070,4 +1118,19 @@ async fn cmd_repl(
     engine.disconnect(&current).await;
     let _ = rl.save_history(&hist_path);
     Ok(())
+}
+
+#[cfg(test)]
+mod exit_code_tests {
+    use super::exit_code_for;
+
+    #[test]
+    fn maps_safe_mode_and_not_found_and_connect() {
+        assert_eq!(exit_code_for("Safe Mode blocked destructive SQL"), 4);
+        assert_eq!(exit_code_for("Connection is read-only. Write/DDL statements are blocked."), 4);
+        assert_eq!(exit_code_for("No connection named 'foo'. Run `devdash connect ls`."), 5);
+        assert_eq!(exit_code_for("Snapshot not found: abc"), 5);
+        assert_eq!(exit_code_for("Failed to connect to database: timeout"), 3);
+        assert_eq!(exit_code_for("something else went wrong"), 1);
+    }
 }

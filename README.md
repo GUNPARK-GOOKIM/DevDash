@@ -233,17 +233,23 @@ Because DevDash is an open-source project and installers are compiled directly f
 
 ## 🖥️ DevDash CLI
 
-**DevDash Desktop** is the visual workspace. **DevDash CLI** is its terminal companion: same Rust core, same OS keyring, same `~/.config/devdash/` catalog and AppStorage. Install and command reference: [`docs/CLI.md`](docs/CLI.md).
+**DevDash Desktop** is the visual workspace. **DevDash CLI** is its terminal companion: same Rust core, same OS keyring, same `~/.config/devdash/` catalog and AppStorage.
 
-From a clone (installer one-liner is published only after this lands on `main`):
+Full v1 guide (quick start, command tree, config precedence, exit codes, scripting, troubleshooting): **[`docs/CLI.md`](docs/CLI.md)**.
+
+Install from a clone (the `curl …/main/…` one-liner is published only after this lands on `main`):
 
 ```bash
 cargo install --path src-tauri --bin devdash --locked --no-default-features --features cli
-# or: ./scripts/install-cli.sh
+```
 
+Quick start:
+
+```bash
 devdash doctor
 devdash connect add --name local --url 'postgres://user@localhost:5432/app'
-devdash sql 'select now()'
+devdash connect test
+devdash sql 'select 1'
 devdash repl
 ```
 

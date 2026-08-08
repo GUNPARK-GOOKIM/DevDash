@@ -99,4 +99,4 @@ npm run test:smoke
 
 Release CI (`.github/workflows/release.yml`) builds **desktop** installers for Windows, macOS, and Linux only — **not Android**.
 
-CLI guide: [`docs/CLI.md`](CLI.md).
+CLI guide (v1 quick start, command tree, exit codes, scripting): [`docs/CLI.md`](CLI.md).

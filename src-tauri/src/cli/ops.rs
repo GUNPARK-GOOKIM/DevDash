@@ -29,6 +29,7 @@ use crate::db::structure_editor::{
     AddColumnPayload, AddIndexPayload, ChangeTypePayload, DropColumnPayload, DropIndexPayload,
     RenameColumnPayload, SetNullablePayload,
 };
+use super::helptext::{H_CONN, H_OUT, H_PASS, H_YES};
 use clap::Subcommand;
 use serde::Deserialize;
 use std::io;
@@ -40,46 +41,47 @@ use std::path::PathBuf;
 pub enum SchemaCmd {
     /// Generate CREATE TABLE DDL
     Ddl {
+        /// Table name (schema.table ok)
         table: String,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = H_PASS)]
         password: Option<String>,
     },
     /// List indexes
     Indexes {
         table: String,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = H_PASS)]
         password: Option<String>,
     },
     /// Diff one table across two saved connections
     Diff {
         table: String,
-        #[arg(long = "from")]
+        #[arg(long = "from", help = "Source connection name")]
         from: String,
-        #[arg(long = "to")]
+        #[arg(long = "to", help = "Target connection name")]
         to: String,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = H_PASS)]
         password: Option<String>,
-        #[arg(short = 'o', long = "out")]
+        #[arg(short = 'o', long = "out", help = H_OUT)]
         out: Option<PathBuf>,
     },
     /// Apply a SQL migration file (transactional)
     Apply {
-        #[arg(short = 'f', long = "file")]
+        #[arg(short = 'f', long = "file", help = "SQL script to apply")]
         file: PathBuf,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = H_CONN)]
         connection: Option<String>,
-        #[arg(long = "source-label")]
+        #[arg(long = "source-label", help = "Label stored in migration history")]
         source_label: Option<String>,
-        #[arg(long = "dry-run")]
+        #[arg(long = "dry-run", help = "Parse/log only; do not execute")]
         dry_run: bool,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = H_PASS)]
         password: Option<String>,
     },
-    /// List local migration run history
+    /// List local migration run history (JSON)
     Runs {
         #[arg(short = 'n', long = "limit", default_value_t = 20)]
         limit: i64,
@@ -88,24 +90,29 @@ pub enum SchemaCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum SnapshotCmd {
+    /// Run SQL and store the result set locally
     Save {
-        #[arg(long)]
+        #[arg(long, help = "Snapshot display name")]
         name: String,
         #[arg(short = 'f', long = "file", help = "SQL file to run and snapshot")]
         file: Option<PathBuf>,
+        /// SQL text (if --file omitted)
         sql: Option<String>,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = H_PASS)]
         password: Option<String>,
     },
+    /// List snapshot metadata (JSON)
     #[command(visible_alias = "ls")]
     List {
         #[arg(short = 'n', long = "limit", default_value_t = 50)]
         limit: i64,
     },
+    /// Delete a snapshot by id
     #[command(visible_alias = "rm")]
     Delete { id: String },
+    /// Paged row diff between two snapshots (JSON)
     Diff {
         left: String,
         right: String,
@@ -118,104 +125,113 @@ pub enum SnapshotCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum ProcessCmd {
+    /// List server processes (JSON; empty on SQLite/DuckDB)
     #[command(visible_alias = "ls")]
     List {
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = H_PASS)]
         password: Option<String>,
     },
+    /// Cancel/kill a backend pid (pg_cancel_backend / KILL QUERY)
     Kill {
         pid: u32,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = H_PASS)]
         password: Option<String>,
     },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum TxCmd {
-    /// Run a SQL file inside a single transaction (same engine as GUI apply_migration_sql)
+    /// Run a SQL file inside a single transaction (same engine as Desktop apply_migration_sql)
     Run {
-        #[arg(short = 'f', long = "file")]
+        #[arg(short = 'f', long = "file", help = "SQL file")]
         file: PathBuf,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = H_CONN)]
         connection: Option<String>,
-        #[arg(long = "dry-run")]
+        #[arg(long = "dry-run", help = "Do not execute; log only")]
         dry_run: bool,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = H_PASS)]
         password: Option<String>,
     },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum ImportCmd {
+    /// Import a CSV file into a table
     Csv {
         table: String,
-        #[arg(short = 'f', long = "file")]
+        #[arg(short = 'f', long = "file", help = "CSV path")]
         file: PathBuf,
-        #[arg(long)]
+        #[arg(long, help = "Show headers + first rows; do not import")]
         preview: bool,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = H_PASS)]
         password: Option<String>,
     },
+    /// Run a SQL dump file
     Sql {
-        #[arg(short = 'f', long = "file")]
+        #[arg(short = 'f', long = "file", help = "SQL dump path")]
         file: PathBuf,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = H_CONN)]
         connection: Option<String>,
-        #[arg(long = "yes")]
+        #[arg(long = "yes", help = H_YES)]
         yes: bool,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = H_PASS)]
         password: Option<String>,
     },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum VaultCmd {
+    /// Export AppStorage connections as AES-GCM ciphertext
     Export {
-        #[arg(short = 'o', long = "out")]
+        #[arg(short = 'o', long = "out", help = H_OUT)]
         out: Option<PathBuf>,
-        #[arg(long)]
+        #[arg(long, help = "Passphrase (--passphrase > DEVDASH_VAULT_PASS)")]
         passphrase: Option<String>,
     },
+    /// Import an encrypted vault payload
     Import {
-        #[arg(short = 'f', long = "file")]
+        #[arg(short = 'f', long = "file", help = "Encrypted JSON file")]
         file: PathBuf,
-        #[arg(long)]
+        #[arg(long, help = "Passphrase (--passphrase > DEVDASH_VAULT_PASS)")]
         passphrase: Option<String>,
     },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum StructureCmd {
+    /// ADD COLUMN
     AddColumn {
         #[arg(long)]
         table: String,
         #[arg(long)]
         name: String,
-        #[arg(long = "type")]
+        #[arg(long = "type", help = "SQL type, e.g. TEXT or INTEGER")]
         data_type: String,
-        #[arg(long)]
+        #[arg(long, help = "Allow NULL")]
         nullable: bool,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = H_PASS)]
         password: Option<String>,
     },
+    /// DROP COLUMN
     DropColumn {
         #[arg(long)]
         table: String,
         #[arg(long)]
         name: String,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = H_PASS)]
         password: Option<String>,
     },
+    /// RENAME COLUMN
     RenameColumn {
         #[arg(long)]
         table: String,
@@ -223,11 +239,12 @@ pub enum StructureCmd {
         from: String,
         #[arg(long)]
         to: String,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = H_PASS)]
         password: Option<String>,
     },
+    /// ALTER COLUMN type
     ChangeType {
         #[arg(long)]
         table: String,
@@ -235,11 +252,12 @@ pub enum StructureCmd {
         name: String,
         #[arg(long = "type")]
         data_type: String,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = H_PASS)]
         password: Option<String>,
     },
+    /// SET/DROP NOT NULL (MySQL needs --type)
     SetNullable {
         #[arg(long)]
         table: String,
@@ -247,52 +265,54 @@ pub enum StructureCmd {
         name: String,
         #[arg(long)]
         nullable: bool,
-        #[arg(long = "type")]
+        #[arg(long = "type", help = "Current SQL type (required for MySQL MODIFY)")]
         data_type: String,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = H_PASS)]
         password: Option<String>,
     },
+    /// CREATE INDEX
     AddIndex {
         #[arg(long)]
         table: String,
         #[arg(long)]
         name: String,
-        #[arg(long = "columns", value_delimiter = ',')]
+        #[arg(long = "columns", value_delimiter = ',', help = "Comma-separated columns")]
         columns: Vec<String>,
         #[arg(long)]
         unique: bool,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = H_PASS)]
         password: Option<String>,
     },
+    /// DROP INDEX
     DropIndex {
         #[arg(long)]
         name: String,
         #[arg(long)]
         table: Option<String>,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = H_PASS)]
         password: Option<String>,
     },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum StageCmd {
-    /// Commit staged edits from a JSON file (same shapes as `staged_edits.rs`)
+    /// Commit staged edits from a JSON file (same structs as staged_edits.rs)
     Commit {
-        #[arg(short = 'f', long = "file")]
+        #[arg(short = 'f', long = "file", help = "JSON file: updates/inserts/deletes")]
         file: PathBuf,
-        #[arg(long)]
+        #[arg(long, help = "Target table")]
         table: String,
-        #[arg(long = "pk", default_value = "id")]
+        #[arg(long = "pk", default_value = "id", help = "Primary-key column name")]
         pk: String,
-        #[arg(short = 'c', long = "connection")]
+        #[arg(short = 'c', long = "connection", help = H_CONN)]
         connection: Option<String>,
-        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        #[arg(long = "password", env = "DEVDASH_PASSWORD", help = H_PASS)]
         password: Option<String>,
     },
 }
