@@ -1412,4 +1412,267 @@ export const listDatabaseProcesses = async (
   }));
 };
 
+// ─── Shared connection catalog (Desktop + CLI + Mobile) ──────────────
+export interface CatalogConnection {
+  id: string;
+  name: string;
+  db_type: string;
+  host: string;
+  port: number;
+  user: string;
+  database: string;
+  ssl_mode?: string | null;
+  environment: string;
+  is_read_only: boolean;
+  allow_writes_on_prod: boolean;
+  updated_at?: string;
+  origin_device_id?: string;
+}
+
+export interface ConnectionCatalogPayload {
+  version: number;
+  default?: string | null;
+  connections: CatalogConnection[];
+}
+
+export const listConnectionCatalog = async (): Promise<ConnectionCatalogPayload> => {
+  if (!isTauriAvailable()) {
+    return { version: 1, default: null, connections: [] };
+  }
+  return await invoke<ConnectionCatalogPayload>('catalog_list');
+};
+
+export const upsertCatalogConnection = async (
+  conn: CatalogConnection,
+  password?: string,
+  platform: 'desktop' | 'mobile' | 'cli' = 'desktop'
+): Promise<ConnectionCatalogPayload> => {
+  if (!isTauriAvailable()) {
+    return { version: 1, default: conn.name, connections: [conn] };
+  }
+  return await invoke<ConnectionCatalogPayload>('catalog_upsert', {
+    conn,
+    password: password || null,
+    platform,
+  });
+};
+
+export const removeCatalogConnection = async (
+  nameOrId: string
+): Promise<ConnectionCatalogPayload> => {
+  if (!isTauriAvailable()) {
+    return { version: 1, default: null, connections: [] };
+  }
+  return await invoke<ConnectionCatalogPayload>('catalog_remove', { nameOrId });
+};
+
+export const setCatalogDefault = async (name: string): Promise<ConnectionCatalogPayload> => {
+  if (!isTauriAvailable()) {
+    return { version: 1, default: name, connections: [] };
+  }
+  return await invoke<ConnectionCatalogPayload>('catalog_set_default', { name });
+};
+
+export const ingestGuiConnections = async (
+  connections: CatalogConnection[],
+  platform: 'desktop' | 'mobile' = 'desktop'
+): Promise<MergeReport> => {
+  if (!isTauriAvailable()) {
+    return emptyMergeReport();
+  }
+  return await invoke<MergeReport>('catalog_ingest_gui_connections', {
+    connections,
+    platform,
+  });
+};
+
+export function catalogToConfig(c: CatalogConnection): ConnectionConfig {
+  return {
+    id: c.id,
+    name: c.name,
+    db_type: (c.db_type || 'postgres') as ConnectionConfig['db_type'],
+    host: c.host,
+    port: c.port,
+    user: c.user,
+    database: c.database,
+    ssl_mode: c.ssl_mode || undefined,
+    environment: (c.environment as ConnectionConfig['environment']) || 'dev',
+    is_read_only: c.is_read_only,
+    allow_writes_on_prod: c.allow_writes_on_prod,
+  };
+}
+
+export function configToCatalog(c: ConnectionConfig): CatalogConnection {
+  return {
+    id: c.id,
+    name: c.name,
+    db_type: c.db_type,
+    host: c.host,
+    port: c.port,
+    user: c.user,
+    database: c.database,
+    ssl_mode: c.ssl_mode || null,
+    environment: c.environment || 'dev',
+    is_read_only: !!c.is_read_only,
+    allow_writes_on_prod: !!c.allow_writes_on_prod,
+    updated_at: '',
+    origin_device_id: '',
+  };
+}
+
+// ─── Device sync ─────────────────────────────────────────────────────
+export interface DeviceIdentity {
+  id: string;
+  name: string;
+  platform: string;
+  created_at: string;
+}
+
+export interface ConflictRecord {
+  kind: string;
+  id: string;
+  name: string;
+  resolution: string;
+  reason: string;
+}
+
+export interface MergeReport {
+  connections_added: number;
+  connections_updated: number;
+  connections_kept_local: number;
+  queries_upserted: number;
+  history_inserted: number;
+  secrets_imported: number;
+  conflicts: ConflictRecord[];
+  origin_device_id: string;
+  origin_device_name: string;
+}
+
+export interface SyncStatus {
+  device: DeviceIdentity;
+  catalog_path: string;
+  catalog_count: number;
+  default_connection?: string | null;
+  saved_query_count: number;
+  history_count: number;
+  last_export_path?: string | null;
+}
+
+export interface SyncExportReport {
+  path?: string | null;
+  ciphertext: string;
+  connection_count: number;
+  query_count: number;
+  history_count: number;
+  include_secrets: boolean;
+  origin_device: DeviceIdentity;
+}
+
+function emptyMergeReport(): MergeReport {
+  return {
+    connections_added: 0,
+    connections_updated: 0,
+    connections_kept_local: 0,
+    queries_upserted: 0,
+    history_inserted: 0,
+    secrets_imported: 0,
+    conflicts: [],
+    origin_device_id: '',
+    origin_device_name: '',
+  };
+}
+
+export const getDeviceSyncStatus = async (
+  platform: 'desktop' | 'mobile' | 'cli' = 'desktop'
+): Promise<SyncStatus> => {
+  if (!isTauriAvailable()) {
+    return {
+      device: {
+        id: 'web-preview',
+        name: 'browser',
+        platform,
+        created_at: new Date().toISOString(),
+      },
+      catalog_path: '(web preview — no catalog)',
+      catalog_count: 0,
+      saved_query_count: 0,
+      history_count: 0,
+    };
+  }
+  return await invoke<SyncStatus>('device_sync_status', { platform });
+};
+
+export const exportDeviceSync = async (opts: {
+  passphrase: string;
+  includeSecrets?: boolean;
+  path?: string;
+  platform?: 'desktop' | 'mobile' | 'cli';
+}): Promise<SyncExportReport> => {
+  if (!isTauriAvailable()) {
+    throw new Error('Device sync requires the native app');
+  }
+  return await invoke<SyncExportReport>('device_sync_export', {
+    passphrase: opts.passphrase,
+    includeSecrets: opts.includeSecrets ?? false,
+    path: opts.path || null,
+    platform: opts.platform || 'desktop',
+  });
+};
+
+export const importDeviceSync = async (opts: {
+  passphrase: string;
+  ciphertext?: string;
+  path?: string;
+  importSecrets?: boolean;
+}): Promise<MergeReport> => {
+  if (!isTauriAvailable()) {
+    throw new Error('Device sync requires the native app');
+  }
+  return await invoke<MergeReport>('device_sync_import', {
+    passphrase: opts.passphrase,
+    ciphertext: opts.ciphertext || null,
+    path: opts.path || null,
+    importSecrets: opts.importSecrets ?? true,
+  });
+};
+
+export const suggestedSyncExportPath = async (): Promise<string> => {
+  if (!isTauriAvailable()) return '';
+  return await invoke<string>('device_sync_suggested_path');
+};
+
+// ─── AI SQL assist (same core as CLI `devdash ai`) ───────────────────
+export interface AiAssistRequestPayload {
+  provider: string;
+  base_url?: string | null;
+  model?: string | null;
+  api_key?: string | null;
+  db_type: string;
+  active_table?: string | null;
+  last_queries: string[];
+  tables: { name: string; columns: string[] }[];
+  prompt: string;
+}
+
+export interface AiAssistResponsePayload {
+  sql: string;
+  is_write: boolean;
+  provider: string;
+  model: string;
+}
+
+export const generateSqlAssist = async (
+  req: AiAssistRequestPayload
+): Promise<AiAssistResponsePayload> => {
+  if (!isTauriAvailable()) {
+    return {
+      sql: `-- web preview: ${req.prompt}`,
+      is_write: false,
+      provider: req.provider,
+      model: req.model || 'preview',
+    };
+  }
+  return await invoke<AiAssistResponsePayload>('generate_sql_assist', { req });
+};
+
 

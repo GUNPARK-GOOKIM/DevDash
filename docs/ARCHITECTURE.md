@@ -7,7 +7,7 @@
 
 ## 1. System Overview
 
-DevDash is a **local-first desktop** database GUI built with:
+DevDash is a **local-first** database platform (Desktop + CLI + Mobile) built with:
 
 | Layer | Stack |
 | ----- | ----- |
@@ -27,10 +27,12 @@ React UI  →  tauriBridge.ts  →  Tauri IPC  →  Rust commands.rs
                                               ├─ credentials.rs / encrypted_export.rs
                                               └─ audit.rs (local JSONL only)
 
-devdash CLI  →  src-tauri/src/cli/*  →  same db::* engine (see docs/CLI.md)
+devdash CLI     →  src-tauri/src/cli/*  →  same db::* engine (see docs/CLI.md)
+DevDash Mobile  →  src/mobile + tauriBridge → same commands.rs / db::* (see docs/MOBILE.md)
                  catalog: ~/.config/devdash/connections.json
                  secrets: OS keyring service `devdash_app`
                  history: ~/.config/devdash/devdash_internal.db
+                 sync:    db/device_sync.rs (optional AES-GCM bundles)
 ```
 
 Cargo features: `gui` (default, Tauri desktop) and `cli` (`devdash` binary, no WebKit). Build CLI with `--no-default-features --features cli`.
@@ -45,7 +47,8 @@ There is **no** Monaco editor, **no** embedded offline AI model, and **no** prod
 2. **Large result streaming**: `stream_dynamic_query` emits ~500-row chunks over Tauri events. This reduces intermediate row buffers; **RAM is not guaranteed &lt;25MB** (unmeasured).
 3. **Grid mutations** stage in the UI, then commit via `staged_edits.rs` in a transaction. Values are **escaped SQL literals**, not bind parameters.
 4. **Safe Mode**: `analyze_sql_safety` + server gate on `run_sql_query` unless `allow_destructive` is true.
-5. **Passwords**: keyring or encrypted export — not plain-text password fields in saved connection files (connection metadata may still live in `localStorage`).
+5. **Passwords**: keyring or encrypted export — not plain-text password fields in saved connection files (connection metadata may still live in `localStorage` on Desktop; Mobile/CLI use `connections.json`).
+6. **Device sync** (`device_sync.rs`) is optional, file-based, AES-256-GCM. Conflicts: last-write-wins; equal timestamps keep local. Import never deletes local rows.
 
 ---
 

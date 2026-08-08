@@ -23,6 +23,23 @@ export function useMediaQuery(query: string): boolean {
   return matches;
 }
 
+function readForceMobile(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const q = new URLSearchParams(window.location.search);
+    if (q.get('mobile') === '1' || q.get('mobile') === 'true') return true;
+    if (localStorage.getItem('devdash_force_mobile') === '1') return true;
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
 export function useIsMobile(): boolean {
-  return useMediaQuery('(max-width: 768px)');
+  const media = useMediaQuery('(max-width: 768px)');
+  const [forced, setForced] = useState(false);
+  useEffect(() => {
+    setForced(readForceMobile());
+  }, []);
+  return forced || media;
 }

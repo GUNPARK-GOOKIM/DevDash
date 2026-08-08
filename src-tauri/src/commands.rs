@@ -1412,3 +1412,139 @@ pub async fn generate_sql_assist(req: AiAssistRequest) -> Result<AiAssistRespons
         .map_err(|e| format!("AI assist task failed: {e}"))?
 }
 
+// ─── Shared connection catalog (Desktop + CLI + Mobile SSOT) ─────────
+
+#[tauri::command]
+pub fn catalog_list() -> Result<crate::db::connection_catalog::ConnectionCatalog, String> {
+    crate::db::connection_catalog::load_catalog()
+}
+
+#[tauri::command]
+pub fn catalog_upsert(
+    conn: crate::db::connection_catalog::CatalogConnection,
+    password: Option<String>,
+    platform: Option<String>,
+) -> Result<crate::db::connection_catalog::ConnectionCatalog, String> {
+    let device = crate::db::device_sync::ensure_device_identity(
+        platform.as_deref().unwrap_or("desktop"),
+    )?;
+    let mut catalog = crate::db::connection_catalog::load_catalog()?;
+    let mut conn = conn;
+    conn.touch(&device.id);
+    if catalog.default.is_none() {
+        catalog.default = Some(conn.name.clone());
+    }
+    crate::db::connection_catalog::upsert_connection(&mut catalog, conn.clone());
+    if let Some(pw) = password {
+        if !pw.is_empty() {
+            crate::db::connection_catalog::store_password(&conn.id, &pw)?;
+        }
+    }
+    crate::db::connection_catalog::save_catalog(&catalog)?;
+    Ok(catalog)
+}
+
+#[tauri::command]
+pub fn catalog_remove(
+    name_or_id: String,
+) -> Result<crate::db::connection_catalog::ConnectionCatalog, String> {
+    let mut catalog = crate::db::connection_catalog::load_catalog()?;
+    crate::db::connection_catalog::remove_connection(&mut catalog, &name_or_id)?;
+    crate::db::connection_catalog::save_catalog(&catalog)?;
+    Ok(catalog)
+}
+
+#[tauri::command]
+pub fn catalog_set_default(
+    name: String,
+) -> Result<crate::db::connection_catalog::ConnectionCatalog, String> {
+    let mut catalog = crate::db::connection_catalog::load_catalog()?;
+    let chosen = crate::db::connection_catalog::resolve_connection(&catalog, &name)?
+        .name
+        .clone();
+    catalog.default = Some(chosen);
+    crate::db::connection_catalog::save_catalog(&catalog)?;
+    Ok(catalog)
+}
+
+#[tauri::command]
+pub fn catalog_ingest_gui_connections(
+    connections: Vec<crate::db::connection_catalog::CatalogConnection>,
+    platform: Option<String>,
+) -> Result<crate::db::device_sync::MergeReport, String> {
+    let device = crate::db::device_sync::ensure_device_identity(
+        platform.as_deref().unwrap_or("desktop"),
+    )?;
+    crate::db::device_sync::ingest_gui_connections(connections, &device.id)
+}
+
+// ─── Optional E2E device sync ────────────────────────────────────────
+
+#[tauri::command]
+pub async fn device_sync_status(
+    platform: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<crate::db::device_sync::SyncStatus, String> {
+    crate::db::device_sync::status(&state.storage, platform.as_deref().unwrap_or("desktop")).await
+}
+
+#[tauri::command]
+pub async fn device_sync_export(
+    passphrase: String,
+    include_secrets: Option<bool>,
+    path: Option<String>,
+    platform: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<crate::db::device_sync::SyncExportReport, String> {
+    let platform = platform.unwrap_or_else(|| "desktop".into());
+    let include_secrets = include_secrets.unwrap_or(false);
+    if let Some(p) = path {
+        crate::db::device_sync::export_to_path(
+            &state.storage,
+            std::path::Path::new(&p),
+            &passphrase,
+            include_secrets,
+            &platform,
+        )
+        .await
+    } else {
+        crate::db::device_sync::export_to_string(
+            &state.storage,
+            &passphrase,
+            include_secrets,
+            &platform,
+        )
+        .await
+    }
+}
+
+#[tauri::command]
+pub async fn device_sync_import(
+    passphrase: String,
+    ciphertext: Option<String>,
+    path: Option<String>,
+    import_secrets: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<crate::db::device_sync::MergeReport, String> {
+    let import_secrets = import_secrets.unwrap_or(true);
+    if let Some(p) = path {
+        crate::db::device_sync::import_from_path(
+            &state.storage,
+            std::path::Path::new(&p),
+            &passphrase,
+            import_secrets,
+        )
+        .await
+    } else if let Some(ct) = ciphertext {
+        crate::db::device_sync::import_from_string(&state.storage, &ct, &passphrase, import_secrets)
+            .await
+    } else {
+        Err("Provide ciphertext or path".into())
+    }
+}
+
+#[tauri::command]
+pub fn device_sync_suggested_path() -> Result<String, String> {
+    crate::db::device_sync::suggested_export_path().map(|p| p.display().to_string())
+}
+

@@ -1,6 +1,6 @@
 # DevDash CLI (v1)
 
-DevDash CLI is the **terminal companion to DevDash Desktop**. Both call the same Rust engine in `src-tauri/src/db/*`: one query path, one Safe Mode, one keyring, one AppStorage file.
+DevDash CLI is the **terminal companion to DevDash Desktop and DevDash Mobile**. All three call the same Rust engine in `src-tauri/src/db/*`: one query path, one Safe Mode, one keyring, one catalog, one AppStorage file.
 
 The CLI is a clap front-end over that core. It does **not** reimplement query execution, staging SQL, schema diff, diagnostics, or AI prompt construction.
 
@@ -60,12 +60,15 @@ Config directory: `DEVDASH_CONFIG_DIR` → OS config dir + `/devdash`
 
 | File / env | Role |
 |------------|------|
-| `$DEVDASH_CONFIG_DIR/connections.json` | Connection catalog (no passwords) |
+| `$DEVDASH_CONFIG_DIR/connections.json` | Connection catalog (no passwords; shared with Desktop + Mobile) |
 | `$DEVDASH_CONFIG_DIR/devdash_internal.db` | Shared AppStorage (history, snapshots, migration runs) |
+| `$DEVDASH_CONFIG_DIR/device.json` | Stable device id for sync conflict traces |
+| `$DEVDASH_CONFIG_DIR/sync-exports/` | Default `.ddsync` export directory |
 | `$DEVDASH_CONFIG_DIR/cli_history` | REPL history |
-| OS keyring service `devdash_app` | Passwords (same as Desktop) |
+| OS keyring service `devdash_app` | Passwords (same as Desktop / Mobile) |
 | `DEVDASH_PASSWORD` | Password fallback |
 | `DEVDASH_VAULT_PASS` | Vault passphrase fallback |
+| `DEVDASH_SYNC_PASS` | Device-sync passphrase fallback |
 | `DEVDASH_AI_PROVIDER` / `DEVDASH_AI_KEY` / `DEVDASH_AI_MODEL` / `DEVDASH_AI_BASE_URL` | AI defaults |
 | keyring account `ai_api_key` | Cloud LLM key if env unset |
 
@@ -169,6 +172,10 @@ devdash
 │   └── drop-index --name I [--table T]
 ├── redis-keys [-c] [--pattern *]
 ├── completions <bash|zsh|fish|powershell|elvish>
+├── sync
+│   ├── status
+│   ├── export [-o FILE] [--passphrase] [--include-secrets]
+│   └── import -f FILE [--passphrase] [--skip-secrets]
 └── help
 ```
 
@@ -210,6 +217,19 @@ devdash schema diff --from staging --to prod --table users -o /tmp/users.sql
 devdash schema apply -f /tmp/users.sql --dry-run
 devdash schema apply -f /tmp/users.sql
 ```
+
+## Device sync (Desktop ↔ CLI ↔ Mobile)
+
+Optional. Encrypted file you copy yourself. Same merge rules as the Mobile sync screen. See [`MOBILE.md`](MOBILE.md).
+
+```bash
+devdash sync status
+devdash sync export -o ~/Desktop/devdash.ddsync --passphrase "$DEVDASH_SYNC_PASS"
+devdash sync export -o bundle.ddsync --include-secrets --passphrase "$DEVDASH_SYNC_PASS"
+devdash sync import -f bundle.ddsync --passphrase "$DEVDASH_SYNC_PASS"
+```
+
+Passphrase ≥ 8 characters. `--include-secrets` puts keyring passwords inside the ciphertext. Import never deletes local catalog rows; equal `updated_at` keeps local.
 
 ## Shell completions
 
@@ -308,6 +328,6 @@ cargo build --manifest-path src-tauri/Cargo.toml --bin devdash --no-default-feat
 
 ## v1 production notes
 
-Ready for query, export/import, diagnostics, schema diff/apply, snapshots, staging, admin catalogs, vault, audit, and AI assist on engines the core actually opens.
+Ready for query, export/import, diagnostics, schema diff/apply, snapshots, staging, admin catalogs, vault, device sync, audit, and AI assist on engines the core actually opens.
 
 Not claimed: Cloud IAM, Oracle/Snowflake/BigQuery/Turso, certified compliance, published GitHub-release binaries, or a `curl | sh` installer on `main` until this branch merges.

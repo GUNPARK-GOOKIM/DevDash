@@ -258,6 +258,49 @@ impl AppStorage { // Implementation block for AppStorage struct
         Ok(queries)
     }
 
+    /// Insert or last-write-wins update a saved query by id (device sync).
+    pub async fn upsert_saved_query(&self, item: &SavedQueryItem) -> Result<(), String> {
+        sqlx::query(
+            "INSERT INTO saved_queries (id, name, sql_content, project_path, created_at)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT(id) DO UPDATE SET
+               name = excluded.name,
+               sql_content = excluded.sql_content,
+               project_path = excluded.project_path,
+               created_at = excluded.created_at
+             WHERE excluded.created_at >= saved_queries.created_at;",
+        )
+        .bind(&item.id)
+        .bind(&item.name)
+        .bind(&item.sql_content)
+        .bind(&item.project_path)
+        .bind(&item.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to upsert saved query: {}", e))?;
+        Ok(())
+    }
+
+    /// Union-merge history by id. Existing rows are left untouched (offline-first).
+    pub async fn upsert_query_history(&self, item: &QueryHistoryItem) -> Result<(), String> {
+        sqlx::query(
+            "INSERT OR IGNORE INTO query_history
+             (id, query_text, connection_id, timestamp, execution_time_ms, row_count, error)
+             VALUES ($1, $2, $3, $4, $5, $6, $7);",
+        )
+        .bind(&item.id)
+        .bind(&item.query_text)
+        .bind(&item.connection_id)
+        .bind(&item.timestamp)
+        .bind(item.execution_time_ms)
+        .bind(item.row_count)
+        .bind(&item.error)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to upsert query history: {}", e))?;
+        Ok(())
+    }
+
     // Delete a saved query by its ID
     pub async fn delete_query(&self, query_id: &str) -> Result<(), String> { // Async delete query function
         sqlx::query("DELETE FROM saved_queries WHERE id = $1") // Prepare DELETE query

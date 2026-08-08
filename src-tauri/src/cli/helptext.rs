@@ -64,3 +64,13 @@ Examples:
   devdash structure add-column --table users --name nickname --type TEXT --nullable
   devdash structure drop-column --table users --name nickname
   devdash structure add-index --table users --name idx_email --columns email --unique";
+
+pub const AFTER_SYNC: &str = "\
+Optional, offline-first, end-to-end encrypted. No DevDash cloud.
+Passphrase (≥8 chars) wraps AES-256-GCM. Conflicts: last-write-wins; ties keep local.
+
+Examples:
+  devdash sync status
+  devdash sync export -o ~/Desktop/devdash.ddsync --passphrase 'correct horse'
+  devdash sync export -o bundle.ddsync --include-secrets --passphrase \"$DEVDASH_SYNC_PASS\"
+  devdash sync import -f bundle.ddsync --passphrase \"$DEVDASH_SYNC_PASS\"";

@@ -55,13 +55,8 @@ fn try_decrypt_with_iters(
         .map_err(|e| format!("Failed to parse decrypted payload: {}", e))
 }
 
-pub fn encrypt_export_payload(
-    payload: &ExportPayload,
-    passphrase: &str,
-) -> Result<EncryptedExportFile, String> {
-    let json_bytes = serde_json::to_vec(payload)
-        .map_err(|e| format!("Failed to serialize export payload: {}", e))?;
-
+/// Encrypt arbitrary bytes with AES-256-GCM (PBKDF2-HMAC-SHA256, 100k iters).
+pub fn encrypt_bytes(plaintext: &[u8], passphrase: &str) -> Result<EncryptedExportFile, String> {
     let salt: [u8; 16] = uuid::Uuid::new_v4().as_bytes()[..16].try_into().unwrap();
     let nonce_bytes: [u8; 12] = uuid::Uuid::new_v4().as_bytes()[..12].try_into().unwrap();
 
@@ -71,7 +66,7 @@ pub fn encrypt_export_payload(
 
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
-        .encrypt(nonce, json_bytes.as_ref())
+        .encrypt(nonce, plaintext)
         .map_err(|e| format!("Encryption failed: {}", e))?;
 
     use base64::Engine;
@@ -83,6 +78,61 @@ pub fn encrypt_export_payload(
         ciphertext_b64: engine.encode(ciphertext),
         kdf_iters: Some(KDF_ITERS_V2),
     })
+}
+
+pub fn decrypt_bytes(
+    encrypted_file: &EncryptedExportFile,
+    passphrase: &str,
+) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::STANDARD;
+
+    let salt = engine
+        .decode(&encrypted_file.salt_b64)
+        .map_err(|e| format!("Invalid salt base64: {}", e))?;
+    let nonce_bytes = engine
+        .decode(&encrypted_file.nonce_b64)
+        .map_err(|e| format!("Invalid nonce base64: {}", e))?;
+    let ciphertext = engine
+        .decode(&encrypted_file.ciphertext_b64)
+        .map_err(|e| format!("Invalid ciphertext base64: {}", e))?;
+
+    let mut candidates: Vec<u32> = Vec::new();
+    if let Some(iters) = encrypted_file.kdf_iters {
+        candidates.push(iters);
+    }
+    for iters in [KDF_ITERS_V2, KDF_ITERS_V1] {
+        if !candidates.contains(&iters) {
+            candidates.push(iters);
+        }
+    }
+
+    let mut last_err = String::new();
+    for iters in candidates {
+        let key = derive_aes_key(passphrase, &salt, iters);
+        let cipher = match Aes256Gcm::new_from_slice(&key) {
+            Ok(c) => c,
+            Err(e) => {
+                last_err = format!("AES key init failed: {}", e);
+                continue;
+            }
+        };
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        match cipher.decrypt(nonce, ciphertext.as_ref()) {
+            Ok(pt) => return Ok(pt),
+            Err(_) => last_err = "Decryption failed: Incorrect passphrase or corrupted data".into(),
+        }
+    }
+    Err(last_err)
+}
+
+pub fn encrypt_export_payload(
+    payload: &ExportPayload,
+    passphrase: &str,
+) -> Result<EncryptedExportFile, String> {
+    let json_bytes = serde_json::to_vec(payload)
+        .map_err(|e| format!("Failed to serialize export payload: {}", e))?;
+    encrypt_bytes(&json_bytes, passphrase)
 }
 
 pub fn decrypt_export_payload(

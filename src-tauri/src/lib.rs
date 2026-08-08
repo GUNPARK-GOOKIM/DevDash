@@ -136,6 +136,15 @@ pub fn run() { // Entry point library run function for Tauri application
             commands::list_db_roles,
             commands::list_db_routines,
             commands::generate_sql_assist,
+            commands::catalog_list,
+            commands::catalog_upsert,
+            commands::catalog_remove,
+            commands::catalog_set_default,
+            commands::catalog_ingest_gui_connections,
+            commands::device_sync_status,
+            commands::device_sync_export,
+            commands::device_sync_import,
+            commands::device_sync_suggested_path,
         ])
         .run(tauri::generate_context!()) // Run Tauri application context
         .expect("error while running devdash tauri application"); // Handle application runtime errors
