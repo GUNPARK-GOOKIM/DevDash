@@ -6,6 +6,9 @@ use crate::db::executor::{execute_query_for_managed, QueryResultPayload};
 use crate::db::introspection::{fetch_columns_managed, fetch_tables_managed, ColumnInfo, TableInfo};
 use crate::db::pool::ConnectionManager;
 use crate::db::safe_mode::{analyze_sql_safety, sql_contains_write};
+use crate::db::schema_migration::EngineDialect;
+use crate::db::transactions::TransactionManager;
+use sqlx::AnyPool;
 use std::io::IsTerminal;
 use std::sync::Arc;
 
@@ -15,6 +18,7 @@ pub struct CliEngine {
     pub pools: ConnectionManager,
     pub duckdb: DuckDbManager,
     pub storage: Arc<AppStorage>,
+    pub tx: TransactionManager,
 }
 
 impl CliEngine {
@@ -27,6 +31,7 @@ impl CliEngine {
             pools: ConnectionManager::new(),
             duckdb: DuckDbManager::new(),
             storage,
+            tx: TransactionManager::new(),
         })
     }
 
@@ -189,5 +194,17 @@ impl CliEngine {
     pub async fn disconnect(&self, conn: &CatalogConnection) {
         self.duckdb.disconnect(&conn.id);
         let _ = self.pools.disconnect(&conn.id).await;
+    }
+
+    pub fn dialect(conn: &CatalogConnection) -> Result<EngineDialect, String> {
+        EngineDialect::from_db_kind(&conn.db_type)
+    }
+
+    pub fn pool(&self, conn: &CatalogConnection) -> Result<AnyPool, String> {
+        self.pools.get_pool(&conn.id)
+    }
+
+    pub fn mysql_style(conn: &CatalogConnection) -> bool {
+        ConnectionManager::is_mysql_style(&conn.db_type)
     }
 }

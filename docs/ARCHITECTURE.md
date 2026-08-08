@@ -27,7 +27,7 @@ React UI  →  tauriBridge.ts  →  Tauri IPC  →  Rust commands.rs
                                               ├─ credentials.rs / encrypted_export.rs
                                               └─ audit.rs (local JSONL only)
 
-devdash CLI  →  src-tauri/src/cli/*  →  same db::* engine
+devdash CLI  →  src-tauri/src/cli/*  →  same db::* engine (see docs/CLI.md)
                  catalog: ~/.config/devdash/connections.json
                  secrets: OS keyring service `devdash_app`
                  history: ~/.config/devdash/devdash_internal.db
@@ -98,3 +98,5 @@ npm run test:smoke
 ```
 
 Release CI (`.github/workflows/release.yml`) builds **desktop** installers for Windows, macOS, and Linux only — **not Android**.
+
+CLI guide: [`docs/CLI.md`](CLI.md).

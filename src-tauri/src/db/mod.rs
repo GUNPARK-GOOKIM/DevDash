@@ -1,4 +1,6 @@
 // Module declarations for DevDash database sub-components
+pub mod admin_catalog;
+pub mod ai_assist;
 pub mod app_storage;
 pub mod audit;
 pub mod autocomplete;
@@ -15,6 +17,7 @@ pub mod introspection;
 pub mod json_tree;
 pub mod diagnostics;
 pub mod metrics_board;
+pub mod migration_apply;
 pub mod migrations_log;
 pub mod pool;
 pub mod profiler;

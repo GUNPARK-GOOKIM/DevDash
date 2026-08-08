@@ -1387,65 +1387,28 @@ export const listMigrationRuns = async (limit = 50): Promise<MigrationRunRecord[
 
 export const listDatabaseProcesses = async (
   connectionId: string,
-  dbKind: string
+  _dbKind: string
 ): Promise<DatabaseProcessItem[]> => {
-  const kind = dbKind.toLowerCase();
-  let sql: string;
-
-  if (kind === 'postgres' || kind === 'postgresql' || kind === 'cockroachdb' || kind === 'redshift') {
-    sql = `
-      SELECT
-        pid,
-        COALESCE(usename, '') AS username,
-        COALESCE(datname, '') AS database,
-        COALESCE(client_addr::text, '') AS client_addr,
-        COALESCE(state, '') AS state,
-        COALESCE(query, '') AS query,
-        COALESCE(EXTRACT(EPOCH FROM (now() - query_start)) * 1000, 0)::bigint AS duration_ms
-      FROM pg_stat_activity
-      WHERE pid <> pg_backend_pid()
-      ORDER BY query_start DESC NULLS LAST
-      LIMIT 200;
-    `;
-  } else if (kind === 'mysql' || kind === 'mariadb') {
-    sql = `
-      SELECT
-        ID AS pid,
-        USER AS username,
-        DB AS database,
-        HOST AS client_addr,
-        COMMAND AS state,
-        INFO AS query,
-        TIME * 1000 AS duration_ms
-      FROM information_schema.PROCESSLIST
-      ORDER BY TIME DESC
-      LIMIT 200;
-    `;
-  } else {
-    // SQLite is embedded — no multi-session process list
-    return [];
-  }
-
-  const result = await runSqlQuery(connectionId, sql);
-  const colIndex = (name: string) =>
-    result.columns.findIndex((c) => c.name.toLowerCase() === name.toLowerCase());
-
-  const iPid = colIndex('pid');
-  const iUser = colIndex('username');
-  const iDb = colIndex('database');
-  const iClient = colIndex('client_addr');
-  const iState = colIndex('state');
-  const iQuery = colIndex('query');
-  const iDur = colIndex('duration_ms');
-
-  return result.rows.map((row) => ({
-    pid: Number(row[iPid] ?? 0),
-    user: String(row[iUser] ?? ''),
-    database: String(row[iDb] ?? ''),
-    clientAddr: String(row[iClient] ?? ''),
-    state: String(row[iState] ?? ''),
-    query: String(row[iQuery] ?? ''),
-    durationMs: Number(row[iDur] ?? 0),
+  if (!isTauriAvailable()) return [];
+  const rows = await invoke<
+    Array<{
+      pid: number;
+      user: string;
+      database: string;
+      client_addr: string;
+      state: string;
+      query: string;
+      duration_ms: number;
+    }>
+  >('list_database_processes', { connectionId });
+  return rows.map((r) => ({
+    pid: Number(r.pid ?? 0),
+    user: String(r.user ?? ''),
+    database: String(r.database ?? ''),
+    clientAddr: String(r.client_addr ?? ''),
+    state: String(r.state ?? ''),
+    query: String(r.query ?? ''),
+    durationMs: Number(r.duration_ms ?? 0),
   }));
 };
 

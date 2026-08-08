@@ -233,45 +233,19 @@ Because DevDash is an open-source project and installers are compiled directly f
 
 ## 🖥️ DevDash CLI
 
-The GUI is **DevDash Desktop**. The CLI is **DevDash Code** — same Rust engine, same keyring, same `~/.config/devdash/` catalog, usable from any terminal.
+**DevDash Desktop** is the visual workspace. **DevDash CLI** is its terminal companion: same Rust core, same OS keyring, same `~/.config/devdash/` catalog and AppStorage. Install and command reference: [`docs/CLI.md`](docs/CLI.md).
 
-### One-command install
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/akshat-lakhera/DevDash/main/scripts/install-cli.sh | sh
-```
-
-From a clone of this repo:
+From a clone (installer one-liner is published only after this lands on `main`):
 
 ```bash
-./scripts/install-cli.sh
-# or
 cargo install --path src-tauri --bin devdash --locked --no-default-features --features cli
-```
+# or: ./scripts/install-cli.sh
 
-Then:
-
-```bash
 devdash doctor
 devdash connect add --name local --url 'postgres://user@localhost:5432/app'
-devdash connect test
 devdash sql 'select now()'
-devdash tables
-devdash describe users
-devdash export users --format parquet -o users.parquet
 devdash repl
 ```
-
-Connections are stored in `~/.config/devdash/connections.json` (override with `DEVDASH_CONFIG_DIR`). Passwords go in the OS keyring service `devdash_app` — the same store the desktop app uses. Query history is written to the shared `devdash_internal.db`.
-
-| Flag / env | Meaning |
-|------------|---------|
-| `-c name` | Connection (default: last `devdash connect use`) |
-| `-F table\|json\|csv\|tsv` | Output format |
-| `--yes` | Confirm destructive SQL (Safe Mode) |
-| `--read-only` | Block writes for this run |
-| `DEVDASH_PASSWORD` | Password if keyring is empty |
-| `DEVDASH_CONFIG_DIR` | Isolated config (tests / CI) |
 
 ---
 
@@ -292,7 +266,7 @@ npx tsc --noEmit
 python scripts/check-architecture.py
 
 # 5. Run Rust unit/integration tests (GUI lib + CLI)
-cd src-tauri && cargo test --lib && cargo test --lib --no-default-features --features cli && cd ..
+cd src-tauri && cargo test --lib --features cli && cd ..
 
 # 6. Run in Development Mode (Vite only, or full Tauri)
 npm run dev

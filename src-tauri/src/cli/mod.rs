@@ -2,6 +2,7 @@
 //! Shares `~/.config/devdash/` + OS keyring + the same Rust query engine.
 pub mod catalog;
 pub mod format;
+pub mod ops;
 pub mod paths;
 pub mod runtime;
 
@@ -22,10 +23,10 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[command(
     name = "devdash",
     version = VERSION,
-    about = "DevDash CLI — first-class terminal companion to the DevDash GUI",
-    long_about = "Query Postgres, MySQL/MariaDB, SQLite, DuckDB, and other DevDash engines from any terminal.\n\
-Connections live in ~/.config/devdash/connections.json (or %APPDATA%\\devdash). Passwords use the same OS keyring as the desktop app (`devdash_app`).\n\n\
-Install:  curl -fsSL https://raw.githubusercontent.com/akshat-lakhera/DevDash/main/scripts/install-cli.sh | sh"
+    about = "DevDash CLI — terminal companion to DevDash Desktop",
+    long_about = "Same Rust engine as DevDash Desktop. Query every supported engine from any terminal.\n\
+Connections: ~/.config/devdash/connections.json  ·  secrets: OS keyring service devdash_app.\n\
+See docs/CLI.md for install, commands, and completions."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -115,6 +116,105 @@ pub enum Commands {
         password: Option<String>,
         #[arg(long = "yes")]
         yes: bool,
+    },
+    /// Schema DDL, diff, and migration apply
+    #[command(subcommand)]
+    Schema(ops::SchemaCmd),
+    /// Connection diagnostics
+    Diagnose {
+        #[arg(short = 'c', long = "connection")]
+        connection: Option<String>,
+        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        password: Option<String>,
+    },
+    /// EXPLAIN / EXPLAIN ANALYZE profile
+    Profile {
+        sql: Option<String>,
+        #[arg(short = 'f', long = "file")]
+        file: Option<PathBuf>,
+        #[arg(short = 'c', long = "connection")]
+        connection: Option<String>,
+        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        password: Option<String>,
+    },
+    /// Live database metrics
+    Metrics {
+        #[arg(short = 'c', long = "connection")]
+        connection: Option<String>,
+        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        password: Option<String>,
+    },
+    /// Query result snapshots + diff
+    #[command(subcommand)]
+    Snapshot(ops::SnapshotCmd),
+    /// Staged grid edits (JSON → transactional commit)
+    #[command(subcommand)]
+    Stage(ops::StageCmd),
+    /// Server process list / kill
+    #[command(subcommand)]
+    Process(ops::ProcessCmd),
+    /// Roles / login roles
+    Roles {
+        #[arg(short = 'c', long = "connection")]
+        connection: Option<String>,
+        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        password: Option<String>,
+    },
+    /// Functions / procedures / routines
+    Routines {
+        #[arg(short = 'c', long = "connection")]
+        connection: Option<String>,
+        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        password: Option<String>,
+    },
+    /// Run a SQL file in a transaction
+    #[command(subcommand)]
+    Tx(ops::TxCmd),
+    /// CSV / SQL dump import
+    #[command(subcommand)]
+    Import(ops::ImportCmd),
+    /// Encrypted connection vault (same AES-GCM payload as Desktop)
+    #[command(subcommand)]
+    Vault(ops::VaultCmd),
+    /// Local audit log
+    Audit {
+        #[arg(short = 'n', long = "limit", default_value_t = 50)]
+        limit: usize,
+    },
+    /// Schema-aware text-to-SQL (Ollama / OpenAI / Claude / DeepSeek)
+    Ai {
+        prompt: String,
+        #[arg(short = 'c', long = "connection")]
+        connection: Option<String>,
+        #[arg(long)]
+        execute: bool,
+        #[arg(long = "yes")]
+        yes: bool,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long = "base-url")]
+        base_url: Option<String>,
+        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        password: Option<String>,
+    },
+    /// Structure editor (ADD/DROP COLUMN, indexes, …)
+    #[command(subcommand)]
+    Structure(ops::StructureCmd),
+    /// Redis KEYS/SCAN via native RESP client
+    RedisKeys {
+        #[arg(short = 'c', long = "connection")]
+        connection: Option<String>,
+        #[arg(long, default_value = "*")]
+        pattern: String,
+        #[arg(long = "password", env = "DEVDASH_PASSWORD")]
+        password: Option<String>,
+    },
+    /// Generate shell completions
+    Completions {
+        /// bash | zsh | fish | powershell | elvish
+        shell: String,
     },
 }
 
@@ -236,6 +336,58 @@ async fn dispatch(cli: Cli) -> Result<(), String> {
             password,
             yes,
         } => cmd_repl(connection, password, yes).await,
+        Commands::Schema(cmd) => ops::cmd_schema(cmd).await,
+        Commands::Diagnose {
+            connection,
+            password,
+        } => ops::cmd_diagnose(connection, password).await,
+        Commands::Profile {
+            sql,
+            file,
+            connection,
+            password,
+        } => ops::cmd_profile(sql, file, connection, password).await,
+        Commands::Metrics {
+            connection,
+            password,
+        } => ops::cmd_metrics(connection, password).await,
+        Commands::Snapshot(cmd) => ops::cmd_snapshot(cmd).await,
+        Commands::Stage(cmd) => ops::cmd_stage(cmd).await,
+        Commands::Process(cmd) => ops::cmd_process(cmd).await,
+        Commands::Roles {
+            connection,
+            password,
+        } => ops::cmd_roles(connection, password).await,
+        Commands::Routines {
+            connection,
+            password,
+        } => ops::cmd_routines(connection, password).await,
+        Commands::Tx(cmd) => ops::cmd_tx(cmd).await,
+        Commands::Import(cmd) => ops::cmd_import(cmd).await,
+        Commands::Vault(cmd) => ops::cmd_vault(cmd).await,
+        Commands::Audit { limit } => ops::cmd_audit(limit).await,
+        Commands::Ai {
+            prompt,
+            connection,
+            execute,
+            yes,
+            provider,
+            model,
+            base_url,
+            password,
+        } => {
+            ops::cmd_ai(
+                prompt, connection, execute, yes, provider, model, base_url, password,
+            )
+            .await
+        }
+        Commands::Structure(cmd) => ops::cmd_structure(cmd).await,
+        Commands::RedisKeys {
+            connection,
+            pattern,
+            password,
+        } => ops::cmd_redis_keys(connection, Some(pattern), password).await,
+        Commands::Completions { shell } => ops::cmd_completions(&shell),
     }
 }
 
@@ -265,7 +417,7 @@ async fn cmd_doctor() -> Result<(), String> {
             "unavailable (passwords via --password / DEVDASH_PASSWORD)"
         }
     );
-    println!("  engines     postgres mysql sqlite duckdb mssql redis mongo cassandra clickhouse");
+    println!("  engines     postgres mysql mariadb sqlite duckdb mssql redis mongo cassandra clickhouse (+ cockroach/redshift wire)");
     println!("ok");
     Ok(())
 }
@@ -782,7 +934,7 @@ async fn cmd_repl(
         "DevDash CLI {VERSION}  connected → {} ({})",
         current.name, current.db_type
     );
-    println!("\\q quit  ·  \\tables  ·  \\d <table>  ·  \\c <name>  ·  \\? help");
+    println!("\\q quit  ·  \\tables  ·  \\d <table>  ·  \\c <name>  ·  \\begin \\commit \\rollback  ·  \\? help");
 
     let hist_path = paths::config_dir().join("cli_history");
     let mut rl = rustyline::DefaultEditor::new().map_err(|e| e.to_string())?;
@@ -808,7 +960,9 @@ async fn cmd_repl(
             println!("\\tables          list tables");
             println!("\\d <table>       describe table");
             println!("\\c <name>        switch saved connection");
-            println!("\\format table|json|csv");
+            println!("\\begin           BEGIN on held connection (same TransactionManager as Desktop)");
+            println!("\\commit          COMMIT open transaction");
+            println!("\\rollback        ROLLBACK open transaction");
             println!("\\q               quit");
             continue;
         }
@@ -836,6 +990,30 @@ async fn cmd_repl(
                         );
                     }
                 }
+                Err(e) => eprintln!("error: {e}"),
+            }
+            continue;
+        }
+        if trimmed == "\\begin" {
+            match engine.pools.get_managed_connection(&current.id) {
+                Ok(managed) => match engine.tx.begin_managed(&managed, &current.id).await {
+                    Ok(st) => println!("transaction active={}", st.active),
+                    Err(e) => eprintln!("error: {e}"),
+                },
+                Err(e) => eprintln!("error: {e}"),
+            }
+            continue;
+        }
+        if trimmed == "\\commit" {
+            match engine.tx.commit(&current.id).await {
+                Ok(st) => println!("committed active={}", st.active),
+                Err(e) => eprintln!("error: {e}"),
+            }
+            continue;
+        }
+        if trimmed == "\\rollback" {
+            match engine.tx.rollback(&current.id).await {
+                Ok(st) => println!("rolled back active={}", st.active),
                 Err(e) => eprintln!("error: {e}"),
             }
             continue;
@@ -875,7 +1053,13 @@ async fn cmd_repl(
             }
             continue;
         }
-        match engine.run_sql(&current, trimmed, yes, false).await {
+        let tx_hit = engine.tx.execute_in_tx(&current.id, trimmed).await;
+        let result = match tx_hit {
+            Ok(Some(payload)) => Ok(payload),
+            Err(e) => Err(e),
+            Ok(None) => engine.run_sql(&current, trimmed, yes, false).await,
+        };
+        match result {
             Ok(payload) => {
                 let _ = render_payload(&payload, OutputFormat::Table, Some(200), io::stdout());
             }
