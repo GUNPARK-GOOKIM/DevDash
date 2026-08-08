@@ -26,7 +26,14 @@ React UI  →  tauriBridge.ts  →  Tauri IPC  →  Rust commands.rs
                                               ├─ result_snapshots.rs (local result capture + paged diff)
                                               ├─ credentials.rs / encrypted_export.rs
                                               └─ audit.rs (local JSONL only)
+
+devdash CLI  →  src-tauri/src/cli/*  →  same db::* engine
+                 catalog: ~/.config/devdash/connections.json
+                 secrets: OS keyring service `devdash_app`
+                 history: ~/.config/devdash/devdash_internal.db
 ```
+
+Cargo features: `gui` (default, Tauri desktop) and `cli` (`devdash` binary, no WebKit). Build CLI with `--no-default-features --features cli`.
 
 There is **no** Monaco editor, **no** embedded offline AI model, and **no** production-verified MSSQL / Redis / Mongo drivers.
 
@@ -84,6 +91,8 @@ MSSQL, Oracle, Snowflake, BigQuery, Turso, Redis, MongoDB, Cassandra, ClickHouse
 ```bash
 npx tsc --noEmit
 cd src-tauri && cargo test --lib
+cd src-tauri && cargo test --lib --no-default-features --features cli
+cd src-tauri && cargo build --bin devdash --no-default-features --features cli
 python3 scripts/check-architecture.py   # or: npm run test:arch
 npm run test:smoke
 ```

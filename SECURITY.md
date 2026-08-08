@@ -21,10 +21,11 @@ Response time is best-effort (this is an open-source project, not a commercial S
 
 | Feature | Reality |
 | ------- | ------- |
-| **OS keyring passwords** | Passwords saved via the `keyring` crate (`src-tauri/src/db/credentials.rs`), not in plain text connection JSON. |
+| **OS keyring passwords** | Passwords saved via the `keyring` crate (`src-tauri/src/db/credentials.rs`), service `devdash_app`, not in plain text connection JSON. Shared by the GUI and the `devdash` CLI. |
 | **Encrypted connection export** | Passphrase + PBKDF2 + AES-256-GCM (`encrypted_export.rs`). Text + real QR encode/decode (`src/utils/qrShare.ts`). Large multi-profile payloads may exceed QR capacity — text always works. |
 | **Safe Mode** | Destructive SQL detection in `safe_mode.rs`; UI confirmation modal; server rejects destructive SQL unless `allow_destructive` is set after confirm (or Safe Mode is off). |
-| **Connection read-only** | Stored on the pool; server blocks write/DDL SQL and mutation IPC. |
+| **Connection read-only** | Stored on the pool; server blocks write/DDL SQL and mutation IPC. CLI honors the same flag and prod-env protection. |
+| **DevDash CLI** | Same engine as the GUI. Catalog at `~/.config/devdash/connections.json` (no passwords). Use `--password` / `DEVDASH_PASSWORD` when keyring is unavailable. |
 | **Local audit log** | Append-only JSONL under the user config dir (`audit.rs`). **Not** SOC 2, HIPAA, or any certified control. |
 
 ## What We Do **Not** Claim
